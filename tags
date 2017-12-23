@@ -1,0 +1,18 @@
+!_TAG_FILE_FORMAT	2	/extended format; --format=1 will not append ;" to lines/
+!_TAG_FILE_SORTED	1	/0=unsorted, 1=sorted, 2=foldcase/
+!_TAG_OUTPUT_MODE	u-ctags	/u-ctags or e-ctags/
+!_TAG_PROGRAM_AUTHOR	Universal Ctags Team	//
+!_TAG_PROGRAM_NAME	Universal Ctags	/Derived from Exuberant Ctags/
+!_TAG_PROGRAM_URL	https://ctags.io/	/official site/
+!_TAG_PROGRAM_VERSION	0.0.0	/1bcb1fc/
+clone	pi2clone.sh	/^clone() {$/;"	f
+dests=	pi2clone.sh	/^    local dests=() srcs=()$/;"	f
+dests=	pi2clone.sh	/^    local srcs=() dests=() duuids=() suuids=()$/;"	f
+duuids=	pi2clone.sh	/^    local srcs=() dests=() duuids=() suuids=()$/;"	f
+from_file	pi2clone.sh	/^from_file() {$/;"	f
+main	pi2clone.sh	/^main() {$/;"	f
+srcs=	pi2clone.sh	/^    local dests=() srcs=()$/;"	f
+srcs=	pi2clone.sh	/^    local srcs=() dests=() duuids=() suuids=()$/;"	f
+srcs=	pi2clone.sh	/^    local srcs=()$/;"	f
+suuids=	pi2clone.sh	/^    local srcs=() dests=() duuids=() suuids=()$/;"	f
+to_file	pi2clone.sh	/^to_file() {$/;"	f
