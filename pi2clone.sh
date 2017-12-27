@@ -48,11 +48,15 @@ to_file() {
         local sid=${partuuids[$sdev]}
         local fs=${filesystems[$sdev]}
 
-        [[ $fs == vfat ]] && dd if="$sdev" of="${i}.${sid}.${fs}.${sdev//\//_}.dd"
-        [[ $fs != vfat ]] && dump -a0f "${i}.${sid}.${fs}.${sdev//\//_}.dump" "$sdev"
+        mkdir -p "/mnt/$sdev"
+        mount "$sdev" -t "$fs" "/mnt/$sdev"
+
+        tar -Scpf "${i}.${sid}.${fs}.${sdev//\//_}" --directory="/mnt/$sdev" --exclude=proc/* --exclude=dev/* --exclude=sys/* --atime-preserve --numeric-owner --xattrs .
     done
 
     popd >/dev/null
+
+    for ((i=0;i<${#srcs[@]};i++)); do umount "/mnt/${srcs[$i]}"; done
 }
 
 from_file() {
@@ -80,21 +84,16 @@ from_file() {
             suuids+=($uuid)
             local ddev=${dests[$i]}
 
-            [[ $tool == dd ]] && \
-                dd if="$file" of="$ddev" bs=512
-            [[ $tool == dump ]] && \
-                mkfs -t "$fs" "$ddev"
+            mkfs -t "$fs" "$ddev"
 
             sleep 3
 
             mkdir -p "/mnt/$ddev"
             mount "$ddev" -t "$fs" "/mnt/$ddev"
 
-            if [[ $tool == dump ]]; then
-                pushd "/mnt/$ddev" >/dev/null
-                restore -rf "${src}/${file}"
-                popd >/dev/null
-            fi
+            pushd "/mnt/$ddev" >/dev/null
+            tar -xf "${src}/${file}" -C "/mnt/$ddev"
+            popd >/dev/null
         fi
     done
     popd >/dev/null
@@ -144,17 +143,12 @@ clone() {
         mkfs -t "$fs" "$ddev"
         sleep 3 #IMPORTANT !!! So changes by mkfs can settle.
 
-        [[ $fs == vfat ]] && dd if="$sdev" of="$ddev" bs=512
-        sleep 3 #IMPORTANT !!! So changes by dd can settle.
-
         mkdir -p "/mnt/$ddev"
+        mkdir -p "/mnt/$sdev"
         mount "$ddev" -t "${filesystems[$sdev]}" "/mnt/$ddev"
+        mount "$sdev" -t "${filesystems[$sdev]}" "/mnt/$sdev"
 
-        if [[ $fs != vfat ]]; then
-            pushd "/mnt/$ddev"
-            dump -a0f - "$sdev" | restore -rf -
-            popd
-        fi
+        rsync -aSXxH "/mnt/$sdev/" "/mnt/$ddev"
     done
 
     for ((i=0;i<${#srcs[@]};i++)); do
@@ -167,7 +161,10 @@ clone() {
         done
     done
 
-    for ((i=0;i<${#srcs[@]};i++)); do umount "/mnt/${dests[$i]}"; done
+    for ((i=0;i<${#srcs[@]};i++)); do 
+        umount "/mnt/${dests[$i]}"
+        umount "/mnt/${srcs[$i]}"
+    done
 }
 
 main() {
