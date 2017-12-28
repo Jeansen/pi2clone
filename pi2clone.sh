@@ -137,8 +137,9 @@ clone() {
     for ((i=0;i<${#srcs[@]};i++)); do
         local sdev=${srcs[$i]}
         local ddev=${dests[$i]}
-
         local fs=${filesystems[$sdev]}
+
+        [[ $fs == swap ]] && continue
 
         mkfs -t "$fs" "$ddev"
         sleep 3 #IMPORTANT !!! So changes by mkfs can settle.
