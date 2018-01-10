@@ -15,6 +15,8 @@
 # You should have received a copy of the GNU General Public License
 # along with thisrogram.  If not, see <http://www.gnu.org/licenses/>.
 
+SCRIPTNAME=$(basename $0)
+PIDFILE="/var/run/${scriptname}"
 USAGE=$(cat <<EOF
 
 $(basename "$0") [-h] -s src -d dest
@@ -25,6 +27,12 @@ where:
     -d  Destination block device or folder
 EOF
 )
+
+
+cleanup() {
+    [[ -d $SRC/lvm_ ]] && rm -rf $SRC/lmv_
+    exit 255
+}
 
 to_file() {
     declare -A filesystems mounts partuuids uuids types
@@ -134,15 +142,17 @@ from_file() {
 
     _lvm_setup() {
         #Now replace UUIDs from backup with new ones - only for lvm
+        cp -r lvm lvm_
         for ((i=0;i<${#suuids[@]};i++)); do 
-            sed -i "s/${suuids[$i]}/${duuids[$i]}/" lvm/*;
+            sed -i "s/${suuids[$i]}/${duuids[$i]}/" lvm_/*;
         done
 
         #Finally resstore lvm partitions ...
-            for f in lvm/*; do
+            for f in lvm_/*; do
                 vgcfgrestore -f "$f" "${f##*/}"
                 vgchange -ay "${f##*/}"
             done
+        rm -rf lvm_
 
         #... create filesystems on the just created LVs ...
         for key in "${!lfs[@]}"; do 
@@ -281,6 +291,13 @@ main() {
 
 
 ### ENTRYPOINT
+
+trap cleanup INT
+
+exec 200>$PIDFILE
+flock -n 200 || exit 1
+pid=$$
+echo $pid 1>&200
 
 v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 (( v<43 )) && echo "ERROR: Bash version must be 4.3 or greater!" && exit 1
