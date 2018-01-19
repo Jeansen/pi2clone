@@ -15,19 +15,27 @@
 # You should have received a copy of the GNU General Public License
 # along with thisrogram.  If not, see <http://www.gnu.org/licenses/>.
 
+
 SCRIPTNAME=$(basename "$0")
 PIDFILE="/var/run/$SCRIPTNAME"
-USAGE=$(cat <<EOF
+INTERACTIVE=false
+export LVM_SUPPRESS_FD_WARNINGS=true
 
-$(basename "$0") [-h] -s src -d dest
+USAGE="
+Usage: $(basename $0) [-h] -s src -d dest
 
-where:
+Where:
     -h  Show this help text
     -s  Source block device or folder
     -d  Destination block device or folder
-EOF
-)
+    -q  Quiet, do not show any output
+    -i  Interactive, showing progress bars
+"
 
+usage() {
+    printf "%s\n" "$USAGE"
+    exit 1
+}
 
 cleanup() {
     [[ -d $SRC/lvm_ ]] && rm -rf $SRC/lmv_
@@ -72,17 +80,19 @@ to_file() {
             mkdir -p "/mnt/$sdev"
             mount "$sdev" -t "$fs" "/mnt/$sdev"
 
-            tar -Scpf "${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}" \
-                --directory="/mnt/$sdev" \
-                --exclude=proc/* \
-                --exclude=dev/* \
-                --exclude=sys/* \
-                --atime-preserve \
-                --numeric-owner \
-                --xattrs .
+
+            cmd="tar --directory=/mnt/$sdev --exclude=proc/* --exclude=dev/* --exclude=sys/* --atime-preserve --numeric-owner --xattrs"
+            if $INTERACTIVE; then 
+                local size=$(du --bytes --exclude=proc/* --exclude=sys/* -s /mnt/$sdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
+                cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}" 
+            else
+                cmd="$cmd -Scpf ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_} ."  
+            fi
+            echo "Creating backup for $sdev"
+            eval "$cmd"
         done
 
-        for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${s[$i]}"; done
+        for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${s[$i]}" 2>/dev/null; done
     done
 
     $islvm && vgcfgbackup && cp -r /etc/lvm/backup lvm
@@ -222,8 +232,8 @@ from_file() {
     _boot_setup "src2dest"
     _boot_setup "psrc2pdest"
 
-    for k in "${!dests[@]}"; do umount "/mnt/${dests[$k]}"; done
-}
+    for k in "${!dests[@]}"; do umount "/mnt/${dests[$k]}" 2>/dev/null; done
+} 
 
 clone() {
     local src="$1" dest="$2"
@@ -266,9 +276,9 @@ clone() {
     }
 
     _lvm_setup() {
-        vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep /dev/mmc | xargs | cut -d ' ' -f2)
+        vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
         vg_src_name_clone="${vg_src_name}_clone"
-
+        
         while read -r e; do
             read -r pv_name vg_name<<< "$e"
             [[ -z $vg_name ]] && vgcreate "$vg_src_name_clone" "$pv_name"
@@ -289,13 +299,24 @@ clone() {
         done
     }
 
-    dd if=/dev/zero of="$dest" bs=512 count=100000
+    _prepare_disk() {
+        local vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$src" | xargs | cut -d ' ' -f2)
+        local vg_src_name_clone="${vg_src_name}_clone"
+
+        vgchange -an "$vg_src_name_clone" 2>/dev/null
+        vgremove -f "$vg_src_name_clone" 2>/dev/null
+
+        dd if=/dev/zero of="$dest" bs=512 count=100000
+    }
+
+    _prepare_disk
+
+    sleep 3
+
+    sfdisk --force "$dest" < <(sfdisk -d "$src")
 
     sleep 3 #IMPORTANT !!! So changes by sfdisk can settle. 
             #Otherwise resultes from lsblk might still show old values!
-
-    sfdisk --force "$dest" < <(sfdisk -d "$src")
-    sleep 3
 
     while read -r e; do
         read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
@@ -320,7 +341,7 @@ clone() {
     #Now collect what we have created
     _set_uuids "dest"
 
-    if [[ ${#lmbrs[@]} > 0 ]]; then 
+    if [[ ${#lmbrs[@]} -gt 0 ]]; then 
         _lvm_setup
         sleep 3
         #... and after that collect what we have created, again
@@ -360,20 +381,31 @@ clone() {
 
             mount "$ddev" -t "${filesystems[$sdev]}" "/mnt/$ddev"
 
+            echo "Cloning $sdev"
             if [[ $x == lsrcs ]]; then
-                rsync -aSXxH "/mnt/snap4clone/" "/mnt/$ddev"
+                if $INTERACTIVE; then
+                    local size=$(rsync -aSXxH --stats --dry-run "/mnt/snap4clone/" "/mnt/$ddev" | grep -oP 'Number of files: \d*(,\d*)*' | cut -d ':' -f2 | tr -d ' ' | sed -e 's/,//')
+                    rsync -vaSXxH "/mnt/snap4clone/" "/mnt/$ddev" | pv -lep -s "$size" >/dev/null
+                else
+                    rsync -aSXxH "/mnt/snap4clone/" "/mnt/$ddev"
+                fi
                 sleep 3
-                umount "/mnt/snap4clone/"
+                umount "/mnt/snap4clone/" 2>/dev/null
                 lvremove -f "${vg_src_name}/snap4clone"
             else
-                rsync -aSXxH "/mnt/$sdev/" "/mnt/$ddev"
+                if $INTERACTIVE; then
+                    local size=$(rsync -aSXxH --stats --dry-run "/mnt/$sdev/" "/mnt/$ddev" | grep -oP 'Number of files: \d*(,\d*)*' | cut -d ':' -f2 | tr -d ' ' | sed -e 's/,//')
+                    rsync -vaSXxH "/mnt/$sdev/" "/mnt/$ddev" | pv -lep -s "$size" >/dev/null
+                else
+                    rsync -aSXxH "/mnt/$sdev/" "/mnt/$ddev"
+                fi
             fi
 
             sed -i "s/$vg_src_name/$vg_src_name_clone/" "/mnt/$ddev/cmdline.txt" "/mnt/$ddev/etc/fstab" 2>/dev/null
         done
 
-        for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${s[$i]}"; done
-        for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${dests[${src2dest[${uuids[${s[$i]}]}]}]}"; done
+        for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${s[$i]}" 2>/dev/null; done
+        for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${dests[${src2dest[${uuids[${s[$i]}]}]}]}" 2>/dev/null; done
     done
 }
 
@@ -390,36 +422,42 @@ main() {
 
 trap cleanup INT
 
+#Lock the script, only one instance is allowed to run at the same time!
 exec 200>"$PIDFILE"
 flock -n 200 || exit 1
 pid=$$
 echo $pid 1>&200
 
+#Make sure BASH is the right version so we can use array references!
 v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 (( v<43 )) && echo "ERROR: Bash version must be 4.3 or greater!" && exit 1
 
 [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
-while getopts ':hs:d:' option; do
+while getopts ':hiqs:d:' option; do
     case "$option" in
-        h) echo "$USAGE" && exit
+        h) usage
             ;;
         s) SRC=$OPTARG
             ;;
         d) DEST=$OPTARG
             ;;
+        q) exec &> /dev/null
+            ;;
+        i) INTERACTIVE=true
+            ;;
         :) printf "missing argument for -%s\n" "$OPTARG" >&2
-            echo "$USAGE" && exit 1
+            usage
             ;;
         \?) printf "illegal option: -%s\n" "$OPTARG" >&2
-            echo "$USAGE" && exit 1
+            usage
             ;;
     esac
 done
 shift $((OPTIND - 1))
 
 [[ -z $SRC || -z $DEST ]] && \
-    echo "$USAGE" && exit 1
+    usage
 
 [[ -d $SRC && ! -b $DEST ]] && \
     echo "$DEST is not a valid block device." && exit 1
