@@ -395,7 +395,13 @@ clone() {
             echo "Cloning $sdev"
             if [[ $x == lsrcs ]]; then
                 if $INTERACTIVE; then
-                    local size=$(rsync -aSXxH --stats --dry-run "/mnt/snap4clone/" "/mnt/$ddev" | grep -oP 'Number of files: \d*(,\d*)*' | cut -d ':' -f2 | tr -d ' ' | sed -e 's/,//')
+                    local size=$( \
+                          rsync -aSXxH --stats --dry-run "/mnt/snap4clone/" "/mnt/$ddev" \
+                        | grep -oP 'Number of files: \d*(,\d*)*' \
+                        | cut -d ':' -f2 \
+                        | tr -d ' ' \
+                        | sed -e 's/,//' \
+                    )
                     rsync -vaSXxH "/mnt/snap4clone/" "/mnt/$ddev" | pv -lep -s "$size" >/dev/null
                 else
                     rsync -aSXxH "/mnt/snap4clone/" "/mnt/$ddev"
@@ -405,7 +411,13 @@ clone() {
                 lvremove -f "${vg_src_name}/snap4clone"
             else
                 if $INTERACTIVE; then
-                    local size=$(rsync -aSXxH --stats --dry-run "/mnt/$sdev/" "/mnt/$ddev" | grep -oP 'Number of files: \d*(,\d*)*' | cut -d ':' -f2 | tr -d ' ' | sed -e 's/,//')
+                    local size=$( \
+                          rsync -aSXxH --stats --dry-run "/mnt/$sdev/" "/mnt/$ddev" \
+                        | grep -oP 'Number of files: \d*(,\d*)*' \
+                        | cut -d ':' -f2 \
+                        | tr -d ' ' \
+                        | sed -e 's/,//' \
+                    )
                     rsync -vaSXxH "/mnt/$sdev/" "/mnt/$ddev" | pv -lep -s "$size" >/dev/null
                 else
                     rsync -aSXxH "/mnt/$sdev/" "/mnt/$ddev"
@@ -436,6 +448,13 @@ main() {
 
 trap cleanup INT
 
+for c in rsync tar flock; do
+    hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing."; abort='exit 1'; }
+done
+
+eval $abort
+
+
 #Lock the script, only one instance is allowed to run at the same time!
 exec 200>"$PIDFILE"
 flock -n 200 || exit 1
@@ -450,22 +469,23 @@ v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 
 while getopts ':hiqs:d:' option; do
     case "$option" in
-        h) usage
-            ;;
-        s) SRC=$OPTARG
-            ;;
-        d) DEST=$OPTARG
-            ;;
-        q) exec &> /dev/null
-            ;;
-        i) INTERACTIVE=true
-            ;;
-        :) printf "missing argument for -%s\n" "$OPTARG" >&2
+        h)  usage
+             ;;
+        s)  SRC=$OPTARG
+             ;;
+        d)  DEST=$OPTARG
+             ;;
+        q)  exec &> /dev/null
+             ;;
+        i)  { hash pv 2>/dev/null && INTERACTIVE=true; } || 
+            { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
+             ;;
+        :)  printf "missing argument for -%s\n" "$OPTARG" >&2
             usage
-            ;;
+             ;;
         \?) printf "illegal option: -%s\n" "$OPTARG" >&2
             usage
-            ;;
+             ;;
     esac
 done
 shift $((OPTIND - 1))
