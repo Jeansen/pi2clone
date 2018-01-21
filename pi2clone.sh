@@ -309,6 +309,17 @@ clone() {
         dd if=/dev/zero of="$dest" bs=512 count=100000
     }
 
+    _boot_setup() {
+        p=$(declare -p "$1")
+        eval "declare -A sd=${p#*=}"
+
+        for k in "${!sd[@]}"; do
+            for d in "${dests[@]}"; do
+                sed -i "s/$k/${sd[$k]}/" "/mnt/$d/cmdline.txt" "/mnt/$d/etc/fstab" 2>/dev/null
+            done
+        done
+    }
+
     _prepare_disk
 
     sleep 3
@@ -403,6 +414,9 @@ clone() {
 
             sed -i "s/$vg_src_name/$vg_src_name_clone/" "/mnt/$ddev/cmdline.txt" "/mnt/$ddev/etc/fstab" 2>/dev/null
         done
+
+        _boot_setup "src2dest"
+        _boot_setup "psrc2pdest"
 
         for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${s[$i]}" 2>/dev/null; done
         for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${dests[${src2dest[${uuids[${s[$i]}]}]}]}" 2>/dev/null; done
