@@ -56,7 +56,7 @@ to_file() {
 
     while read -r e; do
         read -r dev fstype uuid puuid type parttype mnt<<< "$e"
-        eval "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mnt"
+        eval local "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $FSTYPE == swap || $FSTYPE == LVM2_member ]] && continue
         [[ $TYPE == lvm ]] && lsrcs+=($KNAME) && islvm=true
         [[ $TYPE == part ]] && srcs+=($KNAME)
@@ -66,6 +66,11 @@ to_file() {
         uuids[$KNAME]="$UUID"
         types[$KNAME]="$TYPE"
     done < <(lsblk -Ppo KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$src") #use par_list
+
+    vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
+    while read -r e; do
+        read -r lv_name vg_name lv_size<<< "$e"
+    done < <( lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size )
 
     for x in srcs lsrcs; do
         eval declare -n s="$x"
@@ -78,18 +83,35 @@ to_file() {
             local type=${types[$sdev]}
 
             mkdir -p "/mnt/$sdev"
-            mount "$sdev" -t "$fs" "/mnt/$sdev"
 
+            local tdev=$sdev
+            if [[ $x == lsrcs ]]; then
+                local tdev='snap4clone'
+            fi
 
-            cmd="tar --directory=/mnt/$sdev --exclude=proc/* --exclude=dev/* --exclude=sys/* --atime-preserve --numeric-owner --xattrs"
+            if [[ $x == lsrcs ]]; then
+                mkdir -p "/mnt/$tdev"
+                lvcreate -l100%FREE -s -n snap4clone "${vg_src_name}/$lv_name"
+                sleep 3
+                mount "/dev/${vg_src_name}/$tdev" -t "${filesystems[$sdev]}" "/mnt/$tdev"
+            else
+                mount "$sdev" -t "${filesystems[$sdev]}" "/mnt/$sdev"
+            fi
+
+            cmd="tar --directory=/mnt/$tdev --exclude=proc/* --exclude=dev/* --exclude=sys/* --atime-preserve --numeric-owner --xattrs"
+
             if $INTERACTIVE; then 
-                local size=$(du --bytes --exclude=proc/* --exclude=sys/* -s /mnt/$sdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
+                local size=$(du --bytes --exclude=proc/* --exclude=sys/* -s /mnt/$tdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
                 cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}" 
             else
                 cmd="$cmd -Scpf ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_} ."  
             fi
             echo "Creating backup for $sdev"
             eval "$cmd"
+
+            umount "/mnt/snap4clone/" 2>/dev/null
+            lvremove -f "${vg_src_name}/$tdev" > /dev/null
+
         done
 
         for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${s[$i]}" 2>/dev/null; done
@@ -115,7 +137,7 @@ from_file() {
 
         while read -r e; do
             read -r dev fstype uuid puuid type parttype mnt<<< "$e"
-            eval "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mnt"
+            eval local "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
             [[ $FSTYPE == swap ]] && continue
             if [[ $src_dest == dest ]]; then
                 [[ -n $UUID ]] && dests[$UUID]=$KNAME
@@ -253,7 +275,7 @@ clone() {
 
         while read -r e; do
             read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
-            eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mnt"
+            eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
             [[ $FSTYPE == swap ]] && continue
             if [[ $src_dest == dest ]]; then
                 [[ -n $UUID ]] && dests[$UUID]=$NAME
@@ -331,7 +353,7 @@ clone() {
 
     while read -r e; do
         read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
-        eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mnt"
+        eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $FSTYPE == swap || $FSTYPE == LVM2_member ]] && continue
         [[ $TYPE == lvm ]] && lsrcs+=($NAME) && islvm=true
         [[ $TYPE == part ]] && srcs+=($NAME)
@@ -381,48 +403,40 @@ clone() {
             mkdir -p "/mnt/$ddev"
             mkdir -p "/mnt/$sdev"
 
+            local tdev=$sdev
             if [[ $x == lsrcs ]]; then
-                mkdir -p "/mnt/snap4clone"
+                local tdev='snap4clone'
+            fi
+
+            if [[ $x == lsrcs ]]; then
+                mkdir -p "/mnt/$tdev"
                 lvcreate -l100%FREE -s -n snap4clone "${vg_src_name}/$lv_name"
                 sleep 3
-                mount "/dev/${vg_src_name}/snap4clone" -t "${filesystems[$sdev]}" "/mnt/snap4clone"
+                mount "/dev/${vg_src_name}/$tdev" -t "${filesystems[$sdev]}" "/mnt/$tdev"
             else
                 mount "$sdev" -t "${filesystems[$sdev]}" "/mnt/$sdev"
             fi
 
             mount "$ddev" -t "${filesystems[$sdev]}" "/mnt/$ddev"
 
+
             echo "Cloning $sdev"
-            if [[ $x == lsrcs ]]; then
                 if $INTERACTIVE; then
                     local size=$( \
-                          rsync -aSXxH --stats --dry-run "/mnt/snap4clone/" "/mnt/$ddev" \
+                          rsync -aSXxH --stats --dry-run "/mnt/$tdev/" "/mnt/$ddev" \
                         | grep -oP 'Number of files: \d*(,\d*)*' \
                         | cut -d ':' -f2 \
                         | tr -d ' ' \
                         | sed -e 's/,//' \
                     )
-                    rsync -vaSXxH "/mnt/snap4clone/" "/mnt/$ddev" | pv -lep -s "$size" >/dev/null
+                    rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv -lep -s "$size" >/dev/null
                 else
-                    rsync -aSXxH "/mnt/snap4clone/" "/mnt/$ddev"
+                    rsync -aSXxH "/mnt/$tdev/" "/mnt/$ddev"
                 fi
+                
                 sleep 3
-                umount "/mnt/snap4clone/" 2>/dev/null
-                lvremove -f "${vg_src_name}/snap4clone"
-            else
-                if $INTERACTIVE; then
-                    local size=$( \
-                          rsync -aSXxH --stats --dry-run "/mnt/$sdev/" "/mnt/$ddev" \
-                        | grep -oP 'Number of files: \d*(,\d*)*' \
-                        | cut -d ':' -f2 \
-                        | tr -d ' ' \
-                        | sed -e 's/,//' \
-                    )
-                    rsync -vaSXxH "/mnt/$sdev/" "/mnt/$ddev" | pv -lep -s "$size" >/dev/null
-                else
-                    rsync -aSXxH "/mnt/$sdev/" "/mnt/$ddev"
-                fi
-            fi
+                umount "/mnt/$tdev/" 2>/dev/null
+                lvremove -f "${vg_src_name}/$tdev" > /dev/null
 
             sed -i "s/$vg_src_name/$vg_src_name_clone/" "/mnt/$ddev/cmdline.txt" "/mnt/$ddev/etc/fstab" 2>/dev/null
         done
