@@ -69,8 +69,8 @@ to_file() {
 
     vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
     while read -r e; do
-        read -r lv_name vg_name lv_size<<< "$e"
-    done < <( lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size )
+        read -r lv_name vg_name lv_size vg_free<<< "$e"
+    done < <( lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_free )
 
     for x in srcs lsrcs; do
         eval declare -n s="$x"
@@ -85,11 +85,9 @@ to_file() {
             mkdir -p "/mnt/$sdev"
 
             local tdev=$sdev
-            if [[ $x == lsrcs ]]; then
-                local tdev='snap4clone'
-            fi
 
-            if [[ $x == lsrcs ]]; then
+            if [[ $x == lsrcs && ${#lmbrs[@]} -gt 0 && $vg_free -ge 500 ]]; then
+                local tdev='snap4clone'
                 mkdir -p "/mnt/$tdev"
                 lvcreate -l100%FREE -s -n snap4clone "${vg_src_name}/$lv_name"
                 sleep 3
@@ -110,7 +108,7 @@ to_file() {
             eval "$cmd"
 
             umount "/mnt/snap4clone/" 2>/dev/null
-            lvremove -f "${vg_src_name}/$tdev" > /dev/null
+            lvremove -f "${vg_src_name}/$tdev" 2> /dev/null
 
         done
 
@@ -307,9 +305,9 @@ clone() {
         done < <( pvs --noheadings -o pv_name,vg_name )
 
         while read -r e; do
-            read -r lv_name vg_name lv_size<<< "$e"
+            read -r lv_name vg_name lv_size vg_free<<< "$e"
             lvcreate -L "$lv_size" -n "$lv_name" "$vg_src_name_clone"
-        done < <( lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size )
+        done < <( lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_free )
 
         for d in $SRC $DEST; do
             while read -r e; do
@@ -404,11 +402,8 @@ clone() {
             mkdir -p "/mnt/$sdev"
 
             local tdev=$sdev
-            if [[ $x == lsrcs ]]; then
+            if [[ $x == lsrcs && ${#lmbrs[@]} -gt 0 && $vg_free -ge 500 ]]; then
                 local tdev='snap4clone'
-            fi
-
-            if [[ $x == lsrcs ]]; then
                 mkdir -p "/mnt/$tdev"
                 lvcreate -l100%FREE -s -n snap4clone "${vg_src_name}/$lv_name"
                 sleep 3
@@ -436,7 +431,7 @@ clone() {
                 
                 sleep 3
                 umount "/mnt/$tdev/" 2>/dev/null
-                lvremove -f "${vg_src_name}/$tdev" > /dev/null
+                lvremove -f "${vg_src_name}/$tdev" 2> /dev/null
 
             sed -i "s/$vg_src_name/$vg_src_name_clone/" "/mnt/$ddev/cmdline.txt" "/mnt/$ddev/etc/fstab" 2>/dev/null
         done
