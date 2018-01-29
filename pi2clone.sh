@@ -86,7 +86,7 @@ to_file() {
 
             local tdev=$sdev
 
-            if [[ $x == lsrcs && ${#lmbrs[@]} -gt 0 && $vg_free -ge 500 ]]; then
+            if [[ $x == lsrcs && ${#lmbrs[@]} -gt 0 && "$vg_free" > "500" ]]; then
                 local tdev='snap4clone'
                 mkdir -p "/mnt/$tdev"
                 lvcreate -l100%FREE -s -n snap4clone "${vg_src_name}/$lv_name"
@@ -402,7 +402,7 @@ clone() {
             mkdir -p "/mnt/$sdev"
 
             local tdev=$sdev
-            if [[ $x == lsrcs && ${#lmbrs[@]} -gt 0 && $vg_free -ge 500 ]]; then
+            if [[ $x == lsrcs && ${#lmbrs[@]} -gt 0 && "$vg_free" > "500" ]]; then
                 local tdev='snap4clone'
                 mkdir -p "/mnt/$tdev"
                 lvcreate -l100%FREE -s -n snap4clone "${vg_src_name}/$lv_name"
