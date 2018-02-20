@@ -33,7 +33,7 @@ Where:
 "
 
 #DEBUG ONLY
-#printarr() { declare -n __p="$1"; for k in "${!__p[@]}"; do printf "%s=%s\n" "$k" "${__p[$k]}" ; done ;  }
+printarr() { declare -n __p="$1"; for k in "${!__p[@]}"; do printf "%s=%s\n" "$k" "${__p[$k]}" ; done ;  }
 
 usage() {
     printf "%s\n" "$USAGE"
@@ -46,7 +46,7 @@ cleanup() {
 }
 
 to_file() {
-    declare -A filesystems mounts partuuids uuids types
+    declare -A filesystems mounts partuuids uuids types names puuids2uuids
     local src="$1" dest="$2" islvm=false
     local srcs=()
 
@@ -55,20 +55,21 @@ to_file() {
     sfdisk -d "$src" > part_table
     sleep 3 #IMPORTANT !!! So changes by sfdisk can settle. 
             #Otherwise resultes from lsblk might still show old values!
-    lsblk -Ppo KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$src" | uniq > part_list
+    lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$src" | uniq > part_list
 
     while read -r e; do
-        read -r dev fstype uuid puuid type parttype mnt<<< "$e"
-        eval local "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $FSTYPE == swap || $FSTYPE == LVM2_member ]] && continue
-        [[ $TYPE == lvm ]] && lsrcs+=($KNAME) && islvm=true
-        [[ $TYPE == part ]] && srcs+=($KNAME)
-        filesystems[$KNAME]="$FSTYPE"
-        mounts[$KNAME]="$MOUNTPOINT"
-        partuuids[$KNAME]="$PARTUUID"
-        uuids[$KNAME]="$UUID"
-        types[$KNAME]="$TYPE"
-    done < <(lsblk -Ppo KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$src") #use par_list
+        read -r kname name fstype uuid puuid type parttype mnt<<< "$e"
+        eval local "$kname" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk ]] && continue
+        [[ $TYPE == lvm ]] && lsrcs+=($NAME) && islvm=true
+        [[ $TYPE == part ]] && srcs+=($NAME)
+        filesystems[$NAME]="$FSTYPE"
+        partuuids[$NAME]="$PARTUUID"
+        uuids[$NAME]="$UUID"
+        types[$NAME]="$TYPE"
+        [[ -n $UUID ]] && names[$UUID]=$NAME
+        [[ -n $UUID && -n $PARTUUID ]] && puuids2uuids[$PARTUUID]="$UUID"
+    done < <(lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$src") #use par_list
 
     vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
     while read -r e; do
@@ -84,6 +85,39 @@ to_file() {
             local spid=${partuuids[$sdev]}
             local fs=${filesystems[$sdev]}
             local type=${types[$sdev]}
+
+            mkdir -p "/mnt/$sdev"
+
+            mount "$sdev" "/mnt/$sdev"
+            if [[ -f /mnt/$sdev/etc/fstab ]]; then
+                while read -r e; do 
+                    read -r dev mnt<<< "$e"
+                    mounts[$dev]="$mnt"
+                done < <(cat /mnt/$sdev/etc/fstab | grep '^UUID' | sed -e 's/UUID=//' | tr -s ' ' | cut -d ' ' -f1,2)
+                while read -r e; do 
+                    read -r dev mnt<<< "$e"
+                    [[ ${uuids[$dev]} ]] && mounts[${uuids[$dev]}]="$mnt"
+                done < <(cat /mnt/$sdev/etc/fstab | grep '^PARTUUID' | sed -e 's/PARTUUID=//' | tr -s ' ' | cut -d ' ' -f1,2)
+                while read -r e; do 
+                    read -r dev mnt<<< "$e"
+                    [[ ${uuids[$dev]} ]] && mounts[${uuids[$dev]}]="$mnt"
+                done < <(cat /mnt/$sdev/etc/fstab | grep '^/' | sed -e 's/UUID=//' | tr -s ' ' | cut -d ' ' -f1,2)
+            fi
+
+            umount "/mnt/$sdev"
+        done
+    done
+
+    for x in srcs lsrcs; do
+        eval declare -n s="$x"
+
+        for ((i=0;i<${#s[@]};i++)); do
+            local sdev=${s[$i]}
+            local sid=${uuids[$sdev]}
+            local spid=${partuuids[$sdev]}
+            local fs=${filesystems[$sdev]}
+            local type=${types[$sdev]}
+            local mount=${mounts[$sid]}
 
             mkdir -p "/mnt/$sdev"
 
@@ -103,9 +137,9 @@ to_file() {
 
             if $INTERACTIVE; then 
                 local size=$(du --bytes --exclude=/proc/* --exclude=/sys/* -s /mnt/$tdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
-                cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}" 
+                cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_}" 
             else
-                cmd="$cmd -Scpf ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_} ."  
+                cmd="$cmd -Scpf ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} ."  
             fi
             echo "Creating backup for $sdev"
             eval "$cmd"
@@ -124,55 +158,68 @@ to_file() {
 }
 
 from_file() {
-    declare -A lfs dests src2dest psrc2pdest
     local src="$1" dest="$2"
-    local sfs=() lmbrs=() srcs=() 
+    declare -A lfs filesystems mounts partuuids uuids types
+    declare -A src_lfs dest_lfs dests src2dest psrc2pdest nsrc2ndest
+
     local spuuids=() suuids=() 
     local dpuuids=() duuids=()
+    local sfs=() lmbrs=() srcs=() ldests=() lsrcs=()
+    local vg_src_name vg_src_name_clone
+    local has_grub=false
 
-    _set_uuids() {
-        local src_dest=$1
-        local file=$2
-        [[ $src_dest == dest ]] && dpuuids=() duuids=()
-        [[ $src_dest == src ]] && spuuids=() suuids=()
-
+    _set_dest_uuids() {
+        dpuuids=() duuids=() dnames=()
         while read -r e; do
-            read -r dev fstype uuid puuid type parttype mnt<<< "$e"
-            eval local "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-            [[ $FSTYPE == swap ]] && continue
-            if [[ $src_dest == dest ]]; then
-                [[ -n $UUID ]] && dests[$UUID]=$KNAME
-                dpuuids+=($PARTUUID)
-                duuids+=($UUID)
-            fi
-            if [[ $src_dest == src ]]; then
-                [[ $TYPE == lvm ]] && lfs[$KNAME]=$FSTYPE
-                [[ $FSTYPE == LVM2_member ]] && lmbrs[${KNAME: -1}]="$UUID"
-                [[ $TYPE == part && $FSTYPE != LVM2_member ]] && sfs[${KNAME: -1}]=$FSTYPE
-                spuuids+=($PARTUUID)
-                suuids+=($UUID)
-            fi
-            if [[ $src_dest == mkfs ]]; then
-                if [[ $TYPE == part ]]; then
-                    [[ ${sfs[${KNAME: -1}]} ]] && mkfs -t "${sfs[${KNAME: -1}]}" "$KNAME"
-                    [[ ${lmbrs[${KNAME: -1}]} ]] && pvcreate "$KNAME" 2>/dev/null
-                fi
-            fi
-        done < <( if [[ -n $file ]]; then cat "$file"; 
-                  else lsblk -Ppo KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$dest";
-                  fi
-                )
+            read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
+            eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+            [[ $PARTTYPE == 0x5 || $TYPE == disk ]] && continue
+            [[ -n $UUID ]] && dests[$UUID]=$NAME
+            dpuuids+=($PARTUUID)
+            duuids+=($UUID)
+            dnames+=($NAME)
+        done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$dest" )
     }
 
-    _boot_setup() {
-        p=$(declare -p "$1")
-        eval "declare -A sd=${p#*=}"
+    _set_src_uuids() {
+        spuuids=() suuids=() snames=()
+        while read -r e; do
+            read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
+            eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+            [[ $PARTTYPE == 0x5 || $TYPE == disk ]] && continue
+            [[ $FSTYPE == LVM2_member ]] && lmbrs[${NAME: -1}]="$UUID"
+            [[ $TYPE == part && $FSTYPE != LVM2_member ]] && sfs[${NAME: -1}]=$FSTYPE
+            spuuids+=($PARTUUID)
+            suuids+=($UUID)
+            snames+=($NAME)
+        done < <( cat "$1" )
+    }
 
-        for k in "${!sd[@]}"; do
-            for d in "${dests[@]}"; do
-                sed -i "s/$k/${sd[$k]}/" "/mnt/$d/cmdline.txt" "/mnt/$d/etc/fstab" 2>/dev/null
-            done
-        done
+    _init_srcs() {
+        while read -r e; do
+            read -r kdev dev fstype uuid puuid type parttype mountpoint<<< "$e"
+            eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+            [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member ]] && continue #82 extended, 5 swap
+            [[ $TYPE == lvm ]] && lsrcs+=($NAME) && islvm=true
+            [[ $TYPE == part ]] && srcs+=($NAME)
+            filesystems[$NAME]="$FSTYPE"
+            partuuids[$NAME]="$PARTUUID"
+            uuids[$NAME]="$UUID"
+            types[$NAME]="$TYPE"
+        done < <( cat "$1" )
+    }
+
+    _mkfs() {
+        while read -r e; do
+            read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
+            eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+            if [[ ${sfs[${NAME: -1}]} == swap ]]; then
+                mkswap "$NAME"
+            else
+                [[ ${sfs[${NAME: -1}]} ]] && mkfs -t "${sfs[${NAME: -1}]}" "$NAME"
+                [[ ${lmbrs[${NAME: -1}]} ]] && pvcreate "$NAME" 2>/dev/null
+            fi
+        done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$dest" )
     }
 
     _lvm_setup() {
@@ -189,52 +236,114 @@ from_file() {
         done
         rm -rf lvm_
 
-        #... create filesystems on the just created LVs ...
-        for key in "${!lfs[@]}"; do 
-            mkfs -t "${lfs[$key]}" "$key";
+        for d in $1 $DEST; do
+            while read -r e; do
+                read -r kdev dev fstype type<<< "$e"
+                eval "$kdev" "$dev" "$fstype" "$type"
+                [[ $TYPE == 'lvm' && $d == "part_list" ]] && src_lfs[${NAME##*-}]=$FSTYPE 
+                if [[ $TYPE == 'lvm' && $d == "$DEST" ]]; then
+                    { [[ "${src_lfs[${NAME##*-}]}" == swap ]] && mkswap "$NAME"; } || mkfs -t "${src_lfs[${NAME##*-}]}" "$NAME";
+                fi
+            done < <( if [[ -n $1 ]]; then cat "$1"; 
+                    else lsblk -Ppo KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$d";
+                    fi
+                    )
         done
+    }
+
+    _prepare_disk() {
+        dd if=/dev/zero of="$dest" bs=512 count=100000
+        #For some reason sfdisk < 2.29 does not create PARTUUIDs when importing a partition table.
+        #But when we create a partition and afterward import a prviously dumped partition table, it works!
+        echo -e "n\np\n\n\n\nw\n" | fdisk "$dest"
+    }
+
+    _boot_setup() {
+        p=$(declare -p "$1")
+        eval "declare -A sd=${p#*=}"
+
+        for k in "${!sd[@]}"; do
+            for d in "${dests[@]}"; do
+                sed -i "s|$k|${sd[$k]}|" \
+                    "/mnt/$d/cmdline.txt" "/mnt/$d/etc/fstab" \
+                    "/mnt/$d/grub/grub.cfg" "/mnt/$d/boot/grub/grub.cfg" "/mnt/$d/etc/initramfs-tools/conf.d/resume" \
+                    2>/dev/null
+            done
+        done
+    }
+
+    _create_rclocal() {
+        mv $1/etc/rc.local $1/etc/rc.local.bak 2>/dev/null
+        printf '%s' '#! /usr/bin/env bash
+        while read -r e; do
+            read -r dev type<<< "$e"
+            eval "$dev" "$type"
+            if [[ $TYPE == disk ]] && dd bs=512 count=1 if=/dev/sda 2>/dev/null | strings | grep -q GRUB; then 
+                update-initramfs -u -k all
+                grub-install $NAME
+                update-grub
+            fi
+        done < <(lsblk -Ppo NAME,TYPE)
+        rm /etc/rc.local
+        mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
+        reboot' > $1/etc/rc.local
+        chmod +x $1/etc/rc.local
+    }
+
+    _grub_setup() {
+        local d=$1
+        local b=$2
+
+        mount $d /mnt/$d
+        [[ -n $b ]] && mount $b /mnt/$d/boot
+
+        for f in sys dev dev/pts proc; do 
+            mount --bind /$f /mnt/$d/$f;
+        done
+        grub-install --boot-directory=/mnt/$d/boot $dest
+        # chroot /mnt/$d update-grub
+        chroot /mnt/$d apt-get install -y binutils
+        _create_rclocal "/mnt/$d"
+        umount -R /mnt/$d
     }
 
     pushd "$src" >/dev/null
 
-    dd if=/dev/zero of="$dest" bs=512 count=100000 
-    sleep 3 #NOTE: This is necessary to have changes made by dd, mkfs and sfdisk settle. In addition, sleep hat to be 
-            #on its on line!
+    _prepare_disk
+    sleep 3 
 
     sfdisk --force "$dest" < part_table 
     sleep 3
 
-    #First collect what we have in our backup
-    _set_uuids "src" "part_list"
-
-    #Then create the filesystems and PVs
-    _set_uuids "mkfs" 
+    _init_srcs "part_list" 
+    _set_src_uuids "part_list"
+    _mkfs
     sleep 3
-
-    #Now collect what we have created
-    _set_uuids "dest"
+    _set_dest_uuids     #Now collect what we have created
 
     if [[ -d lvm ]]; then
-        _lvm_setup 
+        _lvm_setup "part_list" 
         sleep 3
-        #... and after that collect what we have created, again
-        _set_uuids "dest"
     fi
 
-    if [[ ${#suuids[@]} != "${#duuids[@]}" || ${#spuuids[@]} != "${#dpuuids[@]}" ]]; then
-        echo "Source and destination tables for UUIDs or PARTUUIDs did not macht. This should not happen!"
+    _set_dest_uuids     #Now collect what we have created
+
+    if [[ ${#suuids[@]} != "${#duuids[@]}" || ${#spuuids[@]} != "${#dpuuids[@]}" || ${#snames[@]} != "${#dnames[@]}" ]]; then
+        echo "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
         exit 1
     fi
 
     for ((i=0;i<${#suuids[@]};i++)); do src2dest[${suuids[$i]}]=${duuids[$i]}; done
     for ((i=0;i<${#spuuids[@]};i++)); do psrc2pdest[${spuuids[$i]}]=${dpuuids[$i]}; done
+    for ((i=0;i<${#snames[@]};i++)); do nsrc2ndest[${snames[$i]}]=${dnames[$i]}; done
 
     #Now, we are ready to restore files from previous backup images
     for file in [0-9]*; do
         if [[ -n $file ]]; then
-            read -r i uuid puuid fs type dev <<< "$e" <<< "${file//./ }";
+            read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }";
             local ddev=${dests[${src2dest[$uuid]}]}
-
+            
+            mounts[${mnt//_/\/}]="$uuid"
             if [[ -n $ddev ]]; then
                 mkdir -p "/mnt/$ddev"
                 mount "$ddev" -t "$fs" "/mnt/$ddev"
@@ -251,11 +360,19 @@ from_file() {
     done
 
     popd >/dev/null
+    sleep 3
+
+    [[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg ]] && has_grub=true
 
     _boot_setup "src2dest"
     _boot_setup "psrc2pdest"
+    _boot_setup "nsrc2ndest"
 
     for k in "${!dests[@]}"; do umount "/mnt/${dests[$k]}" 2>/dev/null; done
+
+    if $has_grub; then 
+        _grub_setup ${dests[${src2dest[${mounts[/]}]}]} ${dests[${src2dest[${mounts[/boot]}]}]}
+    fi
 } 
 
 clone() {
@@ -418,8 +535,7 @@ clone() {
     sleep 3
 
     sfdisk --force "$dest" < <(sfdisk -d "$src")
-    sleep 3 #IMPORTANT !!! So changes by sfdisk can settle. 
-            #Otherwise resultes from lsblk might still show old values!
+    sleep 3 
 
     _init_srcs         #First collect what we have in our backup
     _set_src_uuids
