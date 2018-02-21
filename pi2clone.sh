@@ -421,7 +421,7 @@ clone() {
             [[ $TYPE == lvm ]] && lsrcs+=($NAME) && islvm=true
             [[ $TYPE == part ]] && srcs+=($NAME)
             filesystems[$NAME]="$FSTYPE"
-            [[ -n $MOUNTPOINT ]] && mounts[$MOUNTPOINT]="$UUID"
+            # [[ -n $MOUNTPOINT ]] && mounts[$MOUNTPOINT]="$UUID"
             partuuids[$NAME]="$PARTUUID"
             uuids[$NAME]="$UUID"
             types[$NAME]="$TYPE"
@@ -563,9 +563,29 @@ clone() {
         local sid=${uuids[$sdev]}
         local ddev=${dests[${src2dest[$sid]}]}
 
+        [[ ${filesystems[$sdev]} == swap ]] && continue
+
         mkdir -p "/mnt/$ddev" "/mnt/$sdev"
 
-        [[ ${filesystems[$sdev]} == swap ]] && continue
+        mount "$sdev" "/mnt/$sdev"
+
+        if [[ -f /mnt/$sdev/etc/fstab ]]; then
+            while read -r e; do 
+                read -r dev mnt<<< "$e"
+                mounts[$mnt]="$dev"
+            done < <(cat /mnt/$sdev/etc/fstab | grep '^UUID' | sed -e 's/UUID=//' | tr -s ' ' | cut -d ' ' -f1,2)
+            while read -r e; do 
+                read -r dev mnt<<< "$e"
+                [[ ${uuids[$dev]} ]] && mounts[$mnt]="${uuids[$dev]}"
+            done < <(cat /mnt/$sdev/etc/fstab | grep '^PARTUUID' | sed -e 's/PARTUUID=//' | tr -s ' ' | cut -d ' ' -f1,2)
+            while read -r e; do 
+                read -r dev mnt<<< "$e"
+                [[ ${uuids[$dev]} ]] && mounts[$mnt]="${uuids[$dev]}"
+            done < <(cat /mnt/$sdev/etc/fstab | grep '^/' | sed -e 's/UUID=//' | tr -s ' ' | cut -d ' ' -f1,2)
+        fi
+
+        umount "/mnt/$sdev"
+
         if [[ $x == lsrcs && ${#lmbrs[@]} -gt 0 && "${vg_free%%.*}" -ge "500" ]]; then
             echo "USING snapshot"
             sdev='snap4clone'
