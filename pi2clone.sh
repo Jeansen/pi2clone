@@ -76,13 +76,12 @@ _set_src_uuids() {
             fi
             )
 }
-
 _init_srcs() {
     while read -r e; do
         read -r kdev dev fstype uuid puuid type parttype mountpoint<<< "$e"
         eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk ]] && continue
-        [[ $TYPE == lvm ]] && lsrcs+=($NAME) && islvm=true
+        [[ $TYPE == lvm ]] && lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -qv && lsrcs+=($NAME) && islvm=true
         [[ $TYPE == part ]] && srcs+=($NAME)
         filesystems[$NAME]="$FSTYPE"
         partuuids[$NAME]="$PARTUUID"
@@ -466,9 +465,6 @@ clone() {
             local sid=${uuids[$sdev]}
             local ddev=${dests[${src2dest[$sid]}]}
 
-            local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | cut -d ' ' -f1)
-            local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${vg_src_name}" | uniq | cut -d ' ' -f2)
-
             [[ -z ${filesystems[$sdev]} ]] && continue
 
             mkdir -p "/mnt/$ddev" "/mnt/$sdev"
@@ -476,6 +472,8 @@ clone() {
             local tdev=$sdev
 
             if [[ $x == lsrcs && ${#lmbrs[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
+                local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | cut -d ' ' -f1)
+                local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${vg_src_name}" | uniq | cut -d ' ' -f2)
                 echo "USING snapshot"
                 tdev='snap4clone'
                 mkdir -p "/mnt/$tdev"
