@@ -2,12 +2,12 @@
 
 # Copyright (C) 2017-2018 Marcel Lautenbach
 #
-# Thisrogram is free software: you can redistribute it and/or modify
+# This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License asublished by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# Thisrogram is distributed in the hope that it will be useful,
+# Thisp rogram is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
@@ -15,6 +15,95 @@
 # You should have received a copy of the GNU General Public License
 # along with thisrogram.  If not, see <http://www.gnu.org/licenses/>.
 
+declare -A MNTJRNL
+
+    # while read -r e; do
+    #     read -r dev size<<< "$e"
+    #     size=$(( size * 1024 ))
+    # done < <( df -x tmpfs -x devtmpfs --output=source,avai )
+
+
+_setHeader() {
+    tput csr 2 $((`tput lines` - 2))
+    tput cup 0 0
+    tput el
+    echo "$1"
+    tput el
+    echo -n "$2"
+    tput cup 3 0
+}
+
+_mount() {
+	local cmd="mount"
+
+	local OPTIND
+    local path
+	while getopts ':pt:' option; do
+		case "$option" in
+			t)  cmd+=" -t $OPTARG"
+				;;
+			p)  path="$OPTARG"
+				;;
+			:)  printf "missing argument for -%s\n" "$OPTARG" >&2
+				;;
+			\?) printf "illegal option: -%s\n" "$OPTARG" >&2
+				;;
+		esac
+	done
+	shift $((OPTIND - 1))
+
+    $cmd "$1" "${path:=/mnt/$1}" && MNTJRNL["$1"]="$path" || exit 1
+}
+
+_umount() {
+	local OPTIND
+	local cmd="umount"
+	while getopts ':R' option; do
+		case "$option" in
+			R)  cmd+=" -R"
+				;;
+			:)  printf "missing argument for -%s\n" "$OPTARG" >&2
+				;;
+			\?) printf "illegal option: -%s\n" "$OPTARG" >&2
+				;;
+		esac
+	done
+	shift $((OPTIND - 1))
+
+    if [[ $# -eq 0 ]]; then
+        for m in "${MNTJRNL[@]}"; do $cmd -l "$m"; done
+        return 0
+    fi
+
+    if [[ "${MNTJRNL[$1]}" ]]; then
+        $cmd "${MNTJRNL[$1]}" && unset MNTJRNL["$1"] || exit 1
+    fi
+}
+
+_expand_disk() {
+	local expand_factor=$(echo "$(blockdev --getsz $2) / $1" | bc)
+	local size new_size
+	local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
+
+	while read -r e; do
+		size= 
+		new_size=
+
+		if [[ $e =~ ^/ ]]; then
+			echo $e | grep -qE 'size=\s*([0-9])' && \
+			size=$(echo "$e" | sed -rE 's/.*size=\s*([0-9]*).*/\1/')
+		fi
+
+		if [[ -n "$size" ]]; then
+			new_size=$(echo "scale=2; $size * $expand_factor" | bc) && \
+			pdata=$(sed 's/$size/${new_size%%.*}/' < <(echo "$pdata"))
+		fi
+    done < <( if [[ -f "$pdata" ]]; then cat "$pdata"; else echo "$pdata"; fi)
+
+	pdata=$(sed '/type=5/ s/size=.*,//' < <(echo "$pdata"))
+	pdata=$(sed '$ s/size=.*,//g' < <(echo "$pdata"))
+	echo "$pdata"
+}
 
 SCRIPTNAME=$(basename "$0")
 PIDFILE="/var/run/$SCRIPTNAME"
@@ -53,7 +142,7 @@ _set_dest_uuids() {
         read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
         eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $PARTTYPE == 0x5 || $TYPE == disk ]] && continue
-        [[ -n $UUID ]] && dests[$UUID]=$NAME
+        [[ -n $UUID ]] && dests[$UUID]="$NAME"
         dpuuids+=($PARTUUID)
         duuids+=($UUID)
         dnames+=($NAME)
@@ -69,7 +158,7 @@ _set_src_uuids() {
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $FSTYPE == LVM2_member ]] && lmbrs[${NAME: -1}]="$UUID"
-        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && sfs[${NAME: -1}]=$FSTYPE
+        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && sfs[${NAME: -1}]="$FSTYPE"
         spuuids+=($PARTUUID)
         suuids+=($UUID)
         snames+=($NAME)
@@ -129,7 +218,7 @@ _boot_setup() {
 }
 
 _create_rclocal() {
-    mv $1/etc/rc.local $1/etc/rc.local.bak 2>/dev/null
+    mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
     printf '%s' '#! /usr/bin/env bash
     while read -r e; do
         read -r dev type<<< "$e"
@@ -142,25 +231,25 @@ _create_rclocal() {
     done < <(lsblk -Ppo NAME,TYPE)
     rm /etc/rc.local
     mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
-    reboot' > $1/etc/rc.local
-    chmod +x $1/etc/rc.local
+    reboot' > "$1/etc/rc.local"
+    chmod +x "$1/etc/rc.local"
 }
 
 _grub_setup() {
-    local d=$1
-    local b=$2
+    local d="$1"
+    local b="$2"
 
-    mount $d /mnt/$d
-    [[ -n $b ]] && mount $b /mnt/$d/boot
+    _mount "$d"
+    [[ -n $b ]] && mount "$b" "/mnt/$d/boot"
 
     for f in sys dev dev/pts proc; do 
-        mount --bind /$f /mnt/$d/$f;
+        mount --bind "/$f" "/mnt/$d/$f";
     done
-    grub-install --boot-directory=/mnt/$d/boot $DEST
+    grub-install --boot-directory="/mnt/$d/boot" "$DEST"
     # chroot /mnt/$d update-grub
-    chroot /mnt/$d apt-get install -y binutils
+    chroot "/mnt/$d" apt-get install -y binutils
     _create_rclocal "/mnt/$d"
-    umount -R /mnt/$d
+    _umount -R "$d"
 }
 
 _mounts() {
@@ -170,7 +259,7 @@ _mounts() {
 
         mkdir -p "/mnt/$sdev"
 
-        mount "$sdev" "/mnt/$sdev"
+        _mount "$sdev"
 
         f[0]='cat /mnt/$sdev/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | tr -s " " | cut -d " " -f1,2'
         f[1]='cat /mnt/$sdev/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | tr -s " " | cut -d " " -f1,2'
@@ -191,7 +280,7 @@ _mounts() {
             done
         fi
 
-        umount "/mnt/$sdev"
+        _umount "$sdev"
     done
 }
 
@@ -201,12 +290,14 @@ usage() {
 }
 
 cleanup() {
-    [[ -d $SRC/lvm_ ]] && rm -rf $SRC/lmv_
+    #TODO quiet
+    [[ -d $SRC/lvm_ ]] && rm -rf "$SRC/lmv_"
+    _umount
     exit 255
 }
 
 to_file() {
-    pushd "$DEST" >/dev/null
+    pushd "$DEST" >/dev/null || return 1
 
     sfdisk -d "$SRC" > part_table
     sleep 3 #IMPORTANT !!! So changes by sfdisk can settle. 
@@ -246,9 +337,9 @@ to_file() {
                 mkdir -p "/mnt/$tdev"
                 lvcreate -l100%FREE -s -n snap4clone "${vg_src_name}/$lv_src_name"
                 sleep 3
-                mount "/dev/${vg_src_name}/$tdev" "/mnt/$tdev"
+                _mount "/dev/${vg_src_name}/$tdev" -p "/mnt/$tdev"
             else
-                mount "$sdev" -t "${filesystems[$sdev]}" "/mnt/$sdev"
+                _mount "$sdev" -t "${filesystems[$sdev]}"
             fi
 
             cmd="tar --directory=/mnt/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
@@ -262,17 +353,17 @@ to_file() {
             echo "Creating backup for $sdev"
             eval "$cmd"
 
-            umount "/mnt/$tdev/" 2>/dev/null
+            _umount "/dev/${vg_src_name}/$tdev"
             lvremove -f "${vg_src_name}/$tdev" 2> /dev/null
 
         done
 
-        for ((i=0;i<${#s[@]};i++)); do umount "/mnt/${s[$i]}" 2>/dev/null; done
+        for ((i=0;i<${#s[@]};i++)); do _umount "${s[$i]}"; done
     done
 
     $islvm && rm /etc/lvm/backup/* && vgcfgbackup && cp -r /etc/lvm/backup lvm
 
-    popd >/dev/null
+    popd >/dev/null || return 1
 }
 
 from_file() {
@@ -315,12 +406,12 @@ from_file() {
     }
 
 
-    pushd "$SRC" >/dev/null
+    pushd "$SRC" >/dev/null || return 1
 
     _prepare_disk
     sleep 3 
 
-    sfdisk --force "$DEST" < part_table 
+	sfdisk --force "$DEST" < <(_expand_disk "$SRC" "$DEST" part_table)
     sleep 3
 
     _init_srcs "part_list" 
@@ -354,20 +445,20 @@ from_file() {
             mounts[${mnt//_/\/}]="$uuid"
             if [[ -n $ddev ]]; then
                 mkdir -p "/mnt/$ddev"
-                mount "$ddev" -t "$fs" "/mnt/$ddev"
+                _mount "$ddev" -t "$fs"
 
-                pushd "/mnt/$ddev" >/dev/null
+                pushd "/mnt/$ddev" >/dev/null || return 1
                 if [[ $fs == vfat ]]; then
                     fakeroot tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
                 else
                     tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
                 fi
-                popd >/dev/null
+                popd >/dev/null || return 1
             fi
         fi
     done
 
-    popd >/dev/null
+    popd >/dev/null || return 1
     sleep 3
 
     [[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && has_grub=true
@@ -392,6 +483,8 @@ clone() {
     _lvm_setup() {
         vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
         vg_src_name_clone="${vg_src_name}_clone"
+
+        local size s1 s2
         
         while read -r e; do
             read -r pv_name vg_name<<< "$e"
@@ -399,8 +492,29 @@ clone() {
         done < <( pvs --noheadings -o pv_name,vg_name )
 
         while read -r e; do
+            read -r vg_name vg_size vg_free<<< "$e"
+            [[ $vg_name == "$vg_src_name" ]] && s1=$((${vg_size%%.*}-${vg_free%%.*}))
+            [[ $vg_name == "$vg_src_name_clone" ]] && s2=${vg_size%%.*}
+        done < <( vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free)
+
+        denom_size=$((s1<s2?s2:s1))
+
+        # It might happen that a volume is so small, that it is only 0% in size. In this case we assume the
+        # lowest possible value: 1%. This also means we have to decrease the maximum possible size. E.g. two volumes
+        # with 0% and 100% would have to be 1% and 99% to make things work.
+        local max_size=100
+
+        while read -r e; do
             read -r lv_name vg_name lv_size vg_size vg_free<<< "$e"
-            lvcreate --yes -l$(echo "$lv_size * 100 / $vg_size" | bc)%VG -n "$lv_name" "$vg_src_name_clone"
+            size=$(echo "$lv_size * 100 / $denom_size" | bc)
+
+            if ((s1<s2)); then
+                lvcreate --yes -L${lv_size} -n "$lv_name" "$vg_src_name_clone"
+            else
+                (( size == 0 )) && size=1 && max_size-=$size
+                (( size == 100 )) && size-= $max_size
+                lvcreate --yes -l${size}%VG -n "$lv_name" "$vg_src_name_clone"
+            fi
         done < <( lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free )
 
         for d in $SRC $DEST; do
@@ -433,7 +547,7 @@ clone() {
     _prepare_disk
     sleep 3
 
-    sfdisk --force "$DEST" < <(sfdisk -d "$SRC")
+	sfdisk --force "$DEST" < <(_expand_disk "$SRC" "$DEST" "$(sfdisk -d $SRC)")
     sleep 3 
 
     _init_srcs         #First collect what we have in our backup
@@ -481,12 +595,12 @@ clone() {
                 mkdir -p "/mnt/$tdev"
                 lvcreate -l100%FREE -s -n snap4clone "${vg_src_name}/$lv_src_name"
                 sleep 3
-                mount "/dev/${vg_src_name}/$tdev" "/mnt/$tdev"
+                _mount "/dev/${vg_src_name}/$tdev" -p "/mnt/$tdev"
             else
-                mount "$sdev" "/mnt/$sdev"
+                _mount "$sdev"
             fi
 
-            mount "$ddev" "/mnt/$ddev"
+            _mount "$ddev"
 
             echo "CLONING $sdev"
             if $INTERACTIVE; then
@@ -503,8 +617,7 @@ clone() {
             fi
             
             sleep 3
-
-            umount "/mnt/$tdev/" 2>/dev/null
+            _umount "/dev/${vg_src_name}/$tdev"
             lvremove -f "${vg_src_name}/$tdev" 2> /dev/null
 
             [[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && has_grub=true
@@ -514,7 +627,8 @@ clone() {
             _boot_setup "psrc2pdest"
             if [[ ${#lmbrs[@]} -gt 0 ]]; then _boot_setup "nsrc2ndest"; fi
 
-            umount "/mnt/$sdev" "/mnt/$ddev" 2>/dev/null
+            _umount "$sdev" 
+            _umount "$ddev"
         done
     done
 
@@ -536,13 +650,18 @@ main() {
 
 ### ENTRYPOINT
 
-trap cleanup INT
+#Force root
+if [ "$(id -u)" != "0" ]; then
+  exec sudo "$0" "$@" 
+fi
 
-for c in rsync tar flock bc; do
+trap cleanup INT TERM
+
+for c in rsync tar flock bc blockdev fdisk sfdisk; do
     hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing."; abort='exit 1'; }
 done
 
-eval $abort
+eval "$abort"
 
 
 #Lock the script, only one instance is allowed to run at the same time!
@@ -594,6 +713,7 @@ shift $((OPTIND - 1))
 
 [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] && \
     echo "Invalid device or directory: $DEST" && exit 1
+
 
 main
 
