@@ -139,8 +139,8 @@ printarr() { declare -n __p="$1"; for k in "${!__p[@]}"; do printf "%s=%s\n" "$k
 _set_dest_uuids() {
     dpuuids=() duuids=() dnames=()
     while read -r e; do
-        read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
-        eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
+        eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $PARTTYPE == 0x5 || $TYPE == disk ]] && continue
         [[ -n $UUID ]] && dests[$UUID]="$NAME"
         dpuuids+=($PARTUUID)
@@ -152,8 +152,8 @@ _set_dest_uuids() {
 _set_src_uuids() {
     spuuids=() suuids=() snames=()
     while read -r e; do
-        read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
-        eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
+        eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $PARTTYPE == 0x5 || $TYPE == disk ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
@@ -170,8 +170,8 @@ _set_src_uuids() {
 
 _init_srcs() {
     while read -r e; do
-        read -r kdev dev fstype uuid puuid type parttype mountpoint<<< "$e"
-        eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        read -r kdev name fstype uuid puuid type parttype mountpoint<<< "$e"
+        eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
@@ -192,8 +192,8 @@ _init_srcs() {
 
 _disk_setup() {
     while read -r e; do
-        read -r kdev dev fstype uuid puuid type parttype mnt<<< "$e"
-        eval "$kdev" "$dev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        read -r kname name fstype uuid puuid type parttype mnt<<< "$e"
+        eval "$kname" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         if [[ ${sfs[${NAME: -1}]} == swap ]]; then
             mkswap "$NAME"
         else
@@ -268,11 +268,11 @@ _mounts() {
         if [[ -f /mnt/$sdev/etc/fstab ]]; then
             for ((i=0;i<${#f[@]};i++)); do
                 while read -r e; do 
-                    read -r dev mnt<<< "$e"
-                    if [[ $i -eq 0 && -n ${names[$dev]} ]]; then
-                        mounts[$mnt]="$dev" && mounts[$dev]="$mnt"
-                    elif [[ $i -eq 1 && -n ${names[$dev]} ]]; then
-                        mounts[$mnt]="${puuids2uuids[$dev]}" && mounts[${puuids2uuids[$dev]}]="$mnt"
+                    read -r name mnt<<< "$e"
+                    if [[ $i -eq 0 && -n ${names[$name]} ]]; then
+                        mounts[$mnt]="$name" && mounts[$name]="$mnt"
+                    elif [[ $i -eq 1 && -n ${names[$name]} ]]; then
+                        mounts[$mnt]="${puuids2uuids[$name]}" && mounts[${puuids2uuids[$name]}]="$mnt"
                     else
                         mounts[$mnt]="${uuids[$sdev]}" && mounts[${uuids[$sdev]}]="$mnt"
                     fi
@@ -385,8 +385,8 @@ from_file() {
 
         for d in $1 $DEST; do
             while read -r e; do
-                read -r kdev dev fstype type<<< "$e"
-                eval "$kdev" "$dev" "$fstype" "$type"
+                read -r kname name fstype type<<< "$e"
+                eval "$kname" "$name" "$fstype" "$type"
                 [[ $TYPE == 'lvm' && $d == "part_list" ]] && src_lfs[${NAME##*-}]=$FSTYPE 
                 if [[ $TYPE == 'lvm' && $d == "$DEST" ]]; then
                     { [[ "${src_lfs[${NAME##*-}]}" == swap ]] && mkswap "$NAME"; } || mkfs -t "${src_lfs[${NAME##*-}]}" "$NAME";
@@ -519,8 +519,8 @@ clone() {
 
         for d in $SRC $DEST; do
             while read -r e; do
-                read -r kdev dev fstype type<<< "$e"
-                eval "$kdev" "$dev" "$fstype" "$type"
+                read -r kname name fstype type<<< "$e"
+                eval "$kname" "$name" "$fstype" "$type"
                 [[ $TYPE == 'lvm' && $d == "$SRC" ]] && src_lfs[${NAME##*-}]=$FSTYPE 
                 if [[ $TYPE == 'lvm' && $d == "$DEST" ]]; then
                     { [[ "${src_lfs[${NAME##*-}]}" == swap ]] && mkswap "$NAME"; } || mkfs -t "${src_lfs[${NAME##*-}]}" "$NAME";
