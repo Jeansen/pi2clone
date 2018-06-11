@@ -676,7 +676,7 @@ Clone() {
 		_clone
     fi
 
-    if $has_grub; then 
+    if $HAS_GRUB; then
         message -c "Installing Grub"
         {
             if [[ -n  ${MOUNTS[/boot]} ]]; then
