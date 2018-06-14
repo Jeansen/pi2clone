@@ -15,7 +15,6 @@
 # You should have received a copy of the GNU General Public License
 # along with thisrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-declare -A MNTJRNL
 
     # while read -r e; do
     #     read -r dev size<<< "$e"
@@ -28,6 +27,7 @@ PIDFILE="/var/run/$SCRIPTNAME"
 INTERACTIVE=false
 export LVM_SUPPRESS_FD_WARNINGS=true
 
+declare -A MNTJRNL
 declare -A FILESYSTEMS MOUNTS NAMES PARTUUIDS UUIDS TYPES PUUIDS2UUIDS
 declare -A SRC_LFS DESTS SRC2DEST PSRC2PDEST NSRC2NDEST
 
@@ -39,6 +39,7 @@ declare VG_SRC_NAME VG_SRC_NAME_CLONE
 
 declare HAS_GRUB=false
 declare IS_LVM=false
+declare CLONE_DATE=$(date '+%d%m%y')
 
 USAGE="
 Usage: $(basename $0) [-h] -s src -d dest
@@ -462,10 +463,6 @@ Clone() {
 	shift $((OPTIND - 1))
 
     _lvm_setup() {
-
-        VG_SRC_NAME=$(echo $(if [[ $_RMODE ]]; then cat pvs_list; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | xargs | cut -d ' ' -f2)
-        VG_SRC_NAME_CLONE="${VG_SRC_NAME}_clone2"
-
         local size s1 s2
         
         while read -r e; do
@@ -489,7 +486,8 @@ Clone() {
         local max_size=100
 
         while read -r e; do
-            read -r lv_name vg_name lv_size vg_size vg_free<<< "$e"
+            read -r lv_name vg_name lv_size vg_size vg_free lv_role<<< "$e"
+            [[ $lv_role =~ snapshot ]] && continue
             size=$(echo "$lv_size * 100 / $denom_size" | bc)
 
             if ((s1<s2)); then
@@ -500,7 +498,7 @@ Clone() {
                 lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
             fi
         done < <( if [[ $_RMODE ]]; then cat lvs_list;
-                  else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free;
+                  else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role;
                   fi )
 
 
@@ -518,12 +516,8 @@ Clone() {
 
     _prepare_disk() {
         if hash lvm 2>/dev/null; then
-            local vg_src_name=$(echo $(if [[ $_RMODE ]]; then cat pvs_list; else pvs --noheadings -o pv_name,vg_name; fi) | grep "$SRC" | xargs | cut -d ' ' -f2)
-            # local vg_src_name_clone="${vg_src_name}_clone"
-            local vg_src_name_clone="${vg_src_name}_clone2"
-
-            vgchange -an "$vg_src_name_clone"
-            vgremove -f "$vg_src_name_clone"
+            VGCHANGE -AN "$VG_SRC_NAME_CLONE"
+            VGREMOVE -F "$VG_SRC_NAME_CLONE"
         fi
 
         dd if=/dev/zero of="$DEST" bs=512 count=100000
@@ -538,7 +532,6 @@ Clone() {
 
     _finish() {
 		[[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
-		# sed -i "s/$vg_src_name/$vg_src_name_clone/" "/mnt/$ddev/cmdline.txt" "/mnt/$ddev/etc/fstab" 2>/dev/null
 
 		boot_setup "SRC2DEST"
 		boot_setup "PSRC2PDEST"
@@ -727,13 +720,15 @@ v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 
 [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
-while getopts ':hiqs:d:' option; do
+while getopts ':hiqs:d:n:' option; do
     case "$option" in
         h)  usage
              ;;
         s)  SRC=$OPTARG
              ;;
         d)  DEST=$OPTARG
+             ;;
+        n)  VG_SRC_NAME_CLONE=$OPTARG
              ;;
         q)  exec &> /dev/null
              ;;
@@ -765,6 +760,9 @@ shift $((OPTIND - 1))
 [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] && \
     echo "Invalid device or directory: $DEST" && exit 1
 
+
+VG_SRC_NAME=$(echo $(if [[ $_RMODE ]]; then cat $SRC/pvs_list; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | xargs | cut -d ' ' -f2)
+${VG_SRC_NAME_CLONE:=${VG_SRC_NAME}_${CLONE_DATE}}
 
 Main
 
