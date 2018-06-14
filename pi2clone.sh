@@ -21,6 +21,13 @@
     #     size=$(( size * 1024 ))
     # done < <( df -x tmpfs -x devtmpfs --output=source,avai )
 
+F_PART_LIST='part_list'
+F_VGS_LIST='vgs_list'
+F_LVS_LIST='lvs_list'
+F_PVS_LIST='pvs_list'
+F_SECTORS_SRC='sectors_src'
+F_PART_TABLE='part_table'
+F_CHESUM='check.md5'
 
 SCRIPTNAME=$(basename "$0")
 PIDFILE="/var/run/$SCRIPTNAME"
@@ -156,7 +163,7 @@ setHeader() {
 }
 
 expand_disk() {
-    local ss=$(if [[ -d $1 ]]; then cat sectors_src; else blockdev --getsz $1; fi)
+    local ss=$(if [[ -d $1 ]]; then cat $F_SECTORS_SRC; else blockdev --getsz $1; fi)
     local ds=$(blockdev --getsz $2)
 
 	local expand_factor=$(echo "$ds / $ss" | bc)
@@ -365,16 +372,16 @@ To_file() {
 		local snp=$(sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep 'snap' | sed -e 's/^\s*//' | cut -d ' ' -f 1) 
 
         {
-            pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > pvs_list
-            vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > vgs_list
-			      lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' > lvs_list
-            blockdev --getsz $SRC > sectors_src
-            sfdisk -d "$SRC" > part_table
+            pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_PVS_LIST
+            vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_VGS_LIST
+			      lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' > $F_LVS_LIST
+            blockdev --getsz $SRC > $F_SECTORS_SRC
+            sfdisk -d "$SRC" > $F_PART_TABLE
         } 2>/dev/null
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle. 
                 #Otherwise resultes from lsblk might still show old values!
-        lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v $snp > part_list
+        lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v $snp > $F_PART_LIST
     }
 
     message -c "Creating backup of disk layout." 
@@ -441,7 +448,7 @@ To_file() {
 
     popd >/dev/null || return 1
     message -c "Creating checksums"
-    create_m5dsums "$DEST" "check.md5"
+    create_m5dsums "$DEST" "$F_CHESUM"
     message -y
 }
 
@@ -474,7 +481,7 @@ Clone() {
             read -r vg_name vg_size vg_free<<< "$e"
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*}-${vg_free%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_size%%.*}
-        done < <( if [[ $_RMODE ]]; then cat vgs_list;
+        done < <( if [[ $_RMODE ]]; then cat $F_VGS_LIST;
                   else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free; 
                   fi )
 
@@ -497,7 +504,7 @@ Clone() {
                 (( size == 100 )) && size=$((size - max_size))
                 lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
             fi
-        done < <( if [[ $_RMODE ]]; then cat lvs_list;
+        done < <( if [[ $_RMODE ]]; then cat $F_LVS_LIST;
                   else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role;
                   fi )
 
@@ -510,7 +517,7 @@ Clone() {
                 if [[ $TYPE == 'lvm' && $d == "$DEST" ]]; then
                     { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME";
                 fi
-            done < <( if [[ -d $d ]]; then cat part_list; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$d"; fi )
+            done < <( if [[ -d $d ]]; then cat $F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$d"; fi )
         done
     }
 
@@ -526,7 +533,7 @@ Clone() {
         # echo -e "n\np\n\n\n\nw\n" | fdisk "$DEST"
         
         sleep 3
-        sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE ]]; then cat part_table; else sfdisk -d $SRC; fi)")
+        sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE ]]; then cat $F_PART_TABLE; else sfdisk -d $SRC; fi)")
         sleep 3
     }
 
@@ -630,14 +637,13 @@ Clone() {
         message -c "Validating checksums"
         {
           pushd "$SRC" >/dev/null || return 1
-          validate_m5dsums "check.md5" || return 1
+          validate_m5dsums "$F_CHESUM" || return 1
         } &>/dev/null
         message -y
     fi
 
     message -c "Cloning disk layout"
     { 
-        local f=$([[ $_RMODE ]] && echo part_list)
         _prepare_disk
         init_srcs $f        #First collect what we have in our backup
         set_src_uuids $f
@@ -761,7 +767,7 @@ shift $((OPTIND - 1))
     echo "Invalid device or directory: $DEST" && exit 1
 
 
-VG_SRC_NAME=$(echo $(if [[ $_RMODE ]]; then cat $SRC/pvs_list; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | xargs | cut -d ' ' -f2)
+VG_SRC_NAME=$(echo $(if [[ $_RMODE ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | xargs | cut -d ' ' -f2)
 ${VG_SRC_NAME_CLONE:=${VG_SRC_NAME}_${CLONE_DATE}}
 
 Main
