@@ -201,7 +201,7 @@ set_dest_uuids() {
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
         dNAMES+=($NAME)
-    done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" )
+    done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" | sort -k 2,2 )
 }
 
 set_src_uuids() {
@@ -217,8 +217,8 @@ set_src_uuids() {
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
         sNAMES+=($NAME)
-    done < <( if [[ -n $1 ]]; then cat "$1"; 
-            else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC";
+    done < <( if [[ -n $1 ]]; then cat "$1" | sort -k 2,2; 
+            else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -k 2,2;
             fi
             )
 }
@@ -361,18 +361,19 @@ To_file() {
 
     _save_disk_layout() {
 		local vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
+		local snp=$(sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep 'snap' | sed -e 's/^\s*//' | cut -d ' ' -f 1) 
 
         {
             pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > pvs_list
             vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > vgs_list
-            lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active | grep 'active$' | sed -e 's/active$//;s/^\s*//' > lvs_list
+			      lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' > lvs_list
             blockdev --getsz $SRC > sectors_src
             sfdisk -d "$SRC" > part_table
         } 2>/dev/null
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle. 
                 #Otherwise resultes from lsblk might still show old values!
-        lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq > part_list
+        lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v $snp > part_list
     }
 
     message -c "Creating backup of disk layout." 
@@ -555,11 +556,13 @@ Clone() {
 				if [[ -n $file ]]; then
 					read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }";
 					local ddev=${DESTS[${SRC2DEST[$uuid]}]}
+					echo $ddev
 					
 					MOUNTS[${mnt//_/\/}]="$uuid"
 					if [[ -n $ddev ]]; then
 						mount_ "$ddev" -t "$fs"
 						pushd "/mnt/$ddev" >/dev/null || return 1
+						pwd
 						if [[ $fs == vfat ]]; then
 							fakeroot tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
 						else
@@ -592,7 +595,6 @@ Clone() {
                 if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
                     local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | cut -d ' ' -f1)
                     local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | cut -d ' ' -f2)
-                    echo "USING snapshot"
                     tdev='snap4clone'
                     mkdir -p "/mnt/$tdev"
                     lvremove -f "${VG_SRC_NAME}/$tdev" 2> /dev/null
