@@ -200,7 +200,7 @@ validate_m5dsums() {
 }
 
 set_dest_uuids() {
-    DPUUIDS=() DUUIDS=() dNAMES=()
+    DPUUIDS=() DUUIDS=() DNAMES=()
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
@@ -208,12 +208,12 @@ set_dest_uuids() {
         [[ -n $UUID ]] && DESTS[$UUID]="$NAME"
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
-        dNAMES+=($NAME)
+        DNAMES+=($NAME)
     done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" | sort -k 2,2 )
 }
 
 set_src_uuids() {
-    SPUUIDS=() SUUIDS=() sNAMES=()
+    SPUUIDS=() SUUIDS=() SNAMES=()
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
@@ -224,7 +224,7 @@ set_src_uuids() {
         [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[${NAME: -1}]="$FSTYPE"
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
-        sNAMES+=($NAME)
+        SNAMES+=($NAME)
     done < <( if [[ -n $1 ]]; then cat "$1" | sort -k 2,2; 
             else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -k 2,2;
             fi
@@ -656,14 +656,14 @@ Clone() {
 
 		set_dest_uuids     #Now collect what we have created
 
-		if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#sNAMES[@]} != "${#dNAMES[@]}" ]]; then
+		if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#SNAMES[@]} != "${#DNAMES[@]}" ]]; then
 			echo "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
 			exit 1
 		fi
 
 		for ((i=0;i<${#SUUIDS[@]};i++)); do SRC2DEST[${SUUIDS[$i]}]=${DUUIDS[$i]}; done
 		for ((i=0;i<${#SPUUIDS[@]};i++)); do PSRC2PDEST[${SPUUIDS[$i]}]=${DPUUIDS[$i]}; done
-		for ((i=0;i<${#sNAMES[@]};i++)); do NSRC2NDEST[${sNAMES[$i]}]=${dNAMES[$i]}; done
+		for ((i=0;i<${#SNAMES[@]};i++)); do NSRC2NDEST[${SNAMES[$i]}]=${DNAMES[$i]}; done
 
 		[[ ! $_RMODE ]] && mounts
     } &>/dev/null
