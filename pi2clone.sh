@@ -1,4 +1,4 @@
-#! /usr/bin/env bash
+  #! /usr/bin/env bash
 
 # Copyright (C) 2017-2018 Marcel Lautenbach
 #
@@ -28,6 +28,8 @@ F_PVS_LIST='pvs_list'
 F_SECTORS_SRC='sectors_src'
 F_PART_TABLE='part_table'
 F_CHESUM='check.md5'
+F_LOG='/tmp/pi2clone.log'
+
 
 SCRIPTNAME=$(basename "$0")
 PIDFILE="/var/run/$SCRIPTNAME"
@@ -372,12 +374,12 @@ To_file() {
 		local snp=$(sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep 'snap' | sed -e 's/^\s*//' | cut -d ' ' -f 1) 
 
         {
-            pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_PVS_LIST
+            pvs --noheadings -o pv_name,vg_name,lv_active | grep "$SRC" | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_PVS_LIST
             vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_VGS_LIST
 			      lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' > $F_LVS_LIST
             blockdev --getsz $SRC > $F_SECTORS_SRC
             sfdisk -d "$SRC" > $F_PART_TABLE
-        } 2>/dev/null
+        } >/dev/null 2>>$F_LOG
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle. 
                 #Otherwise resultes from lsblk might still show old values!
@@ -390,7 +392,7 @@ To_file() {
         init_srcs
         set_src_uuids
         mounts
-    } &>/dev/null
+    } >/dev/null 2>>$F_LOG
     message -y
 
     VG_SRC_NAME=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
@@ -413,15 +415,17 @@ To_file() {
 
             local tdev=$sdev
 
-            if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
-                local tdev='snap4clone'
-                lvremove -f "${VG_SRC_NAME}/$tdev" 2> /dev/null
-                lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name" &> /dev/null
-                sleep 3
-                mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "/mnt/$tdev"
-            else
-                mount_ "$sdev" -t "${FILESYSTEMS[$sdev]}"
-            fi
+            {
+                if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
+                    local tdev='snap4clone'
+                    lvremove -f "${VG_SRC_NAME}/$tdev"
+                    lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name"
+                    sleep 3
+                    mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "/mnt/$tdev"
+                else
+                    mount_ "$sdev" -t "${FILESYSTEMS[$sdev]}"
+                fi
+            } >/dev/null 2>>$F_LOG
 
             cmd="tar --warning=none --directory=/mnt/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
 
@@ -437,7 +441,7 @@ To_file() {
                 eval "$cmd"
                 umount_ "/dev/${VG_SRC_NAME}/$tdev"
                 lvremove -f "${VG_SRC_NAME}/$tdev"
-            } &> /dev/null
+            } >/dev/null 2>>$F_LOG
             message -y
         done
 
@@ -474,7 +478,7 @@ Clone() {
         
         while read -r e; do
             read -r pv_name vg_name<<< "$e"
-            [[ -z $vg_name ]] && vgcreate "$VG_SRC_NAME_CLONE" "$pv_name"
+            [[ -z $vg_name && $pv_name =~ $DEST ]] && vgcreate "$VG_SRC_NAME_CLONE" "$pv_name"
         done < <( pvs --noheadings -o pv_name,vg_name )
 
         while read -r e; do
@@ -505,7 +509,7 @@ Clone() {
                 lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
             fi
         done < <( if [[ $_RMODE ]]; then cat $F_LVS_LIST;
-                  else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role;
+                  else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free;
                   fi )
 
 
@@ -523,8 +527,8 @@ Clone() {
 
     _prepare_disk() {
         if hash lvm 2>/dev/null; then
-            VGCHANGE -AN "$VG_SRC_NAME_CLONE"
-            VGREMOVE -F "$VG_SRC_NAME_CLONE"
+            vgchange -q -an "$VG_SRC_NAME_CLONE"
+            vgremove -q -f "$VG_SRC_NAME_CLONE"
         fi
 
         dd if=/dev/zero of="$DEST" bs=512 count=100000
@@ -549,32 +553,32 @@ Clone() {
     }
 
 	_from_file() {
-        #Now, we are ready to restore files from previous backup images
-        for file in [0-9]*; do
-			message -c "Restoring $file"
-			{
-				if [[ -n $file ]]; then
-					read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }";
-					local ddev=${DESTS[${SRC2DEST[$uuid]}]}
-					echo $ddev
-					
-					MOUNTS[${mnt//_/\/}]="$uuid"
-					if [[ -n $ddev ]]; then
-						mount_ "$ddev" -t "$fs"
-						pushd "/mnt/$ddev" >/dev/null || return 1
-						pwd
-						if [[ $fs == vfat ]]; then
-							fakeroot tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
-						else
-							tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
-						fi
-						popd >/dev/null || return 1
-						_finish
-					fi
-				fi
-			}
-			message -y
-        done
+      #Now, we are ready to restore files from previous backup images
+      for file in [0-9]*; do
+        message -c "Restoring $file"
+        {
+          if [[ -n $file ]]; then
+            read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }";
+            local ddev=${DESTS[${SRC2DEST[$uuid]}]}
+
+            MOUNTS[${mnt//_/\/}]="$uuid"
+            if [[ -n $ddev ]]; then
+              mount_ "$ddev" -t "$fs"
+              pushd "/mnt/$ddev" >/dev/null || return 1
+              pwd
+              if [[ $fs == vfat ]]; then
+                fakeroot tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
+              else
+                tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
+              fi
+              popd >/dev/null || return 1
+              _finish
+            fi
+          fi
+        } >/dev/null 2>>$F_LOG
+        message -y
+      done
+      return 0
 	}
 
 	_clone() {
@@ -592,18 +596,20 @@ Clone() {
 
                 local tdev=$sdev
 
-                if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
-                    local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | cut -d ' ' -f1)
-                    local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | cut -d ' ' -f2)
-                    tdev='snap4clone'
-                    mkdir -p "/mnt/$tdev"
-                    lvremove -f "${VG_SRC_NAME}/$tdev" 2> /dev/null
-                    lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name"
-                    sleep 3
-                    mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "/mnt/$tdev"
-                else
-                    mount_ "$sdev"
-                fi
+                {
+                    if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
+                        local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | cut -d ' ' -f1)
+                        local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | cut -d ' ' -f2)
+                        tdev='snap4clone'
+                        mkdir -p "/mnt/$tdev"
+                        lvremove -q -f "${VG_SRC_NAME}/$tdev"
+                        lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name" && \
+                        sleep 3 && \
+                        mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "/mnt/$tdev" || return 1
+                    else
+                        mount_ "$sdev"
+                    fi
+                } >/dev/null 2>>$F_LOG
 
                 mount_ "$ddev"
 
@@ -617,37 +623,39 @@ Clone() {
 							| tr -d ' ' \
 							| sed -e 's/,//' \
 						)
-						rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv -lep -s "$size" >/dev/null
+						rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv -lep -s "$size"
 					else
 						rsync -aSXxH "/mnt/$tdev/" "/mnt/$ddev"
 					fi
-					
+
 					sleep 3
 					umount_ "/dev/${VG_SRC_NAME}/$tdev"
-					lvremove -f "${VG_SRC_NAME}/$tdev" 2> /dev/null
+					lvremove -q -f "${VG_SRC_NAME}/$tdev"
 
 					_finish
-                } &>/dev/null
+                } >/dev/null 2>>$F_LOG
                 message -y
             done
         done
+        return 0
 	}
 
     if [[ $_RMODE ]]; then
         message -c "Validating checksums"
         {
-          pushd "$SRC" >/dev/null || return 1
-          validate_m5dsums "$F_CHESUM" || return 1
-        } &>/dev/null
+          pushd "$SRC" || return 1
+          # validate_m5dsums "$F_CHESUM" || { message y && return 1; }
+        } >/dev/null 2>>$F_LOG
         message -y
     fi
 
     message -c "Cloning disk layout"
-    { 
-        _prepare_disk
-        init_srcs $f        #First collect what we have in our backup
-        set_src_uuids $f
-        disk_setup                #Then create the filesystems and PVs
+    {
+        local f=$([[ $_RMODE ]] && echo $F_PART_LIST)
+        _prepare_disk #First collect what we have in our backup
+        init_srcs $f 
+        set_src_uuids $f #Then create the filesystems and PVs
+        disk_setup
 
 		if [[ ${#LMBRS[@]} -gt 0 ]]; then
 			_lvm_setup $f
@@ -657,8 +665,8 @@ Clone() {
 		set_dest_uuids     #Now collect what we have created
 
 		if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#SNAMES[@]} != "${#DNAMES[@]}" ]]; then
-			echo "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
-			exit 1
+			echo >&2 "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
+			return 1
 		fi
 
 		for ((i=0;i<${#SUUIDS[@]};i++)); do SRC2DEST[${SUUIDS[$i]}]=${DUUIDS[$i]}; done
@@ -666,26 +674,25 @@ Clone() {
 		for ((i=0;i<${#SNAMES[@]};i++)); do NSRC2NDEST[${SNAMES[$i]}]=${DNAMES[$i]}; done
 
 		[[ ! $_RMODE ]] && mounts
-    } &>/dev/null
+    } >/dev/null 2>>$F_LOG
     message -y
 
     if [[ $_RMODE ]]; then
-		_from_file
-        popd >/dev/null || return 1
-        sleep 3
+		  _from_file || return 1
+      popd >/dev/null || return 1
     else
-		_clone
+	  	_clone || return 1
     fi
 
     if $HAS_GRUB; then
         message -c "Installing Grub"
         {
             if [[ -n  ${MOUNTS[/boot]} ]]; then
-                grub_setup ${DESTS[${SRC2DEST[${MOUNTS[/]}]}]} ${DESTS[${SRC2DEST[${MOUNTS[/boot]}]}]}
+                grub_setup ${DESTS[${SRC2DEST[${MOUNTS[/]}]}]} ${DESTS[${SRC2DEST[${MOUNTS[/boot]}]}]} || return 1
             else
-                grub_setup ${DESTS[${SRC2DEST[${MOUNTS[/]}]}]}
+                grub_setup ${DESTS[${SRC2DEST[${MOUNTS[/]}]}]} || return 1
             fi
-        } &>/dev/null
+        } >/dev/null 2>>$F_LOG
         message -y
     fi
 }
@@ -699,6 +706,9 @@ Main() {
 
 ### ENTRYPOINT
 
+tput sc
+echo > $F_LOG
+
 exec 2> /dev/null
 #Force root
 if [ "$(id -u)" != "0" ]; then
@@ -707,10 +717,10 @@ fi
 
 trap Cleanup INT TERM
 
+#Inform about ALL missing but necessary tools.
 for c in rsync tar flock bc blockdev fdisk sfdisk; do
     hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing."; abort='exit 1'; }
 done
-
 eval "$abort"
 
 
@@ -766,8 +776,17 @@ shift $((OPTIND - 1))
 [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] && \
     echo "Invalid device or directory: $DEST" && exit 1
 
+if [[ -d $SRC ]]; then
+  [[ -f $SRC/$F_PART_LIST &&
+     -f $SRC/$F_VGS_LIST &&
+     -f $SRC/$F_LVS_LIST &&
+     -f $SRC/$F_PVS_LIST &&
+     -f $SRC/$F_SECTORS_SRC &&
+     -f $SRC/$F_PART_TABLE ]] || { message -n "Cannot restore dump, files missing" && exit 1; }
+fi
 
-VG_SRC_NAME=$(echo $(if [[ $_RMODE ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | xargs | cut -d ' ' -f2)
+
+VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sed -e 's/^\s*//' | cut -d ' ' -f2 | uniq)
 ${VG_SRC_NAME_CLONE:=${VG_SRC_NAME}_${CLONE_DATE}}
 
 Main
