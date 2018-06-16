@@ -25,7 +25,8 @@ F_PART_LIST='part_list'
 F_VGS_LIST='vgs_list'
 F_LVS_LIST='lvs_list'
 F_PVS_LIST='pvs_list'
-F_SECTORS_SRC='sectors_src'
+F_SECTORS_SRC='sectors'
+F_SECTORS_USED='sectors_used'
 F_PART_TABLE='part_table'
 F_CHESUM='check.md5'
 F_LOG='/tmp/pi2clone.log'
@@ -50,6 +51,8 @@ declare HAS_GRUB=false
 declare IS_LVM=false
 declare CLONE_DATE=$(date '+%d%m%y')
 
+declare COUNT=0
+
 USAGE="
 Usage: $(basename $0) [-h] -s src -d dest
 
@@ -69,45 +72,45 @@ printarr() { declare -n __p="$1"; for k in "${!__p[@]}"; do printf "%s=%s\n" "$k
 ### PRIVATE - only used by PUBLIC functions
 
 mount_() {
-	local cmd="mount"
+    local cmd="mount"
 
-	local OPTIND
+    local OPTIND
     local src="$1"
     local path="/mnt/$src"
     shift
 
-	while getopts ':p:t:' option; do
-		case "$option" in
-			t)  cmd+=" -t $OPTARG"
-				;;
-			p)  path="$OPTARG"
-				;;
-			:)  printf "missing argument for -%s\n" "$OPTARG" >&2
-				;;
-			?) printf "illegal option: -%s\n" "$OPTARG" >&2
-				;;
-		esac
-	done
-	shift $((OPTIND - 1))
+    while getopts ':p:t:' option; do
+        case "$option" in
+        t)  cmd+=" -t $OPTARG"
+            ;;
+        p)  path="$OPTARG"
+            ;;
+        :)  printf "missing argument for -%s\n" "$OPTARG" >&2
+            ;;
+        ?) printf "illegal option: -%s\n" "$OPTARG" >&2
+            ;;
+        esac
+    done
+    shift $((OPTIND - 1))
 
-  mkdir -p "$path"
-  $cmd "$src" "$path" && MNTJRNL["$src"]="$path" || return 1
+    mkdir -p "$path"
+    $cmd "$src" "$path" && MNTJRNL["$src"]="$path" || return 1
 }
 
 umount_() {
-	local OPTIND
-	local cmd="umount"
-	while getopts ':R' option; do
-		case "$option" in
-			R)  cmd+=" -R"
-				;;
-			:)  printf "missing argument for -%s\n" "$OPTARG" >&2
-				;;
-			\?) printf "illegal option: -%s\n" "$OPTARG" >&2
-				;;
-		esac
-	done
-	shift $((OPTIND - 1))
+    local OPTIND
+    local cmd="umount"
+    while getopts ':R' option; do
+        case "$option" in
+        R)  cmd+=" -R"
+            ;;
+        :)  printf "missing argument for -%s\n" "$OPTARG" >&2
+            ;;
+        \?) printf "illegal option: -%s\n" "$OPTARG" >&2
+            ;;
+        esac
+    done
+    shift $((OPTIND - 1))
 
     if [[ $# -eq 0 ]]; then
         for m in "${MNTJRNL[@]}"; do $cmd -l "$m"; done
@@ -120,38 +123,38 @@ umount_() {
 }
 
 exit_() {
-    [[ $3 -eq 5 ]] && echo -e "Method call error: \t${1}()\t$2"
-    exit $3
+    [[ $5 -eq 5 ]] && echo -e "Method call error: \t${2}()\t$3"
+    [[ $1 -eq 1 ]] && message -c "$2" && message -n && Cleanup $1
 }
 
 message() {
-	local OPTIND
+    local OPTIND
     local status
     clr_c=$(tput bold; tput setaf 3)
     clr_y=$(tput setaf 2)
     clr_n=$(tput setaf 1)
     clr_rmso=$(tput sgr0)
 
-	while getopts ':ncy' option; do
-		case "$option" in
-			y)  status="${clr_y}✔${clr_rmso} $2"
-          tput rc
-				  ;;
-			n)  status="${clr_n}✘${clr_rmso} $2"
-          tput rc
-				  ;;
-			c)  status="${clr_c}➤${clr_rmso} $2"
-          tput sc
-				  ;;
-      :)  exit_ "${FUNCNAME[0]}" "missing argument for $OPTARG" 5
-				  ;;
-			?)  exit_ "${FUNCNAME[0]}"  "illegal option: $OPTARG" 5
-			  	;;
-		esac
-	done
-	shift $((OPTIND - 1))
+    while getopts ':ncy' option; do
+        case "$option" in
+            y)  status="${clr_y}✔${clr_rmso} $2"
+                tput rc
+                ;;
+            n)  status="${clr_n}✘${clr_rmso} $2"
+                tput rc
+                ;;
+            c)  status="${clr_c}➤${clr_rmso} $2"
+                tput sc
+                ;;
+            :)  exit_ "${FUNCNAME[0]}" "missing argument for $OPTARG" 5
+                ;;
+            ?)  exit_ "${FUNCNAME[0]}"  "illegal option: $OPTARG" 5
+                ;;
+        esac
+    done
+    shift $((OPTIND - 1))
 
-    [[ $status ]] && echo "$status" || exit_ "${FUNCNAME[0]}" "Required option parameters missing" 5
+    [[ $status ]] && echo -e "$status" || exit_ "${FUNCNAME[0]}" "Required option parameters missing" 5
 }
 
 setHeader() {
@@ -168,37 +171,39 @@ expand_disk() {
     local ss=$(if [[ -d $1 ]]; then cat $F_SECTORS_SRC; else blockdev --getsz $1; fi)
     local ds=$(blockdev --getsz $2)
 
-	local expand_factor=$(echo "$ds / $ss" | bc)
-	local size new_size
-	local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
+    local expand_factor=$(echo "$ds / $ss" | bc)
+    local size new_size
+    local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
 
-	while read -r e; do
-		size= 
-		new_size=
+    while read -r e; do
+        size=
+        new_size=
 
-		if [[ $e =~ ^/ ]]; then
-			echo $e | grep -qE 'size=\s*([0-9])' && \
-			size=$(echo "$e" | sed -rE 's/.*size=\s*([0-9]*).*/\1/')
-		fi
+        if [[ $e =~ ^/ ]]; then
+            echo $e | grep -qE 'size=\s*([0-9])' && \
+            size=$(echo "$e" | sed -rE 's/.*size=\s*([0-9]*).*/\1/')
+        fi
 
-		if [[ -n "$size" ]]; then
-			new_size=$(echo "scale=2; $size * $expand_factor" | bc) && \
-			pdata=$(sed 's/$size/${new_size%%.*}/' < <(echo "$pdata"))
-		fi
+        if [[ -n "$size" ]]; then
+            new_size=$(echo "scale=2; $size * $expand_factor" | bc) && \
+            pdata=$(sed 's/$size/${new_size%%.*}/' < <(echo "$pdata"))
+        fi
     done < <( if [[ -f "$pdata" ]]; then cat "$pdata"; else echo "$pdata"; fi)
 
-	pdata=$(sed '/type=5/ s/size=.*,//' < <(echo "$pdata"))
-	pdata=$(sed '$ s/size=.*,//g' < <(echo "$pdata"))
-	echo "$pdata"
+    pdata=$(sed '/type=5/ s/size=.*,//' < <(echo "$pdata"))
+    pdata=$(sed '$ s/size=.*,//g' < <(echo "$pdata"))
+
+    #return
+    echo "$pdata"
 }
 
 create_m5dsums() {
-   find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
-   validate_m5dsums "$1/$2" || return 1
+    find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
+    validate_m5dsums "$1/$2" || return 1
 }
 
 validate_m5dsums() {
-   md5sum -c "$1" --quiet || return 1
+    md5sum -c "$1" --quiet || return 1
 }
 
 set_dest_uuids() {
@@ -214,10 +219,16 @@ set_dest_uuids() {
     done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" | sort -k 2,2 )
 }
 
+count() {
+    local x=$(swapon --show=size,name --bytes --noheadings | grep $1 | sed -e 's/\s+*.*//')
+    COUNT=$(( $(df -k --output=used $KNAME | tail -n -1) + $COUNT ))
+    COUNT=$(( $(echo ${x:=0} / 1024 | bc) + $COUNT ))
+}
+
 set_src_uuids() {
     SPUUIDS=() SUUIDS=() SNAMES=()
     while read -r e; do
-        read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
+        read -r kdev name fstype uuid puuid type parttype mountpoint<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $PARTTYPE == 0x5 || $TYPE == disk ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
@@ -227,10 +238,10 @@ set_src_uuids() {
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
         SNAMES+=($NAME)
+        [[ -b $SRC ]] && count $KNAME
     done < <( if [[ -n $1 ]]; then cat "$1" | sort -k 2,2; 
-            else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -k 2,2;
-            fi
-            )
+              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -k 2,2;
+              fi )
 }
 
 init_srcs() {
@@ -250,9 +261,8 @@ init_srcs() {
         [[ -n $PARTUUID ]] && NAMES[$PARTUUID]=$NAME
         [[ -n $UUID && -n $PARTUUID ]] && PUUIDS2UUIDS[$PARTUUID]="$UUID"
     done < <( if [[ -n $1 ]]; then cat "$1"; 
-            else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC";
-            fi
-            )
+              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC";
+              fi )
 }
 
 disk_setup() {
@@ -311,6 +321,7 @@ grub_setup() {
     for f in sys dev dev/pts proc; do 
         mount --bind "/$f" "/mnt/$d/$f";
     done
+
     grub-install --boot-directory="/mnt/$d/boot" "$DEST"
     # chroot /mnt/$d update-grub
     chroot "/mnt/$d" apt-get install -y binutils
@@ -360,23 +371,24 @@ usage() {
 
 Cleanup() {
     #TODO quiet
+    exec 1>&3 2>&4
     [[ -d $SRC/lvm_ ]] && rm -rf "$SRC/lmv_"
     umount_
     message -n
-    exit 255
+    exit ${1:-255}
 }
 
 To_file() {
     pushd "$DEST" >/dev/null || return 1
 
     _save_disk_layout() {
-		local vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
-		local snp=$(sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep 'snap' | sed -e 's/^\s*//' | cut -d ' ' -f 1) 
+    local vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
+    local snp=$(sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep 'snap' | sed -e 's/^\s*//' | cut -d ' ' -f 1)
 
         {
             pvs --noheadings -o pv_name,vg_name,lv_active | grep "$SRC" | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_PVS_LIST
             vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_VGS_LIST
-			      lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' > $F_LVS_LIST
+            lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' > $F_LVS_LIST
             blockdev --getsz $SRC > $F_SECTORS_SRC
             sfdisk -d "$SRC" > $F_PART_TABLE
         } >/dev/null 2>>$F_LOG
@@ -451,31 +463,32 @@ To_file() {
     $IS_LVM && rm /etc/lvm/backup/* && vgcfgbackup > /dev/null && cp -r /etc/lvm/backup lvm
 
     popd >/dev/null || return 1
+    echo $COUNT > $DEST/$F_SECTORS_USED
     message -c "Creating checksums"
     create_m5dsums "$DEST" "$F_CHESUM"
     message -y
 }
 
 Clone() {
-	local OPTIND
+    local OPTIND
 
-	while getopts ':r' option; do
-		case "$option" in
-			r)  _RMODE=true
-				;;
-			:)  printf "missing argument for -%s\n" "$OPTARG" >&2
-                return 1
-				;;
-			\?) printf "illegal option: -%s\n" "$OPTARG" >&2
-                return 1
-				;;
-		esac
-	done
-	shift $((OPTIND - 1))
+    while getopts ':r' option; do
+        case "$option" in
+        r)  _RMODE=true
+            ;;
+        :)  printf "missing argument for -%s\n" "$OPTARG" >&2
+            return 1
+            ;;
+        \?) printf "illegal option: -%s\n" "$OPTARG" >&2
+            return 1
+            ;;
+        esac
+    done
+    shift $((OPTIND - 1))
 
     _lvm_setup() {
         local size s1 s2
-        
+
         while read -r e; do
             read -r pv_name vg_name<<< "$e"
             [[ -z $vg_name && $pv_name =~ $DEST ]] && vgcreate "$VG_SRC_NAME_CLONE" "$pv_name"
@@ -486,7 +499,7 @@ Clone() {
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*}-${vg_free%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_size%%.*}
         done < <( if [[ $_RMODE ]]; then cat $F_VGS_LIST;
-                  else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free; 
+                  else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free;
                   fi )
 
         denom_size=$((s1<s2?s2:s1))
@@ -517,7 +530,7 @@ Clone() {
             while read -r e; do
                 read -r kname name fstype type<<< "$e"
                 eval "$kname" "$name" "$fstype" "$type"
-                [[ $TYPE == 'lvm' && $d == "$SRC" ]] && SRC_LFS[${NAME##*-}]=$FSTYPE 
+                [[ $TYPE == 'lvm' && $d == "$SRC" ]] && SRC_LFS[${NAME##*-}]=$FSTYPE
                 if [[ $TYPE == 'lvm' && $d == "$DEST" ]]; then
                     { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME";
                 fi
@@ -542,46 +555,47 @@ Clone() {
     }
 
     _finish() {
-		[[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
+        [[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
 
-		boot_setup "SRC2DEST"
-		boot_setup "PSRC2PDEST"
-		if [[ ${#LMBRS[@]} -gt 0 ]]; then boot_setup "NSRC2NDEST"; fi
+        boot_setup "SRC2DEST"
+        boot_setup "PSRC2PDEST"
+        if [[ ${#LMBRS[@]} -gt 0 ]]; then boot_setup "NSRC2NDEST"; fi
 
-		umount_ "$sdev"
-		umount_ "$ddev"
+        umount_ "$sdev"
+        umount_ "$ddev"
     }
 
-	_from_file() {
-      #Now, we are ready to restore files from previous backup images
-      for file in [0-9]*; do
-        message -c "Restoring $file"
-        {
-          if [[ -n $file ]]; then
-            read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }";
-            local ddev=${DESTS[${SRC2DEST[$uuid]}]}
+    _from_file() {
+        #Now, we are ready to restore files from previous backup images
+        for file in [0-9]*; do
+            message -c "Restoring $file"
+            {
+            if [[ -n $file ]]; then
+                read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }";
+                local ddev=${DESTS[${SRC2DEST[$uuid]}]}
 
-            MOUNTS[${mnt//_/\/}]="$uuid"
-            if [[ -n $ddev ]]; then
-              mount_ "$ddev" -t "$fs"
-              pushd "/mnt/$ddev" >/dev/null || return 1
-              pwd
-              if [[ $fs == vfat ]]; then
-                fakeroot tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
-              else
-                tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
-              fi
-              popd >/dev/null || return 1
-              _finish
+                MOUNTS[${mnt//_/\/}]="$uuid"
+                if [[ -n $ddev ]]; then
+                mount_ "$ddev" -t "$fs"
+                pushd "/mnt/$ddev" >/dev/null || return 1
+                pwd
+                if [[ $fs == vfat ]]; then
+                    fakeroot tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
+                else
+                    tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
+                fi
+                popd >/dev/null || return 1
+                _finish
+                fi
             fi
-          fi
-        } >/dev/null 2>>$F_LOG
-        message -y
-      done
-      return 0
-	}
+            } >/dev/null 2>>$F_LOG
+            message -y
+        done
 
-	_clone() {
+        return 0
+    }
+
+    _clone() {
         for x in SRCS LSRCS; do
             eval declare -n s="$x"
 
@@ -615,36 +629,37 @@ Clone() {
 
                 message -c "Cloning $sdev to $ddev"
                 {
-					if $INTERACTIVE; then
-						local size=$( \
-								rsync -aSXxH --stats --dry-run "/mnt/$tdev/" "/mnt/$ddev" \
-							| grep -oP 'Number of files: \d*(,\d*)*' \
-							| cut -d ':' -f2 \
-							| tr -d ' ' \
-							| sed -e 's/,//' \
-						)
-						rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv -lep -s "$size"
-					else
-						rsync -aSXxH "/mnt/$tdev/" "/mnt/$ddev"
-					fi
+                    if $INTERACTIVE; then
+                        local size=$( \
+                            rsync -aSXxH --stats --dry-run "/mnt/$tdev/" "/mnt/$ddev" \
+                        | grep -oP 'Number of files: \d*(,\d*)*' \
+                        | cut -d ':' -f2 \
+                        | tr -d ' ' \
+                        | sed -e 's/,//' \
+                        )
+                        rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv -lep -s "$size"
+                    else
+                        rsync -aSXxH "/mnt/$tdev/" "/mnt/$ddev"
+                    fi
 
-					sleep 3
-					umount_ "/dev/${VG_SRC_NAME}/$tdev"
-					lvremove -q -f "${VG_SRC_NAME}/$tdev"
+                    sleep 3
+                    umount_ "/dev/${VG_SRC_NAME}/$tdev"
+                    lvremove -q -f "${VG_SRC_NAME}/$tdev"
 
-					_finish
+                    _finish
                 } >/dev/null 2>>$F_LOG
                 message -y
             done
         done
+
         return 0
-	}
+    }
 
     if [[ $_RMODE ]]; then
         message -c "Validating checksums"
         {
-          pushd "$SRC" || return 1
-          # validate_m5dsums "$F_CHESUM" || { message y && return 1; }
+            pushd "$SRC" || return 1
+            # validate_m5dsums "$F_CHESUM" || { message y && return 1; }
         } >/dev/null 2>>$F_LOG
         message -y
     fi
@@ -653,35 +668,43 @@ Clone() {
     {
         local f=$([[ $_RMODE ]] && echo $F_PART_LIST)
         _prepare_disk #First collect what we have in our backup
-        init_srcs $f 
+        init_srcs $f
         set_src_uuids $f #Then create the filesystems and PVs
         disk_setup
 
-		if [[ ${#LMBRS[@]} -gt 0 ]]; then
-			_lvm_setup $f
-			sleep 3
-		fi
+        if [[ ${#LMBRS[@]} -gt 0 ]]; then
+            _lvm_setup $f
+            sleep 3
+        fi
 
-		set_dest_uuids     #Now collect what we have created
+        set_dest_uuids     #Now collect what we have created
 
-		if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#SNAMES[@]} != "${#DNAMES[@]}" ]]; then
-			echo >&2 "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
-			return 1
-		fi
+        if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#SNAMES[@]} != "${#DNAMES[@]}" ]]; then
+            echo >&2 "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
+            return 1
+        fi
 
-		for ((i=0;i<${#SUUIDS[@]};i++)); do SRC2DEST[${SUUIDS[$i]}]=${DUUIDS[$i]}; done
-		for ((i=0;i<${#SPUUIDS[@]};i++)); do PSRC2PDEST[${SPUUIDS[$i]}]=${DPUUIDS[$i]}; done
-		for ((i=0;i<${#SNAMES[@]};i++)); do NSRC2NDEST[${SNAMES[$i]}]=${DNAMES[$i]}; done
+        for ((i=0;i<${#SUUIDS[@]};i++)); do SRC2DEST[${SUUIDS[$i]}]=${DUUIDS[$i]}; done
+        for ((i=0;i<${#SPUUIDS[@]};i++)); do PSRC2PDEST[${SPUUIDS[$i]}]=${DPUUIDS[$i]}; done
+        for ((i=0;i<${#SNAMES[@]};i++)); do NSRC2NDEST[${SNAMES[$i]}]=${DNAMES[$i]}; done
 
-		[[ ! $_RMODE ]] && mounts
+        [[ ! $_RMODE ]] && mounts
     } >/dev/null 2>>$F_LOG
     message -y
 
+    [[ -d $SRC ]] && COUNT=$(cat $SRC/$F_SECTORS_USED)
+
+    local cnt
+    [[ -b $DEST ]] && cnt=$(echo $(lsblk --bytes -o SIZE,TYPE $DEST | grep 'disk' | sed -e 's/\s+*.*//') / 1024 | bc)
+    [[ -d $DEST ]] && cnt=$(df -k --output=avail $DEST | tail -n -1)
+
+    (( cnt - COUNT <= 0 )) && exit_ 1 "Require $((COUNT/1024))M but destination is only $((cnt/1024))M"
+
     if [[ $_RMODE ]]; then
-		  _from_file || return 1
-      popd >/dev/null || return 1
+        _from_file || return 1
+        popd >/dev/null || return 1
     else
-	  	_clone || return 1
+        _clone || return 1
     fi
 
     if $HAS_GRUB; then
@@ -705,17 +728,18 @@ Main() {
 
 
 ### ENTRYPOINT
+exec 3>&1 4>&2
+trap Cleanup INT TERM
 
 tput sc
 echo > $F_LOG
 
-exec 2> /dev/null
+# exec 2> /dev/null
 #Force root
 if [ "$(id -u)" != "0" ]; then
   exec sudo "$0" "$@" 
 fi
 
-trap Cleanup INT TERM
 
 #Inform about ALL missing but necessary tools.
 for c in rsync tar flock bc blockdev fdisk sfdisk; do
@@ -739,24 +763,24 @@ v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 while getopts ':hiqs:d:n:' option; do
     case "$option" in
         h)  usage
-             ;;
+            ;;
         s)  SRC=$OPTARG
-             ;;
+            ;;
         d)  DEST=$OPTARG
-             ;;
+            ;;
         n)  VG_SRC_NAME_CLONE=$OPTARG
-             ;;
+            ;;
         q)  exec &> /dev/null
-             ;;
+            ;;
         i)  { hash pv 2>/dev/null && INTERACTIVE=true; } || 
             { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
-             ;;
+            ;;
         :)  printf "missing argument for -%s\n" "$OPTARG"
             usage
-             ;;
-        ?) printf "illegal option: -%s\n" "$OPTARG"
+            ;;
+        ?)  printf "illegal option: -%s\n" "$OPTARG"
             usage
-             ;;
+            ;;
     esac
 done
 shift $((OPTIND - 1))
@@ -782,12 +806,13 @@ if [[ -d $SRC ]]; then
      -f $SRC/$F_LVS_LIST &&
      -f $SRC/$F_PVS_LIST &&
      -f $SRC/$F_SECTORS_SRC &&
+     -f $SRC/$F_SECTORS_USED &&
      -f $SRC/$F_PART_TABLE ]] || { message -n "Cannot restore dump, files missing" && exit 1; }
 fi
 
 
 VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sed -e 's/^\s*//' | cut -d ' ' -f2 | uniq)
-${VG_SRC_NAME_CLONE:=${VG_SRC_NAME}_${CLONE_DATE}}
+[[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
 
 Main
 
