@@ -659,7 +659,7 @@ Clone() {
         message -c "Validating checksums"
         {
             pushd "$SRC" || return 1
-            # validate_m5dsums "$F_CHESUM" || { message y && return 1; }
+            validate_m5dsums "$F_CHESUM" || { message y && return 1; }
         } >/dev/null 2>>$F_LOG
         message -y
     fi
