@@ -87,7 +87,7 @@ mount_() {
             ;;
         :)  printf "missing argument for -%s\n" "$OPTARG" >&2
             ;;
-        ?) printf "illegal option: -%s\n" "$OPTARG" >&2
+        ?)  printf "illegal option: -%s\n" "$OPTARG" >&2
             ;;
         esac
     done
@@ -124,7 +124,8 @@ umount_() {
 
 exit_() {
     [[ $5 -eq 5 ]] && echo -e "Method call error: \t${2}()\t$3"
-    [[ $1 -eq 1 ]] && message -c "$2" && message -n && Cleanup $1
+    [[ $1 -eq 1 && -n $2 ]] && message -c "$2" && message -n && Cleanup $1
+    Cleanup $1
 }
 
 message() {
@@ -198,12 +199,17 @@ expand_disk() {
 }
 
 create_m5dsums() {
-    find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
-    validate_m5dsums "$1/$2" || return 1
+    # find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
+    pushd "$1" || return 1
+    find . -type f \! -name '*.md5' -print0 | parallel --no-notice -0 md5sum -b > "$2"
+    popd || return 1
+    validate_m5dsums "$1" "$2" || return 1
 }
 
 validate_m5dsums() {
-    md5sum -c "$1" --quiet || return 1
+    pushd "$1" || return 1
+    md5sum -c "$2" --quiet || return 1
+    popd || return 1
 }
 
 set_dest_uuids() {
@@ -370,7 +376,6 @@ usage() {
 ### PUBLIC - To be used in MAIN only
 
 Cleanup() {
-    #TODO quiet
     exec 1>&3 2>&4
     [[ -d $SRC/lvm_ ]] && rm -rf "$SRC/lmv_"
     umount_
@@ -384,6 +389,7 @@ To_file() {
     _save_disk_layout() {
     local vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
     local snp=$(sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep 'snap' | sed -e 's/^\s*//' | cut -d ' ' -f 1)
+    [[ -z $snp ]] && snp="NOSNAPSHOT"
 
         {
             pvs --noheadings -o pv_name,vg_name,lv_active | grep "$SRC" | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_PVS_LIST
@@ -445,7 +451,7 @@ To_file() {
                 local size=$(du --bytes --exclude=/proc/* --exclude=/sys/* -s /mnt/$tdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
                 cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_}" 
             else
-                cmd="$cmd -Scpf ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} ."  
+                cmd="$cmd -Scpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
             fi
 
             message -c "Creating backup for $sdev"
@@ -465,7 +471,9 @@ To_file() {
     popd >/dev/null || return 1
     echo $COUNT > $DEST/$F_SECTORS_USED
     message -c "Creating checksums"
-    create_m5dsums "$DEST" "$F_CHESUM"
+    {
+        create_m5dsums "$DEST" "$F_CHESUM"
+    } >/dev/null 2>>$F_LOG
     message -y
 }
 
@@ -566,11 +574,14 @@ Clone() {
     }
 
     _from_file() {
-        #Now, we are ready to restore files from previous backup images
+        declare -A files
         for file in [0-9]*; do
+            files[${file::-2}]=1
+        done
+        #Now, we are ready to restore files from previous backup images
+        for file in ${!files[@]}; do
             message -c "Restoring $file"
             {
-            if [[ -n $file ]]; then
                 read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }";
                 local ddev=${DESTS[${SRC2DEST[$uuid]}]}
 
@@ -578,16 +589,14 @@ Clone() {
                 if [[ -n $ddev ]]; then
                 mount_ "$ddev" -t "$fs"
                 pushd "/mnt/$ddev" >/dev/null || return 1
-                pwd
                 if [[ $fs == vfat ]]; then
-                    fakeroot tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
+                    fakeroot cat ${SRC}/${file}* | tar -xf - -C "/mnt/$ddev"
                 else
-                    tar -xf "${SRC}/${file}" -C "/mnt/$ddev"
+                    cat ${SRC}/${file}* | tar -xf - -C "/mnt/$ddev"
                 fi
                 popd >/dev/null || return 1
                 _finish
                 fi
-            fi
             } >/dev/null 2>>$F_LOG
             message -y
         done
@@ -659,7 +668,7 @@ Clone() {
         message -c "Validating checksums"
         {
             pushd "$SRC" || return 1
-            validate_m5dsums "$F_CHESUM" || { message y && return 1; }
+            validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
         } >/dev/null 2>>$F_LOG
         message -y
     fi
@@ -742,7 +751,7 @@ fi
 
 
 #Inform about ALL missing but necessary tools.
-for c in rsync tar flock bc blockdev fdisk sfdisk; do
+for c in parallel rsync tar flock bc blockdev fdisk sfdisk; do
     hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing."; abort='exit 1'; }
 done
 eval "$abort"
