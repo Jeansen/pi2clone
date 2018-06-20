@@ -751,8 +751,16 @@ fi
 
 
 #Inform about ALL missing but necessary tools.
-for c in parallel rsync tar flock bc blockdev fdisk sfdisk; do
-    hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing."; abort='exit 1'; }
+for c in grub-install lvm parallel rsync tar flock bc blockdev fdisk sfdisk; do
+    case "$c" in
+        lvm)  package=lvm2
+            ;;
+        grub-install)  package=grub-common
+            ;;
+        *)  package=$c
+            ;;
+    esac
+    hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing. Please install $package."; abort='exit 1'; }
 done
 eval "$abort"
 
