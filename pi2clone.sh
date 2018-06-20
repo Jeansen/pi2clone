@@ -755,7 +755,7 @@ for c in grub-install lvm parallel rsync tar flock bc blockdev fdisk sfdisk; do
     case "$c" in
         lvm)  package=lvm2
             ;;
-        grub-install)  package=grub-common
+        grub-install)  package=grub2-common
             ;;
         *)  package=$c
             ;;
