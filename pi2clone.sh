@@ -54,14 +54,15 @@ declare CLONE_DATE=$(date '+%d%m%y')
 declare COUNT=0
 
 USAGE="
-Usage: $(basename $0) [-h] -s src -d dest
+Usage: $(basename $0) [-h]|[-n][-q][-i] -s src -d dest
 
 Where:
     -h  Show this help text
     -s  Source block device or folder
     -d  Destination block device or folder
     -q  Quiet, do not show any output
-    -i  Interactive, showing progress bars
+    -n  LVM only: Define new volume group name
+    -i  [DISABLED] Interactive, showing progress bars
 "
 
 ### DEBUG ONLY
@@ -762,7 +763,7 @@ for c in grub-install lvm parallel rsync tar flock bc blockdev fdisk sfdisk; do
     esac
     hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing. Please install package $package."; abort='exit 1'; }
 done
-[[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: GRUB binaries missing. Please install package grub-pc-bin."; abort='exit 1'; }
+[[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: No GRUB binaries found. Please install package grub-pc-bin."; abort='exit 1'; }
 eval "$abort"
 
 
@@ -790,9 +791,9 @@ while getopts ':hiqs:d:n:' option; do
             ;;
         q)  exec &> /dev/null
             ;;
-        i)  { hash pv 2>/dev/null && INTERACTIVE=true; } || 
-            { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
-            ;;
+        # i)  { hash pv 2>/dev/null && INTERACTIVE=true; } || 
+        #     { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
+        #     ;;
         :)  printf "missing argument for -%s\n" "$OPTARG"
             usage
             ;;
