@@ -328,7 +328,7 @@ grub_setup() {
         mount --bind "/$f" "/mnt/$d/$f";
     done
 
-    grub-install --boot-directory="/mnt/$d/boot" "$DEST"
+    grub-install --boot-directory="/mnt/$d/boot" "$DEST" || return 1
     # chroot /mnt/$d update-grub
     chroot "/mnt/$d" apt-get install -y binutils
     create_rclocal "/mnt/$d"
