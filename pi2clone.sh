@@ -52,6 +52,7 @@ declare IS_LVM=false
 declare CLONE_DATE=$(date '+%d%m%y')
 
 declare COUNT=0
+declare IS_CHECKSUM=false
 
 USAGE="
 Usage: $(basename $0) [-h]|[-n][-q][-i] -s src -d dest
@@ -60,6 +61,7 @@ Where:
     -h  Show this help text
     -s  Source block device or folder
     -d  Destination block device or folder
+    -c  Create/Validate checksums
     -q  Quiet, do not show any output
     -n  LVM only: Define new volume group name
     -i  [DISABLED] Interactive, showing progress bars
@@ -173,7 +175,7 @@ expand_disk() {
     local ss=$(if [[ -d $1 ]]; then cat $F_SECTORS_SRC; else blockdev --getsz $1; fi)
     local ds=$(blockdev --getsz $2)
 
-    local expand_factor=$(echo "$ds / $ss" | bc)
+    local expand_factor=$(echo "scale=2; $ds / $ss" | bc)
     local size new_size
     local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
 
@@ -188,12 +190,19 @@ expand_disk() {
 
         if [[ -n "$size" ]]; then
             new_size=$(echo "scale=2; $size * $expand_factor" | bc) && \
-            pdata=$(sed 's/$size/${new_size%%.*}/' < <(echo "$pdata"))
+            pdata=$(sed "s/$size/${new_size%%.*}/" < <(echo "$pdata"))
         fi
     done < <( if [[ -f "$pdata" ]]; then cat "$pdata"; else echo "$pdata"; fi)
 
+    #Remove fixed offsets and only apply size values. We assume the extended partition ist last!
+    pdata=$(sed 's/start=\s*\w*,//g' < <(echo "$pdata"))
+    #When a field is absent or empty the default value of size indicates "as much asossible";
+    #Therefore we remove the size for extended partitions
     pdata=$(sed '/type=5/ s/size=.*,//' < <(echo "$pdata"))
+    #and the last partition
     pdata=$(sed '$ s/size=.*,//g' < <(echo "$pdata"))
+    pdata=$(sed '/last/d' < <(echo "$pdata"))
+
 
     #return
     echo "$pdata"
@@ -300,40 +309,25 @@ boot_setup() {
     done
 }
 
-create_rclocal() {
-    mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
-    printf '%s' '#! /usr/bin/env bash
-    while read -r e; do
-        read -r dev type<<< "$e"
-        eval "$dev" "$type"
-        if [[ $TYPE == disk ]] && dd bs=512 count=1 if=/dev/sda 2>/dev/null | strings | grep -q GRUB; then 
-            update-initramfs -u -k all
-            grub-install $NAME
-            update-grub
-        fi
-    done < <(lsblk -Ppo NAME,TYPE)
-    rm /etc/rc.local
-    mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
-    reboot' > "$1/etc/rc.local"
-    chmod +x "$1/etc/rc.local"
-}
-
 grub_setup() {
-    local d="$1"
-    local b="$2"
-
-    mount_ "$d"
-    [[ -n $b ]] && mount "$b" "/mnt/$d/boot"
+    local d=${DESTS[${SRC2DEST[${MOUNTS[/]}]}]}
+    mount "$d" /mnt/$d
 
     for f in sys dev dev/pts proc; do 
         mount --bind "/$f" "/mnt/$d/$f";
     done
 
+    for m in "${!MOUNTS[@]}"; do
+        [[ "$m" == / ]] && continue 
+        [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "/mnt/$d/$m"
+    done
+
     grub-install --boot-directory="/mnt/$d/boot" "$DEST" || return 1
-    # chroot /mnt/$d update-grub
-    chroot "/mnt/$d" apt-get install -y binutils
-    create_rclocal "/mnt/$d"
-    umount_ -R "$d"
+    chroot "/mnt/$d" sh -c '
+        apt-get install -y binutils && 
+        update-grub && 
+        update-initramfs -u -k all'
+    umount -R "/mnt/$d"
 }
 
 mounts() {
@@ -473,7 +467,7 @@ To_file() {
     echo $COUNT > $DEST/$F_SECTORS_USED
     message -c "Creating checksums"
     {
-        create_m5dsums "$DEST" "$F_CHESUM"
+        $IS_CHECKSUM && create_m5dsums "$DEST" "$F_CHESUM" || return 1
     } >/dev/null 2>>$F_LOG
     message -y
 }
@@ -669,7 +663,7 @@ Clone() {
         message -c "Validating checksums"
         {
             pushd "$SRC" || return 1
-            validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
+            $IS_CHECKSUM && validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
         } >/dev/null 2>>$F_LOG
         message -y
     fi
@@ -720,11 +714,7 @@ Clone() {
     if $HAS_GRUB; then
         message -c "Installing Grub"
         {
-            if [[ -n  ${MOUNTS[/boot]} ]]; then
-                grub_setup ${DESTS[${SRC2DEST[${MOUNTS[/]}]}]} ${DESTS[${SRC2DEST[${MOUNTS[/boot]}]}]} || return 1
-            else
-                grub_setup ${DESTS[${SRC2DEST[${MOUNTS[/]}]}]} || return 1
-            fi
+            grub_setup  || return 1
         } >/dev/null 2>>$F_LOG
         message -y
     fi
@@ -779,7 +769,7 @@ v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 
 [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
-while getopts ':hiqs:d:n:' option; do
+while getopts ':hiqcs:d:n:' option; do
     case "$option" in
         h)  usage
             ;;
@@ -794,6 +784,8 @@ while getopts ':hiqs:d:n:' option; do
         # i)  { hash pv 2>/dev/null && INTERACTIVE=true; } || 
         #     { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
         #     ;;
+        c)  IS_CHECKSUM=true
+            ;;
         :)  printf "missing argument for -%s\n" "$OPTARG"
             usage
             ;;
@@ -820,7 +812,8 @@ shift $((OPTIND - 1))
     echo "Invalid device or directory: $DEST" && exit 1
 
 if [[ -d $SRC ]]; then
-  [[ -f $SRC/$F_PART_LIST &&
+  [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM ||
+     -f $SRC/$F_PART_LIST &&
      -f $SRC/$F_VGS_LIST &&
      -f $SRC/$F_LVS_LIST &&
      -f $SRC/$F_PVS_LIST &&
