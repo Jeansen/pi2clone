@@ -15,12 +15,6 @@
 # You should have received a copy of the GNU General Public License
 # along with thisrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-
-    # while read -r e; do
-    #     read -r dev size<<< "$e"
-    #     size=$(( size * 1024 ))
-    # done < <( df -x tmpfs -x devtmpfs --output=source,avai )
-
 F_PART_LIST='part_list'
 F_VGS_LIST='vgs_list'
 F_LVS_LIST='lvs_list'
@@ -34,7 +28,8 @@ F_LOG='/tmp/pi2clone.log'
 
 SCRIPTNAME=$(basename "$0")
 PIDFILE="/var/run/$SCRIPTNAME"
-INTERACTIVE=false
+
+declare CLONE_DATE=$(date '+%d%m%y')
 export LVM_SUPPRESS_FD_WARNINGS=true
 
 declare -A MNTJRNL
@@ -49,10 +44,11 @@ declare VG_SRC_NAME VG_SRC_NAME_CLONE
 
 declare HAS_GRUB=false
 declare IS_LVM=false
-declare CLONE_DATE=$(date '+%d%m%y')
 
-declare COUNT=0
-declare IS_CHECKSUM=false
+declare SECTORS=0
+declare IS_CHECKSUM=false IS_ENCRYPT=false
+declare INTERACTIVE=false
+declare LUKS_LVM_NAME=lukslvm
 
 USAGE="
 Usage: $(basename $0) [-h]|[-n][-q][-i] -s src -d dest
@@ -64,6 +60,7 @@ Where:
     -c  Create/Validate checksums
     -q  Quiet, do not show any output
     -n  LVM only: Define new volume group name
+    -e  LVM only: Create encrypted disk with supplied passphrase.
     -i  [DISABLED] Interactive, showing progress bars
 "
 
@@ -72,7 +69,28 @@ Where:
 printarr() { declare -n __p="$1"; for k in "${!__p[@]}"; do printf "%s=%s\n" "$k" "${__p[$k]}" ; done ;  }
 
 
+### FOR LATER USAGE
+
+setHeader() {
+    tput csr 2 $((`tput lines` - 2))
+    tput cup 0 0
+    tput el
+    echo "$1"
+    tput el
+    echo -n "$2"
+    tput cup 3 0
+}
+
+
 ### PRIVATE - only used by PUBLIC functions
+
+encrypt() {
+    { echo ';' | sfdisk "$DEST" && sfdisk -Vq; } || return 1
+    sleep 3
+	ENCRYPT_PART=$(sfdisk -qlo device $DEST | tail -n 1)
+	echo -n "$1" | cryptsetup luksFormat $ENCRYPT_PART -
+	echo -n "$1" | cryptsetup open $ENCRYPT_PART lukslvm --type luks -
+}
 
 mount_() {
     local cmd="mount"
@@ -127,8 +145,8 @@ umount_() {
 
 exit_() {
     [[ $5 -eq 5 ]] && echo -e "Method call error: \t${2}()\t$3"
-    [[ $1 -eq 1 && -n $2 ]] && message -c "$2" && message -n && Cleanup $1
-    Cleanup $1
+    [[ $1 -eq 1 && -n $2 ]] && message -c "$2" && message -n && Cleanup "$1"
+    Cleanup "$1"
 }
 
 message() {
@@ -158,17 +176,7 @@ message() {
     done
     shift $((OPTIND - 1))
 
-    [[ $status ]] && echo -e "$status" || exit_ "${FUNCNAME[0]}" "Required option parameters missing" 5
-}
-
-setHeader() {
-    tput csr 2 $((`tput lines` - 2))
-    tput cup 0 0
-    tput el
-    echo "$1"
-    tput el
-    echo -n "$2"
-    tput cup 3 0
+    { [[ $status ]] && echo -e "$status"; } || exit_ "${FUNCNAME[0]}" "Required option parameters missing" 5
 }
 
 expand_disk() {
@@ -184,7 +192,7 @@ expand_disk() {
         new_size=
 
         if [[ $e =~ ^/ ]]; then
-            echo $e | grep -qE 'size=\s*([0-9])' && \
+            echo "$e" | grep -qE 'size=\s*([0-9])' && \
             size=$(echo "$e" | sed -rE 's/.*size=\s*([0-9]*).*/\1/')
         fi
 
@@ -196,13 +204,12 @@ expand_disk() {
 
     #Remove fixed offsets and only apply size values. We assume the extended partition ist last!
     pdata=$(sed 's/start=\s*\w*,//g' < <(echo "$pdata"))
-    #When a field is absent or empty the default value of size indicates "as much asossible";
+    #When a field is absent or empty the default value of size indicates "as much as asossible";
     #Therefore we remove the size for extended partitions
-    pdata=$(sed '/type=5/ s/size=.*,//' < <(echo "$pdata"))
+    pdata=$(sed '/type=5/ s/size=\s*\w*,//' < <(echo "$pdata"))
     #and the last partition
-    pdata=$(sed '$ s/size=.*,//g' < <(echo "$pdata"))
+    pdata=$(sed '$ s/size=\s*\w*,//g' < <(echo "$pdata"))
     pdata=$(sed '/last/d' < <(echo "$pdata"))
-
 
     #return
     echo "$pdata"
@@ -227,7 +234,7 @@ set_dest_uuids() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $TYPE == disk ]] && continue
+        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt ]] && continue
         [[ -n $UUID ]] && DESTS[$UUID]="$NAME"
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
@@ -237,8 +244,8 @@ set_dest_uuids() {
 
 count() {
     local x=$(swapon --show=size,name --bytes --noheadings | grep $1 | sed -e 's/\s+*.*//')
-    COUNT=$(( $(df -k --output=used $KNAME | tail -n -1) + $COUNT ))
-    COUNT=$(( $(echo ${x:=0} / 1024 | bc) + $COUNT ))
+    SECTORS=$(( $(df -k --output=used $KNAME | tail -n -1) + $SECTORS ))
+    SECTORS=$(( $(echo ${x:=0} / 1024 | bc) + $SECTORS ))
 }
 
 set_src_uuids() {
@@ -246,7 +253,7 @@ set_src_uuids() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mountpoint<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $TYPE == disk ]] && continue
+        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $FSTYPE == LVM2_member ]] && LMBRS[${NAME: -1}]="$UUID"
@@ -254,7 +261,7 @@ set_src_uuids() {
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
         SNAMES+=($NAME)
-        [[ -b $SRC ]] && count $KNAME
+        [[ -b $SRC ]] && count "$KNAME"
     done < <( if [[ -n $1 ]]; then cat "$1" | sort -k 2,2; 
               else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -k 2,2;
               fi )
@@ -264,7 +271,7 @@ init_srcs() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mountpoint<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk ]] && continue
+        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk || $TYPE == crypt ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $TYPE == lvm ]] && LSRCS+=($NAME) && IS_LVM=true
@@ -311,9 +318,9 @@ boot_setup() {
 
 grub_setup() {
     local d=${DESTS[${SRC2DEST[${MOUNTS[/]}]}]}
-    mount "$d" /mnt/$d
+    mount "$d" "/mnt/$d"
 
-    for f in sys dev dev/pts proc; do 
+    for f in sys dev dev/pts proc run; do 
         mount --bind "/$f" "/mnt/$d/$f";
     done
 
@@ -322,12 +329,85 @@ grub_setup() {
         [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "/mnt/$d/$m"
     done
 
-    grub-install --boot-directory="/mnt/$d/boot" "$DEST" || return 1
+    # grub-install --boot-directory="/mnt/$d/boot" "$DEST" || return 1
     chroot "/mnt/$d" sh -c '
         apt-get install -y binutils && 
         update-grub && 
+        grub-install $DEST &&
         update-initramfs -u -k all'
+    create_rclocal "/mnt/$d"
     umount -R "/mnt/$d"
+}
+
+crypt_setup() {
+    local d=${DESTS[${SRC2DEST[${MOUNTS[/]}]}]}
+    mount "$d" "/mnt/$d"
+
+    for f in sys dev dev/pts proc run; do 
+        mount --bind "/$f" "/mnt/$d/$f";
+    done
+
+    for m in "${!MOUNTS[@]}"; do
+        [[ "$m" == / ]] && continue 
+        [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "/mnt/$d/$m"
+    done
+
+    printf '%s' '#!/bin/sh
+    exec /bin/cat /${1}' >> /mnt/$d/home/dummy && chmod +x /mnt/$d/home/dummy
+
+    printf '%s' '#!/bin/sh
+	set -e
+
+	PREREQ=\"\"
+
+	prereqs()
+	{
+		echo "$PREREQ"
+	}
+
+	case $1 in
+	prereqs)
+		prereqs
+		exit 0
+		;;
+	esac
+
+	. /usr/share/initramfs-tools/hook-functions
+
+	cp -a /crypto_keyfile.bin $DESTDIR/crypto_keyfile.bin
+	mkdir $DESTDIR/home
+	cp -a /home/dummy $DESTDIR/home
+
+	exit 0' > "/mnt/$d/etc/initramfs-tools/hooks/lukslvm" && chmod +x "/mnt/$d/etc/initramfs-tools/hooks/lukslvm"
+
+    dd bs=512 count=4 if=/dev/urandom of="/mnt/$d/crypto_keyfile.bin"
+    echo -n "$1" | cryptsetup luksAddKey "$ENCRYPT_PART" "/mnt/$d/crypto_keyfile.bin" -
+    chmod 000 "/mnt/$d/crypto_keyfile.bin"
+
+	local dev=$(lsblk -asno pkname /dev/mapper/$LUKS_LVM_NAME | head -n 1)
+	echo "$LUKS_LVM_NAME UUID=$(cryptsetup luksUUID "$ENCRYPT_PART") /crypto_keyfile.bin luks,keyscript=/home/dummy" >> "/mnt/$d/etc/crypttab"
+
+	sed -i "/GRUB_CMDLINE_LINUX=/ s|\"\(.*\)\"|\"cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):lukslvm\1\"|" "/mnt/$d/etc/default/grub"
+    echo "GRUB_ENABLE_CRYPTODISK=y" >> "/mnt/$d/etc/default/grub"
+
+    chroot "/mnt/$d" sh -c "
+        apt-get install -y lvm2 cryptsetup keyutils binutils &&
+        update-grub && 
+        grub-install $DEST &&
+        update-initramfs -u -k all"
+    create_rclocal "/mnt/$d"
+    umount -R "/mnt/$d"
+}
+
+create_rclocal() {
+    mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
+    printf '%s' '#! /usr/bin/env bash
+    update-grub
+    rm /etc/rc.local
+    mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
+    sleep 10
+    reboot' > "$1/etc/rc.local"
+    chmod +x "$1/etc/rc.local"
 }
 
 mounts() {
@@ -367,15 +447,19 @@ usage() {
     exit 1
 }
 
-
 ### PUBLIC - To be used in MAIN only
 
 Cleanup() {
     exec 1>&3 2>&4
-    [[ -d $SRC/lvm_ ]] && rm -rf "$SRC/lmv_"
-    umount_
-    message -n
-    exit ${1:-255}
+    message -c "Cleaning up" 
+    {
+        [[ -d $SRC/lvm_ ]] && rm -rf "$SRC/lmv_"
+        umount_
+        [[ $VG_SRC_NAME_CLONE ]] && vgchange -an $VG_SRC_NAME_CLONE
+        [[ $ENCRYPT ]] && cryptsetup close /dev/mapper/$LUKS_LVM_NAME
+    } >/dev/null 2>>$F_LOG
+    { (( ${1:-0} > 0 )) && message -n; } || message -y
+    # exit ${1:-255}
 }
 
 To_file() {
@@ -390,7 +474,7 @@ To_file() {
             pvs --noheadings -o pv_name,vg_name,lv_active | grep "$SRC" | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_PVS_LIST
             vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_VGS_LIST
             lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' > $F_LVS_LIST
-            blockdev --getsz $SRC > $F_SECTORS_SRC
+            blockdev --getsz "$SRC" > $F_SECTORS_SRC
             sfdisk -d "$SRC" > $F_PART_TABLE
         } >/dev/null 2>>$F_LOG
 
@@ -425,7 +509,6 @@ To_file() {
             local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | cut -d ' ' -f2)
 
             [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
-
             local tdev=$sdev
 
             {
@@ -464,12 +547,14 @@ To_file() {
     $IS_LVM && rm /etc/lvm/backup/* && vgcfgbackup > /dev/null && cp -r /etc/lvm/backup lvm
 
     popd >/dev/null || return 1
-    echo $COUNT > $DEST/$F_SECTORS_USED
-    message -c "Creating checksums"
-    {
-        $IS_CHECKSUM && create_m5dsums "$DEST" "$F_CHESUM" || return 1
-    } >/dev/null 2>>$F_LOG
-    message -y
+    echo $SECTORS > "$DEST/$F_SECTORS_USED"
+    if [[ $IS_CHECKSUM ]]; then
+        message -c "Creating checksums"
+        {
+            create_m5dsums "$DEST" "$F_CHESUM" || return 1
+        } >/dev/null 2>>$F_LOG
+        message -y
+    fi
 }
 
 Clone() {
@@ -491,10 +576,11 @@ Clone() {
 
     _lvm_setup() {
         local size s1 s2
+        local dest=$1
 
         while read -r e; do
             read -r pv_name vg_name<<< "$e"
-            [[ -z $vg_name && $pv_name =~ $DEST ]] && vgcreate "$VG_SRC_NAME_CLONE" "$pv_name"
+            [[ -z $vg_name && $pv_name =~ $dest ]] && vgcreate "$VG_SRC_NAME_CLONE" "$pv_name"
         done < <( pvs --noheadings -o pv_name,vg_name )
 
         while read -r e; do
@@ -518,7 +604,7 @@ Clone() {
             size=$(echo "$lv_size * 100 / $denom_size" | bc)
 
             if ((s1<s2)); then
-                lvcreate --yes -L${lv_size} -n "$lv_name" "$VG_SRC_NAME_CLONE"
+                lvcreate --yes -L"${lv_size}" -n "$lv_name" "$VG_SRC_NAME_CLONE"
             else
                 (( size == 0 )) && size=1 && max_size=$((max_size - size))
                 (( size == 100 )) && size=$((size - max_size))
@@ -528,8 +614,7 @@ Clone() {
                   else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free;
                   fi )
 
-
-        for d in $SRC $DEST; do
+        for d in "$SRC" "$DEST"; do
             while read -r e; do
                 read -r kname name fstype type<<< "$e"
                 eval "$kname" "$name" "$fstype" "$type"
@@ -553,7 +638,13 @@ Clone() {
         # echo -e "n\np\n\n\n\nw\n" | fdisk "$DEST"
         
         sleep 3
-        sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE ]]; then cat $F_PART_TABLE; else sfdisk -d $SRC; fi)")
+
+        if [[ $ENCRYPT ]]; then
+            encrypt "$ENCRYPT"
+        else
+            sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE ]]; then cat $F_PART_TABLE; else sfdisk -d $SRC; fi)")
+            sfdisk -Vq "$DEST" || return 1
+        fi
         sleep 3
     }
 
@@ -585,9 +676,9 @@ Clone() {
                 mount_ "$ddev" -t "$fs"
                 pushd "/mnt/$ddev" >/dev/null || return 1
                 if [[ $fs == vfat ]]; then
-                    fakeroot cat ${SRC}/${file}* | tar -xf - -C "/mnt/$ddev"
+                    fakeroot cat "${SRC}/${file}"* | tar -xf - -C "/mnt/$ddev"
                 else
-                    cat ${SRC}/${file}* | tar -xf - -C "/mnt/$ddev"
+                    cat "${SRC}/${file}"* | tar -xf - -C "/mnt/$ddev"
                 fi
                 popd >/dev/null || return 1
                 _finish
@@ -659,11 +750,11 @@ Clone() {
         return 0
     }
 
-    if [[ $_RMODE ]]; then
+    if [[ $_RMODE && $IS_CHECKSUM ]]; then
         message -c "Validating checksums"
         {
             pushd "$SRC" || return 1
-            $IS_CHECKSUM && validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
+            validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
         } >/dev/null 2>>$F_LOG
         message -y
     fi
@@ -674,11 +765,18 @@ Clone() {
         _prepare_disk #First collect what we have in our backup
         init_srcs $f
         set_src_uuids $f #Then create the filesystems and PVs
-        disk_setup
 
-        if [[ ${#LMBRS[@]} -gt 0 ]]; then
-            _lvm_setup $f
+        if [[ $ENCRYPT ]]; then
+            pvcreate "/dev/mapper/$LUKS_LVM_NAME"
             sleep 3
+            _lvm_setup "/dev/mapper/$LUKS_LVM_NAME"
+            sleep 3
+        else
+            disk_setup
+            if [[ ${#LMBRS[@]} -gt 0 ]]; then
+                _lvm_setup "$DEST"
+                sleep 3
+            fi
         fi
 
         set_dest_uuids     #Now collect what we have created
@@ -696,13 +794,13 @@ Clone() {
     } >/dev/null 2>>$F_LOG
     message -y
 
-    [[ -d $SRC ]] && COUNT=$(cat $SRC/$F_SECTORS_USED)
+    [[ -d $SRC ]] && SECTORS=$(cat $SRC/$F_SECTORS_USED)
 
     local cnt
     [[ -b $DEST ]] && cnt=$(echo $(lsblk --bytes -o SIZE,TYPE $DEST | grep 'disk' | sed -e 's/\s+*.*//') / 1024 | bc)
     [[ -d $DEST ]] && cnt=$(df -k --output=avail $DEST | tail -n -1)
 
-    (( cnt - COUNT <= 0 )) && exit_ 1 "Require $((COUNT/1024))M but destination is only $((cnt/1024))M"
+    (( cnt - SECTORS <= 0 )) && exit_ 1 "Require $((SECTORS/1024))M but destination is only $((cnt/1024))M"
 
     if [[ $_RMODE ]]; then
         _from_file || return 1
@@ -714,7 +812,11 @@ Clone() {
     if $HAS_GRUB; then
         message -c "Installing Grub"
         {
-            grub_setup  || return 1
+            if [[ $ENCRYPT ]]; then 
+                crypt_setup $ENCRYPT || return 1
+            else
+                grub_setup || return 1
+            fi
         } >/dev/null 2>>$F_LOG
         message -y
     fi
@@ -729,7 +831,7 @@ Main() {
 
 ### ENTRYPOINT
 exec 3>&1 4>&2
-trap Cleanup INT TERM
+trap Cleanup INT TERM EXIT
 
 tput sc
 echo > $F_LOG
@@ -742,7 +844,7 @@ fi
 
 
 #Inform about ALL missing but necessary tools.
-for c in grub-install lvm parallel rsync tar flock bc blockdev fdisk sfdisk; do
+for c in grub-install lvm parallel rsync tar flock bc blockdev fdisk sfdisk cryptsetup; do
     case "$c" in
         lvm)  package=lvm2
             ;;
@@ -769,7 +871,7 @@ v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 
 [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
-while getopts ':hiqcs:d:n:' option; do
+while getopts ':hiqcs:d:e:n:' option; do
     case "$option" in
         h)  usage
             ;;
@@ -778,6 +880,8 @@ while getopts ':hiqcs:d:n:' option; do
         d)  DEST=$OPTARG
             ;;
         n)  VG_SRC_NAME_CLONE=$OPTARG
+            ;;
+        e)  ENCRYPT=$OPTARG
             ;;
         q)  exec &> /dev/null
             ;;
