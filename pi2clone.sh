@@ -46,7 +46,7 @@ declare HAS_GRUB=false
 declare IS_LVM=false
 
 declare SECTORS=0
-declare IS_CHECKSUM=false IS_ENCRYPT=false
+declare IS_CHECKSUM=false
 declare INTERACTIVE=false
 declare LUKS_LVM_NAME=lukslvm
 
@@ -548,7 +548,7 @@ To_file() {
 
     popd >/dev/null || return 1
     echo $SECTORS > "$DEST/$F_SECTORS_USED"
-    if [[ $IS_CHECKSUM ]]; then
+    if [[ $IS_CHECKSUM = true ]]; then
         message -c "Creating checksums"
         {
             create_m5dsums "$DEST" "$F_CHESUM" || return 1
@@ -559,6 +559,7 @@ To_file() {
 
 Clone() {
     local OPTIND
+    local _RMODE=false
 
     while getopts ':r' option; do
         case "$option" in
@@ -587,7 +588,7 @@ Clone() {
             read -r vg_name vg_size vg_free<<< "$e"
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*}-${vg_free%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_size%%.*}
-        done < <( if [[ $_RMODE ]]; then cat $F_VGS_LIST;
+        done < <( if [[ $_RMODE = true ]]; then cat $F_VGS_LIST;
                   else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free;
                   fi )
 
@@ -610,7 +611,7 @@ Clone() {
                 (( size == 100 )) && size=$((size - max_size))
                 lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
             fi
-        done < <( if [[ $_RMODE ]]; then cat $F_LVS_LIST;
+        done < <( if [[ $_RMODE = true ]]; then cat $F_LVS_LIST;
                   else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free;
                   fi )
 
@@ -642,7 +643,7 @@ Clone() {
         if [[ $ENCRYPT ]]; then
             encrypt "$ENCRYPT"
         else
-            sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE ]]; then cat $F_PART_TABLE; else sfdisk -d $SRC; fi)")
+            sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE = true ]]; then cat $F_PART_TABLE; else sfdisk -d $SRC; fi)")
             sfdisk -Vq "$DEST" || return 1
         fi
         sleep 3
@@ -750,10 +751,11 @@ Clone() {
         return 0
     }
 
-    if [[ $_RMODE && $IS_CHECKSUM ]]; then
+    pushd "$SRC" >/dev/null || return 1
+
+    if [[ $_RMODE = true && $IS_CHECKSUM = true ]]; then
         message -c "Validating checksums"
         {
-            pushd "$SRC" || return 1
             validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
         } >/dev/null 2>>$F_LOG
         message -y
@@ -761,7 +763,7 @@ Clone() {
 
     message -c "Cloning disk layout"
     {
-        local f=$([[ $_RMODE ]] && echo $F_PART_LIST)
+        local f=$([[ $_RMODE = true ]] && echo $F_PART_LIST)
         _prepare_disk #First collect what we have in our backup
         init_srcs $f
         set_src_uuids $f #Then create the filesystems and PVs
@@ -790,7 +792,7 @@ Clone() {
         for ((i=0;i<${#SPUUIDS[@]};i++)); do PSRC2PDEST[${SPUUIDS[$i]}]=${DPUUIDS[$i]}; done
         for ((i=0;i<${#SNAMES[@]};i++)); do NSRC2NDEST[${SNAMES[$i]}]=${DNAMES[$i]}; done
 
-        [[ ! $_RMODE ]] && mounts
+        [[ $_RMODE = false ]] && mounts
     } >/dev/null 2>>$F_LOG
     message -y
 
@@ -802,7 +804,7 @@ Clone() {
 
     (( cnt - SECTORS <= 0 )) && exit_ 1 "Require $((SECTORS/1024))M but destination is only $((cnt/1024))M"
 
-    if [[ $_RMODE ]]; then
+    if [[ $_RMODE = true ]]; then
         _from_file || return 1
         popd >/dev/null || return 1
     else
@@ -916,7 +918,7 @@ shift $((OPTIND - 1))
     echo "Invalid device or directory: $DEST" && exit 1
 
 if [[ -d $SRC ]]; then
-  [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM ||
+  [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM = true ||
      -f $SRC/$F_PART_LIST &&
      -f $SRC/$F_VGS_LIST &&
      -f $SRC/$F_LVS_LIST &&
