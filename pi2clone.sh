@@ -144,9 +144,10 @@ umount_() {
 }
 
 exit_() {
-    [[ $5 -eq 5 ]] && echo -e "Method call error: \t${2}()\t$3"
+    [[ $1 -eq 5 ]] && echo -e "Method call error: \t${2}()\t$3"
+    [[ $1 -eq 6 ]] && echo -e "Destination not empty!"
     [[ $1 -eq 1 && -n $2 ]] && message -c "$2" && message -n && Cleanup "$1"
-    Cleanup "$1"
+    Cleanup
 }
 
 message() {
@@ -180,7 +181,7 @@ message() {
 }
 
 expand_disk() {
-    local ss=$(if [[ -d $1 ]]; then cat $F_SECTORS_SRC; else blockdev --getsz $1; fi)
+    local ss=$(if [[ -d $1 ]]; then cat $1/$F_SECTORS_SRC; else blockdev --getsz $1; fi)
     local ds=$(blockdev --getsz $2)
 
     local expand_factor=$(echo "scale=2; $ds / $ss" | bc)
@@ -447,22 +448,24 @@ usage() {
     exit 1
 }
 
+
 ### PUBLIC - To be used in MAIN only
 
 Cleanup() {
     exec 1>&3 2>&4
-    message -c "Cleaning up" 
     {
         [[ -d $SRC/lvm_ ]] && rm -rf "$SRC/lmv_"
         umount_
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an $VG_SRC_NAME_CLONE
         [[ $ENCRYPT ]] && cryptsetup close /dev/mapper/$LUKS_LVM_NAME
     } >/dev/null 2>>$F_LOG
-    { (( ${1:-0} > 0 )) && message -n; } || message -y
+    # { (( ${1:-0} > 0 )) && message -n; }
     # exit ${1:-255}
 }
 
 To_file() {
+    if [ -n "$(ls -A "$DEST")" ]; then return 1; fi
+
     pushd "$DEST" >/dev/null || return 1
 
     _save_disk_layout() {
@@ -525,7 +528,7 @@ To_file() {
 
             cmd="tar --warning=none --directory=/mnt/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
 
-            if $INTERACTIVE; then 
+            if [[ $INTERACTIVE = true ]]; then 
                 local size=$(du --bytes --exclude=/proc/* --exclude=/sys/* -s /mnt/$tdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
                 cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_}" 
             else
@@ -544,7 +547,7 @@ To_file() {
         for ((i=0;i<${#s[@]};i++)); do umount_ "${s[$i]}"; done
     done
 
-    $IS_LVM && rm /etc/lvm/backup/* && vgcfgbackup > /dev/null && cp -r /etc/lvm/backup lvm
+    [[ $IS_LVM = true ]] && rm /etc/lvm/backup/* && vgcfgbackup > /dev/null && cp -r /etc/lvm/backup lvm
 
     popd >/dev/null || return 1
     echo $SECTORS > "$DEST/$F_SECTORS_USED"
@@ -588,7 +591,7 @@ Clone() {
             read -r vg_name vg_size vg_free<<< "$e"
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*}-${vg_free%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_size%%.*}
-        done < <( if [[ $_RMODE = true ]]; then cat $F_VGS_LIST;
+        done < <( if [[ $_RMODE = true ]]; then cat $SRC/$F_VGS_LIST;
                   else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free;
                   fi )
 
@@ -611,7 +614,7 @@ Clone() {
                 (( size == 100 )) && size=$((size - max_size))
                 lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
             fi
-        done < <( if [[ $_RMODE = true ]]; then cat $F_LVS_LIST;
+        done < <( if [[ $_RMODE = true ]]; then cat $SRC/$F_LVS_LIST;
                   else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free;
                   fi )
 
@@ -623,7 +626,7 @@ Clone() {
                 if [[ $TYPE == 'lvm' && $d == "$DEST" ]]; then
                     { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME";
                 fi
-            done < <( if [[ -d $d ]]; then cat $F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$d"; fi )
+            done < <( if [[ -d $d ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$d"; fi )
         done
     }
 
@@ -643,7 +646,7 @@ Clone() {
         if [[ $ENCRYPT ]]; then
             encrypt "$ENCRYPT"
         else
-            sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE = true ]]; then cat $F_PART_TABLE; else sfdisk -d $SRC; fi)")
+            sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE = true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)")
             sfdisk -Vq "$DEST" || return 1
         fi
         sleep 3
@@ -662,9 +665,12 @@ Clone() {
 
     _from_file() {
         declare -A files
+        pushd "$SRC" >/dev/null || return 1
+
         for file in [0-9]*; do
             files[${file::-2}]=1
         done
+
         #Now, we are ready to restore files from previous backup images
         for file in ${!files[@]}; do
             message -c "Restoring $file"
@@ -688,6 +694,7 @@ Clone() {
             message -y
         done
 
+        popd >/dev/null || return 1
         return 0
     }
 
@@ -725,7 +732,7 @@ Clone() {
 
                 message -c "Cloning $sdev to $ddev"
                 {
-                    if $INTERACTIVE; then
+                    if [[ $INTERACTIVE = true ]]; then
                         local size=$( \
                             rsync -aSXxH --stats --dry-run "/mnt/$tdev/" "/mnt/$ddev" \
                         | grep -oP 'Number of files: \d*(,\d*)*' \
@@ -751,8 +758,6 @@ Clone() {
         return 0
     }
 
-    pushd "$SRC" >/dev/null || return 1
-
     if [[ $_RMODE = true && $IS_CHECKSUM = true ]]; then
         message -c "Validating checksums"
         {
@@ -763,7 +768,7 @@ Clone() {
 
     message -c "Cloning disk layout"
     {
-        local f=$([[ $_RMODE = true ]] && echo $F_PART_LIST)
+        local f=$([[ $_RMODE = true ]] && echo $SRC/$F_PART_LIST)
         _prepare_disk #First collect what we have in our backup
         init_srcs $f
         set_src_uuids $f #Then create the filesystems and PVs
@@ -806,12 +811,11 @@ Clone() {
 
     if [[ $_RMODE = true ]]; then
         _from_file || return 1
-        popd >/dev/null || return 1
     else
         _clone || return 1
     fi
 
-    if $HAS_GRUB; then
+    if [[ $HAS_GRUB = true ]]; then
         message -c "Installing Grub"
         {
             if [[ $ENCRYPT ]]; then 
@@ -825,9 +829,13 @@ Clone() {
 }
 
 Main() {
-    [[ -b $SRC && -b $DEST ]] && Clone
-    [[ -d "$SRC" && -b $DEST ]] && Clone -r
-    [[ -b "$SRC" && -d $DEST ]] && To_file
+    if [[ -b $SRC && -b $DEST ]]; then 
+        Clone || exit_ 1
+    elif [[ -d "$SRC" && -b $DEST ]]; then
+        Clone -r || exit_ 1
+    elif [[ -b "$SRC" && -d $DEST ]]; then 
+        To_file || exit_ 6
+    fi
 }
 
 
@@ -887,9 +895,9 @@ while getopts ':hiqcs:d:e:n:' option; do
             ;;
         q)  exec &> /dev/null
             ;;
-        # i)  { hash pv 2>/dev/null && INTERACTIVE=true; } || 
-        #     { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
-        #     ;;
+        i)  { hash pv 2>/dev/null && INTERACTIVE=true; } || 
+            { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
+            ;;
         c)  IS_CHECKSUM=true
             ;;
         :)  printf "missing argument for -%s\n" "$OPTARG"
