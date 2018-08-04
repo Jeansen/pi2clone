@@ -51,7 +51,7 @@ declare INTERACTIVE=false
 declare LUKS_LVM_NAME=lukslvm
 
 USAGE="
-Usage: $(basename $0) [-h]|[-n][-q][-i] -s src -d dest
+Usage: $(basename $0) [-h]|[-n <name>][-q][-c][-e] -s src -d dest
 
 Where:
     -h  Show this help text
@@ -61,7 +61,6 @@ Where:
     -q  Quiet, do not show any output
     -n  LVM only: Define new volume group name
     -e  LVM only: Create encrypted disk with supplied passphrase.
-    -i  [DISABLED] Interactive, showing progress bars
 "
 
 ### DEBUG ONLY
@@ -331,11 +330,11 @@ grub_setup() {
     done
 
     # grub-install --boot-directory="/mnt/$d/boot" "$DEST" || return 1
-    chroot "/mnt/$d" sh -c '
+    chroot "/mnt/$d" sh -c "
         apt-get install -y binutils && 
         update-grub && 
         grub-install $DEST &&
-        update-initramfs -u -k all'
+        update-initramfs -u -k all"
     create_rclocal "/mnt/$d"
     umount -R "/mnt/$d"
 }
@@ -632,8 +631,9 @@ Clone() {
 
     _prepare_disk() {
         if hash lvm 2>/dev/null; then
-            vgchange -q -an "$VG_SRC_NAME_CLONE"
-            vgremove -q -f "$VG_SRC_NAME_CLONE"
+            local vgname=$(vgs -o pv_name,vg_name | grep "$DEST" | tr -s ' ' | cut -d ' ' -f3)
+            vgchange -q -an "$vgname"
+            vgremove -q -f "$vgname"
         fi
 
         dd if=/dev/zero of="$DEST" bs=512 count=100000
