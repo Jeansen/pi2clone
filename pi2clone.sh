@@ -375,7 +375,7 @@ crypt_setup() {
 	. /usr/share/initramfs-tools/hook-functions
 
 	cp -a /crypto_keyfile.bin $DESTDIR/crypto_keyfile.bin
-	mkdir $DESTDIR/home
+	mkdir -p $DESTDIR/home
 	cp -a /home/dummy $DESTDIR/home
 
 	exit 0' > "/mnt/$d/etc/initramfs-tools/hooks/lukslvm" && chmod +x "/mnt/$d/etc/initramfs-tools/hooks/lukslvm"
@@ -387,7 +387,9 @@ crypt_setup() {
 	local dev=$(lsblk -asno pkname /dev/mapper/$LUKS_LVM_NAME | head -n 1)
 	echo "$LUKS_LVM_NAME UUID=$(cryptsetup luksUUID "$ENCRYPT_PART") /crypto_keyfile.bin luks,keyscript=/home/dummy" >> "/mnt/$d/etc/crypttab"
 
-	sed -i "/GRUB_CMDLINE_LINUX=/ s|\"\(.*\)\"|\"cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):lukslvm\1\"|" "/mnt/$d/etc/default/grub"
+	grep 'GRUB_CMDLINE_LINUX=' "/mnt/$d/etc/default/grub" &&
+	sed -i "/GRUB_CMDLINE_LINUX=/ s|\"\(.*\)\"|\"cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):lukslvm\1\"|" "/mnt/$d/etc/default/grub" ||
+	echo "GRUB_CMDLINE_LINUX=cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):lukslvm" >> "/mnt/$d/etc/default/grub"
     echo "GRUB_ENABLE_CRYPTODISK=y" >> "/mnt/$d/etc/default/grub"
 
     chroot "/mnt/$d" sh -c "
