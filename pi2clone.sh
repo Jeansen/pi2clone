@@ -48,7 +48,9 @@ declare IS_LVM=false
 declare SECTORS=0
 declare IS_CHECKSUM=false
 declare INTERACTIVE=false
-declare LUKS_LVM_NAME=lukslvm
+declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
+
+export XZ_OPT=-3T0
 
 USAGE="
 Usage: $(basename $0) [-h]|[-n <name>][-q][-c][-e] -s src -d dest
@@ -88,7 +90,7 @@ encrypt() {
     sleep 3
 	ENCRYPT_PART=$(sfdisk -qlo device $DEST | tail -n 1)
 	echo -n "$1" | cryptsetup luksFormat $ENCRYPT_PART -
-	echo -n "$1" | cryptsetup open $ENCRYPT_PART lukslvm --type luks -
+	echo -n "$1" | cryptsetup open $ENCRYPT_PART $LUKS_LVM_NAME --type luks -
 }
 
 mount_() {
@@ -234,7 +236,7 @@ set_dest_uuids() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt ]] && continue
+        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         [[ -n $UUID ]] && DESTS[$UUID]="$NAME"
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
@@ -253,7 +255,10 @@ set_src_uuids() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mountpoint<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt ]] && continue
+        [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT ]] && continue
+        [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[${NAME: -1}]="$UUID"
+        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[${NAME: -1}]="$FSTYPE"
+        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $FSTYPE == LVM2_member ]] && LMBRS[${NAME: -1}]="$UUID"
@@ -271,7 +276,7 @@ init_srcs() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mountpoint<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk || $TYPE == crypt ]] && continue
+        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $TYPE == lvm ]] && LSRCS+=($NAME) && IS_LVM=true
@@ -296,7 +301,7 @@ disk_setup() {
             mkswap "$NAME"
         else
             [[ ${SFS[${NAME: -1}]} ]] && mkfs -t "${SFS[${NAME: -1}]}" "$NAME"
-            [[ ${LMBRS[${NAME: -1}]} ]] && pvcreate "$NAME"
+            [[ ${LMBRS[${NAME: -1}]} ]] && pvcreate -f "$NAME"
         fi
     done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" )
     sleep 3
@@ -319,6 +324,10 @@ boot_setup() {
 grub_setup() {
     local d=${DESTS[${SRC2DEST[${MOUNTS[/]}]}]}
     mount "$d" "/mnt/$d"
+
+	sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*||" "/mnt/$d/etc/default/grub"
+    sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=n/' "/mnt/$d/etc/default/grub"
+	sed -i 's/^/#/' "/mnt/$d/etc/crypttab"
 
     for f in sys dev dev/pts proc run; do 
         mount --bind "/$f" "/mnt/$d/$f";
@@ -353,7 +362,7 @@ crypt_setup() {
     done
 
     printf '%s' '#!/bin/sh
-    exec /bin/cat /${1}' >> /mnt/$d/home/dummy && chmod +x /mnt/$d/home/dummy
+    exec /bin/cat /${1}' > /mnt/$d/home/dummy && chmod +x /mnt/$d/home/dummy
 
     printf '%s' '#!/bin/sh
 	set -e
@@ -384,13 +393,19 @@ crypt_setup() {
     echo -n "$1" | cryptsetup luksAddKey "$ENCRYPT_PART" "/mnt/$d/crypto_keyfile.bin" -
     chmod 000 "/mnt/$d/crypto_keyfile.bin"
 
-	local dev=$(lsblk -asno pkname /dev/mapper/$LUKS_LVM_NAME | head -n 1)
-	echo "$LUKS_LVM_NAME UUID=$(cryptsetup luksUUID "$ENCRYPT_PART") /crypto_keyfile.bin luks,keyscript=/home/dummy" >> "/mnt/$d/etc/crypttab"
+	# local dev=$(lsblk -asno pkname /dev/mapper/$LUKS_LVM_NAME | head -n 1)
+	echo "$LUKS_LVM_NAME UUID=$(cryptsetup luksUUID "$ENCRYPT_PART") /crypto_keyfile.bin luks,keyscript=/home/dummy" > "/mnt/$d/etc/crypttab"
 
-	grep 'GRUB_CMDLINE_LINUX=' "/mnt/$d/etc/default/grub" &&
-	sed -i "/GRUB_CMDLINE_LINUX=/ s|\"\(.*\)\"|\"cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):lukslvm\1\"|" "/mnt/$d/etc/default/grub" ||
-	echo "GRUB_CMDLINE_LINUX=cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):lukslvm" >> "/mnt/$d/etc/default/grub"
+	sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*[^\"]||" "/mnt/$d/etc/default/grub"
+
+    grep -q 'GRUB_CMDLINE_LINUX' "/mnt/$d/etc/default/grub" &&
+    sed -i -E "/GRUB_CMDLINE_LINUX=/ s|\"(.*)\"|\"cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):$LUKS_LVM_NAME \1\"|" "/mnt/$d/etc/default/grub" ||
+    echo "GRUB_CMDLINE_LINUX=cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):$LUKS_LVM_NAME" >> "/mnt/$d/etc/default/grub"
+
+    grep -q 'GRUB_ENABLE_CRYPTODISK' "/mnt/$d/etc/default/grub" &&
+    sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=y/' "/mnt/$d/etc/default/grub" ||
     echo "GRUB_ENABLE_CRYPTODISK=y" >> "/mnt/$d/etc/default/grub"
+
 
     chroot "/mnt/$d" sh -c "
         apt-get install -y lvm2 cryptsetup keyutils binutils &&
@@ -470,12 +485,11 @@ To_file() {
     pushd "$DEST" >/dev/null || return 1
 
     _save_disk_layout() {
-    local vg_src_name=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
     local snp=$(sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep 'snap' | sed -e 's/^\s*//' | cut -d ' ' -f 1)
     [[ -z $snp ]] && snp="NOSNAPSHOT"
 
         {
-            pvs --noheadings -o pv_name,vg_name,lv_active | grep "$SRC" | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_PVS_LIST
+            pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_PVS_LIST
             vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' > $F_VGS_LIST
             lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' > $F_LVS_LIST
             blockdev --getsz "$SRC" > $F_SECTORS_SRC
@@ -496,7 +510,12 @@ To_file() {
     } >/dev/null 2>>$F_LOG
     message -y
 
-    VG_SRC_NAME=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
+    local VG_SRC_NAME=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | cut -d ' ' -f2)
+    if [[ -z $VG_SRC_NAME ]]; then
+        while read -r e g; do 
+            grep -q ${SRC##*/} < <(dmsetup deps -o devname $e | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
+        done < <(pvs --noheadings -o pv_name,vg_name | xargs)
+    fi
 
     for x in SRCS LSRCS; do
         eval declare -n s="$x"
@@ -531,9 +550,9 @@ To_file() {
 
             if [[ $INTERACTIVE = true ]]; then 
                 local size=$(du --bytes --exclude=/proc/* --exclude=/sys/* -s /mnt/$tdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
-                cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_}" 
+                cmd="$cmd -JScpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_}" 
             else
-                cmd="$cmd -Scpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
+                cmd="$cmd -JScpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
             fi
 
             message -c "Creating backup for $sdev"
@@ -656,10 +675,9 @@ Clone() {
 
     _finish() {
         [[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
-
-        boot_setup "SRC2DEST"
-        boot_setup "PSRC2PDEST"
-        if [[ ${#LMBRS[@]} -gt 0 ]]; then boot_setup "NSRC2NDEST"; fi
+        [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST"
+        [[ ${#PSRC2PDEST[@]} -gt 0 ]] && boot_setup "PSRC2PDEST"
+        [[ ${#NSRC2NDEST[@]} -gt 0 ]] && boot_setup "NSRC2NDEST"
 
         umount_ "$sdev"
         umount_ "$ddev"
@@ -685,9 +703,9 @@ Clone() {
                 mount_ "$ddev" -t "$fs"
                 pushd "/mnt/$ddev" >/dev/null || return 1
                 if [[ $fs == vfat ]]; then
-                    fakeroot cat "${SRC}/${file}"* | tar -xf - -C "/mnt/$ddev"
+                    fakeroot cat "${SRC}/${file}"* | tar -xJf - -C "/mnt/$ddev"
                 else
-                    cat "${SRC}/${file}"* | tar -xf - -C "/mnt/$ddev"
+                    cat "${SRC}/${file}"* | tar -xJf - -C "/mnt/$ddev"
                 fi
                 popd >/dev/null || return 1
                 _finish
@@ -938,8 +956,13 @@ if [[ -d $SRC ]]; then
      -f $SRC/$F_PART_TABLE ]] || { message -n "Cannot restore dump, files missing" && exit 1; }
 fi
 
-
 VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sed -e 's/^\s*//' | cut -d ' ' -f2 | uniq)
+if [[ -z $VG_SRC_NAME ]]; then
+    while read -r e g; do 
+        grep -q ${SRC##*/} < <(dmsetup deps -o devname $e | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
+    done < <( if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name; fi)
+fi
+
 [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
 
 Main
