@@ -929,9 +929,10 @@ shift $((OPTIND - 1))
 
 
 #Check for GRUB
-[[ -b "$SRC" ]] && dd bs=512 count=1 if="$SRC" 2>/dev/null | strings | grep -q 'GRUB' && \
+if [[ -b "$SRC" ]] && dd bs=512 count=1 if="$SRC" 2>/dev/null | strings | grep -q 'GRUB'; then
     hash grub-install 2>/dev/null || { echo >&2 "ERROR: grub-install missing. Please install package grub2-common."; abort='exit 1'; }
-[[ -b "$SRC" ]] && [[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: No GRUB binaries found. Please install package grub-pc-bin."; abort='exit 1'; }
+    [[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: No GRUB binaries found. Please install package grub-pc-bin."; abort='exit 1'; }
+fi
 
 [[ -z $SRC || -z $DEST ]] && \
     usage
