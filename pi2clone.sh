@@ -872,10 +872,6 @@ if [ "$(id -u)" != "0" ]; then
   exec sudo "$0" "$@" 
 fi
 
-#Check for GRUB
-[[ -b $SRC ]] && dd bs=512 count=1 if=$SRC 2>/dev/null | strings | grep -q 'GRU' && \
-    hash grub-install 2>/dev/null || { echo >&2 "ERROR: grub-install missing. Please install package grub2-common."; abort='exit 1'; }
-[[ -b $SRC ]] && [[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: No GRUB binaries found. Please install package grub-pc-bin."; abort='exit 1'; }
 
 #Inform about ALL missing but necessary tools.
 for c in lvm parallel rsync tar flock bc blockdev fdisk sfdisk cryptsetup; do
@@ -930,6 +926,12 @@ while getopts ':hiqcs:d:e:n:' option; do
     esac
 done
 shift $((OPTIND - 1))
+
+
+#Check for GRUB
+[[ -b "$SRC" ]] && dd bs=512 count=1 if="$SRC" 2>/dev/null | strings | grep -q 'GRUB' && \
+    hash grub-install 2>/dev/null || { echo >&2 "ERROR: grub-install missing. Please install package grub2-common."; abort='exit 1'; }
+[[ -b "$SRC" ]] && [[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: No GRUB binaries found. Please install package grub-pc-bin."; abort='exit 1'; }
 
 [[ -z $SRC || -z $DEST ]] && \
     usage
