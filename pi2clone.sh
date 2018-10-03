@@ -295,15 +295,17 @@ init_srcs() {
 
 disk_setup() {
     while read -r e; do
-        read -r kname name fstype uuid puuid type parttype mnt<<< "$e"
-        eval "$kname" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        if [[ ${SFS[${NAME: -1}]} == swap ]]; then
-            mkswap "$NAME"
-        else
-            [[ ${SFS[${NAME: -1}]} ]] && mkfs -t "${SFS[${NAME: -1}]}" "$NAME"
-            [[ ${LMBRS[${NAME: -1}]} ]] && pvcreate -f "$NAME"
+        read -r name<<< "$e"
+        eval "$name"
+        if [[ ${NAME: -1} =~ ^[0-9]$ ]]; then
+            if [[ ${SFS[${NAME: -1}]} == swap ]]; then
+                mkswap "$NAME"
+            else
+                [[ ${SFS[${NAME: -1}]} ]] && mkfs -t "${SFS[${NAME: -1}]}" "$NAME"
+                [[ ${LMBRS[${NAME: -1}]} ]] && pvcreate -f "$NAME"
+            fi
         fi
-    done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" )
+    done < <( lsblk -Ppo NAME "$DEST" )
     sleep 3
 }
 
@@ -345,7 +347,7 @@ grub_setup() {
         grub-install $DEST &&
         update-initramfs -u -k all"
     create_rclocal "/mnt/$d"
-    umount -R "/mnt/$d"
+    umount -Rl "/mnt/$d"
 }
 
 crypt_setup() {
@@ -635,7 +637,7 @@ Clone() {
                 lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
             fi
         done < <( if [[ $_RMODE = true ]]; then cat $SRC/$F_LVS_LIST;
-                  else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free;
+                  else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role;
                   fi )
 
         for d in "$SRC" "$DEST"; do
