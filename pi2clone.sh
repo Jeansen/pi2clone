@@ -188,14 +188,22 @@ expand_disk() {
     local expand_factor=$(echo "scale=2; $ds / $ss" | bc)
     local size new_size
     local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
+    local plist=$(if [[ -f "$4" ]]; then cat "$4"; else echo "$4"; fi)
 
     while read -r e; do
         size=
         new_size=
 
+        uuid="$(echo $e | grep -io 'uuid=[0-9a-zA-Z-]*' | sed -n 's/.*uuid=\(.*\).*/\1/p')" 
+        if [[ -n $uuid ]]; then
+            fl=$(grep -i "$uuid" < <(echo "$plist"))
+            mp=$(sed -n 's/.*MOUNTPOINT="\(.*\)"/\1/p' < <(echo "$fl"))
+            if [[ $mp =~ ^/boot|^/boot/efi ]]; then continue; fi
+        fi
+
         if [[ $e =~ ^/ ]]; then
             echo "$e" | grep -qE 'size=\s*([0-9])' && \
-            size=$(echo "$e" | sed -rE 's/.*size=\s*([0-9]*).*/\1/')
+            size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
         fi
 
         if [[ -n "$size" ]]; then
@@ -669,7 +677,9 @@ Clone() {
         if [[ $ENCRYPT ]]; then
             encrypt "$ENCRYPT"
         else
-            sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$(if [[ $_RMODE = true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)")
+            sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" \
+                "$(if [[ $_RMODE = true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)" \
+                "$(if [[ $_RMODE = true ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq; fi)")
             sfdisk -Vq "$DEST" || return 1
         fi
         sleep 3
