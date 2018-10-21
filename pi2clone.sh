@@ -50,19 +50,22 @@ declare IS_CHECKSUM=false
 declare INTERACTIVE=false
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 
-export XZ_OPT=-3T0
 
 USAGE="
-Usage: $(basename $0) [-h]|[-n <name>][-q][-c][-e] -s src -d dest
+Usage: $(basename $0) -s src -d dest [-h]|[-n <name>][-q][-c][-e]
 
 Where:
-    -h  Show this help text
     -s  Source block device or folder
     -d  Destination block device or folder
+
     -c  Create/Validate checksums
-    -q  Quiet, do not show any output
+    -x  Use compression (tripples backup time)
+
     -n  LVM only: Define new volume group name
     -e  LVM only: Create encrypted disk with supplied passphrase.
+
+    -q  Quiet, do not show any output
+    -h  Show this help text
 "
 
 ### DEBUG ONLY
@@ -928,6 +931,8 @@ while getopts ':hiqcs:d:e:n:' option; do
             { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
             ;;
         c)  IS_CHECKSUM=true
+            ;;
+        x)  export XZ_OPT=-3T0
             ;;
         :)  printf "missing argument for -%s\n" "$OPTARG"
             usage
