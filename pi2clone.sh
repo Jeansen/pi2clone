@@ -864,6 +864,7 @@ Clone() {
 }
 
 Main() {
+    echo "Backup started at $(date)"
     if [[ -b $SRC && -b $DEST ]]; then 
         Clone || exit_ 1
     elif [[ -d "$SRC" && -b $DEST ]]; then
@@ -871,6 +872,7 @@ Main() {
     elif [[ -b "$SRC" && -d $DEST ]]; then 
         To_file || exit_ 6
     fi
+    echo "Backup finished at $(date)"
 }
 
 
