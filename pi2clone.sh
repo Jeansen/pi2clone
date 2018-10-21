@@ -59,7 +59,7 @@ Where:
     -d  Destination block device or folder
 
     -c  Create/Validate checksums
-    -x  Use compression (tripples backup time)
+    -x  Use compression (compression ration about 1:3, but very slow!)
 
     -n  LVM only: Define new volume group name
     -e  LVM only: Create encrypted disk with supplied passphrase.
@@ -560,12 +560,13 @@ To_file() {
             } >/dev/null 2>>$F_LOG
 
             cmd="tar --warning=none --directory=/mnt/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
+            [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
             if [[ $INTERACTIVE = true ]]; then 
                 local size=$(du --bytes --exclude=/proc/* --exclude=/sys/* -s /mnt/$tdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
-                cmd="$cmd -JScpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_}" 
+                cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_}" 
             else
-                cmd="$cmd -JScpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
+                cmd="$cmd -Scpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
             fi
 
             message -c "Creating backup for $sdev"
@@ -915,7 +916,7 @@ v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 
 [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
-while getopts ':hiqcs:d:e:n:' option; do
+while getopts ':hiqcxs:d:e:n:' option; do
     case "$option" in
         h)  usage
             ;;
@@ -934,7 +935,7 @@ while getopts ':hiqcs:d:e:n:' option; do
             ;;
         c)  IS_CHECKSUM=true
             ;;
-        x)  export XZ_OPT=-3T0
+        x)  export XZ_OPT=-4T0
             ;;
         :)  printf "missing argument for -%s\n" "$OPTARG"
             usage
