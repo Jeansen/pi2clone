@@ -920,9 +920,9 @@ while getopts ':hiqcxs:d:e:n:' option; do
     case "$option" in
         h)  usage
             ;;
-        s)  SRC=$OPTARG
+        s)  SRC=$(readlink -m $OPTARG)
             ;;
-        d)  DEST=$OPTARG
+        d)  DEST=$(readlink -m $OPTARG)
             ;;
         n)  VG_SRC_NAME_CLONE=$OPTARG
             ;;
@@ -960,14 +960,26 @@ fi
 [[ -d $SRC && ! -b $DEST ]] && \
     echo "$DEST is not a valid block device." && exit 1
 
-[[ -d $DEST && ! -b $SRC ]] && \
-    echo "$DEST is not a valid block device." && exit 1
+[[ ! -b $SRC && -d $DEST ]] && \
+    echo "$SRC is not a valid block device." && exit 1
 
 [[ ! -d $SRC && ! -b $SRC && -b $DEST ]] && \
     echo "Invalid device or directory: $SRC" && exit 1
 
 [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] && \
     echo "Invalid device or directory: $DEST" && exit 1
+
+[[ $SRC == $DEST ]] && \
+    echo "Source and destination cannot be the same!" && exit 1
+
+#Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
+for d in "$SRC" "$DEST"; do
+    if [[ -d $d ]]; then
+        d=$(lsblk -lnpso NAME,TYPE $(mount | grep -E "$d\s" | cut -d ' ' -f1) | grep 'disk' | cut -d ' ' -f1) #get disk dev, e.g. /dev/sda
+        [[ $d == $SRC || $d == $DEST ]] && echo "Source and destination cannot be the same!" && exit 1
+    fi
+done
+
 
 if [[ -d $SRC ]]; then
   [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM = true ||
