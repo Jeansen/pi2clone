@@ -73,7 +73,7 @@ Where:
 printarr() { declare -n __p="$1"; for k in "${!__p[@]}"; do printf "%s=%s\n" "$k" "${__p[$k]}" ; done ;  }
 
 
-### FOR LATER USAGE
+### FOR LATER USE
 
 setHeader() {
     tput csr 2 $((`tput lines` - 2))
@@ -143,45 +143,57 @@ umount_() {
     fi
 
     if [[ "${MNTJRNL[$1]}" ]]; then
-        $cmd "${MNTJRNL[$1]}" && unset MNTJRNL["$1"] || exit 1
+        $cmd "${MNTJRNL[$1]}" && unset MNTJRNL["$1"] || exit_ 1
     fi
 }
 
 exit_() {
-    [[ $1 -eq 5 ]] && echo -e "Method call error: \t${2}()\t$3"
-    [[ $1 -eq 6 ]] && echo -e "Destination not empty!"
-    [[ $1 -eq 1 && -n $2 ]] && message -c "$2" && message -n && Cleanup "$1"
-    Cleanup
+    message -n -t "$2"
+    Cleanup $1
 }
 
 message() {
     local OPTIND
     local status
-    clr_c=$(tput bold; tput setaf 3)
-    clr_y=$(tput setaf 2)
-    clr_n=$(tput setaf 1)
+    local text=
+    local update=false
+    clor_cancel=$(tput bold; tput setaf 3)
+    clr_yes=$(tput setaf 2)
+    clor_no=$(tput setaf 1)
     clr_rmso=$(tput sgr0)
 
-    while getopts ':ncy' option; do
+    #prepare
+    while getopts ':nucyt:' option; do
         case "$option" in
-            y)  status="${clr_y}✔${clr_rmso} $2"
+            t)  text=" $OPTARG"
+                ;;
+            y)  status="${clr_yes}✔${clr_rmso}"
                 tput rc
                 ;;
-            n)  status="${clr_n}✘${clr_rmso} $2"
+            n)  status="${clor_no}✘${clr_rmso}"
                 tput rc
                 ;;
-            c)  status="${clr_c}➤${clr_rmso} $2"
+            u)  update=true
+                ;;
+            c)  status="${clor_cancel}➤${clr_rmso}"
                 tput sc
                 ;;
-            :)  exit_ "${FUNCNAME[0]}" "missing argument for $OPTARG" 5
+            :)  exit_ 5 "Method call error: \t${FUNCNAME[0]}()\tMissing argument for $OPTARG"
                 ;;
-            ?)  exit_ "${FUNCNAME[0]}"  "illegal option: $OPTARG" 5
+            ?)  exit_ 5 "Method call error: \t${FUNCNAME[0]}()\tIllegal option: $OPTARG"
                 ;;
         esac
     done
     shift $((OPTIND - 1))
+    status="${status}"
 
-    { [[ $status ]] && echo -e "$status"; } || exit_ "${FUNCNAME[0]}" "Required option parameters missing" 5
+    #execute
+    { 
+        [[ -n $status ]] && echo -e -n "$status"
+        [[ -n $text ]] && echo -e -n "$text" && tput el
+        echo
+    }
+    [[ $update = true ]] && tput rc
 }
 
 expand_disk() {
@@ -359,6 +371,7 @@ grub_setup() {
         update-initramfs -u -k all"
     create_rclocal "/mnt/$d"
     umount -Rl "/mnt/$d"
+    return 0
 }
 
 crypt_setup() {
@@ -474,7 +487,7 @@ mounts() {
 
 usage() {
     printf "%s\n" "$USAGE"
-    exit 1
+    exit_ 1
 }
 
 
@@ -488,8 +501,9 @@ Cleanup() {
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an $VG_SRC_NAME_CLONE
         [[ $ENCRYPT ]] && cryptsetup close /dev/mapper/$LUKS_LVM_NAME
     } >/dev/null 2>>$F_LOG
-    # { (( ${1:-0} > 0 )) && message -n; }
-    # exit ${1:-255}
+    tput cnorm
+    exec 200>&-
+    exit ${1:-255} #Make sure we really exit the script!
 }
 
 To_file() {
@@ -514,7 +528,7 @@ To_file() {
         lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v $snp > $F_PART_LIST
     }
 
-    message -c "Creating backup of disk layout." 
+    message -c -t "Creating backup of disk layout" 
     {
         _save_disk_layout
         init_srcs
@@ -563,15 +577,25 @@ To_file() {
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
             if [[ $INTERACTIVE = true ]]; then 
-                local size=$(du --bytes --exclude=/proc/* --exclude=/sys/* -s /mnt/$tdev | tr -s '\t' ' ' | cut -d ' ' -f 1)
-                cmd="$cmd -Scpf - . | pv --rate --timer --eta -pe -s $size > ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_}" 
+                message -u -c -t "Cloning $sdev to $ddev [ scan ]"
+                local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s /mnt/$tdev | awk '{print $1}')
+                cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
+
+                local stop=false
+                while read -r e; do 
+                    [[ $e -ge 100 ]] && stop=true
+                    [[ $stop = true ]] && e=100
+                    message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
+                done < <(eval "$cmd" 2>&1)
             else
-                cmd="$cmd -Scpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
+                message -c -t "Cloning $sdev to $ddev"
+                {
+                    cmd="$cmd -Scpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
+                    eval "$cmd"
+                } >/dev/null 2>>$F_LOG
             fi
 
-            message -c "Creating backup for $sdev"
             {
-                eval "$cmd"
                 umount_ "/dev/${VG_SRC_NAME}/$tdev"
                 lvremove -f "${VG_SRC_NAME}/$tdev"
             } >/dev/null 2>>$F_LOG
@@ -586,12 +610,13 @@ To_file() {
     popd >/dev/null || return 1
     echo $SECTORS > "$DEST/$F_SECTORS_USED"
     if [[ $IS_CHECKSUM = true ]]; then
-        message -c "Creating checksums"
+        message -c -t "Creating checksums"
         {
             create_m5dsums "$DEST" "$F_CHESUM" || return 1
         } >/dev/null 2>>$F_LOG
         message -y
     fi
+    return 0
 }
 
 Clone() {
@@ -709,24 +734,32 @@ Clone() {
 
         #Now, we are ready to restore files from previous backup images
         for file in ${!files[@]}; do
-            message -c "Restoring $file"
-            {
-                read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }";
-                local ddev=${DESTS[${SRC2DEST[$uuid]}]}
+            read -r i uuid puuid fs type dev mnt <<< "$e" <<< "${file//./ }"
+            local ddev=${DESTS[${SRC2DEST[$uuid]}]}
 
-                MOUNTS[${mnt//_/\/}]="$uuid"
-                if [[ -n $ddev ]]; then
+            MOUNTS[${mnt//_/\/}]="$uuid"
+
+            if [[ -n $ddev ]]; then
                 mount_ "$ddev" -t "$fs"
                 pushd "/mnt/$ddev" >/dev/null || return 1
+
                 if [[ $fs == vfat ]]; then
                     fakeroot cat "${SRC}/${file}"* | tar -xJf - -C "/mnt/$ddev"
                 else
-                    cat "${SRC}/${file}"* | tar -xJf - -C "/mnt/$ddev"
+                    if [[ $INTERACTIVE = true ]]; then 
+                        local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
+                        while read -r e; do 
+                            message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
+                        done < <((cat "${SRC}/${file}"* | pv --interval 0.5 --numeric -s "$size" | tar -xf - -C "/mnt/$ddev") 2>&1 )
+                    else
+                        message -c -t "Restoring $file"
+                        cat "${SRC}/${file}"* | tar -xf - -C "/mnt/$ddev"
+                    fi
                 fi
+
                 popd >/dev/null || return 1
-                _finish
-                fi
-            } >/dev/null 2>>$F_LOG
+                _finish 2>/dev/null
+            fi
             message -y
         done
 
@@ -766,21 +799,28 @@ Clone() {
 
                 mount_ "$ddev"
 
-                message -c "Cloning $sdev to $ddev"
-                {
-                    if [[ $INTERACTIVE = true ]]; then
-                        local size=$( \
-                            rsync -aSXxH --stats --dry-run "/mnt/$tdev/" "/mnt/$ddev" \
-                        | grep -oP 'Number of files: \d*(,\d*)*' \
-                        | cut -d ':' -f2 \
-                        | tr -d ' ' \
-                        | sed -e 's/,//' \
-                        )
-                        rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv -lep -s "$size"
-                    else
-                        rsync -aSXxH "/mnt/$tdev/" "/mnt/$ddev"
-                    fi
+                if [[ $INTERACTIVE = true ]]; then
+                    message -u -c -t "Cloning $sdev to $ddev [ scan ]"
+                    local size=$( \
+                        rsync -aSXxH --stats --dry-run "/mnt/$tdev/" "/mnt/$ddev" \
+                    | grep -oP 'Number of files: \d*(,\d*)*' \
+                    | cut -d ':' -f2 \
+                    | tr -d ' ' \
+                    | sed -e 's/,//' \
+                    )
 
+                    while read -r e; do 
+                        [[ $e -ge 100 ]] && stop=true
+                        [[ $stop = true ]] && e=100
+                        message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
+                    done < <((rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
+                else
+                    message -c -t "Cloning $sdev to $ddev"
+                    {
+                        rsync -aSXxH "/mnt/$tdev/" "/mnt/$ddev"
+                    } >/dev/null 2>>$F_LOG
+                fi
+                {
                     sleep 3
                     umount_ "/dev/${VG_SRC_NAME}/$tdev"
                     lvremove -q -f "${VG_SRC_NAME}/$tdev"
@@ -795,14 +835,14 @@ Clone() {
     }
 
     if [[ $_RMODE = true && $IS_CHECKSUM = true ]]; then
-        message -c "Validating checksums"
+        message -c -t "Validating checksums"
         {
             validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
         } >/dev/null 2>>$F_LOG
         message -y
     fi
 
-    message -c "Cloning disk layout"
+    message -c -t "Cloning disk layout"
     {
         local f=$([[ $_RMODE = true ]] && echo $SRC/$F_PART_LIST)
         _prepare_disk #First collect what we have in our backup
@@ -843,7 +883,7 @@ Clone() {
     [[ -b $DEST ]] && cnt=$(echo $(lsblk --bytes -o SIZE,TYPE $DEST | grep 'disk' | sed -e 's/\s+*.*//') / 1024 | bc)
     [[ -d $DEST ]] && cnt=$(df -k --output=avail $DEST | tail -n -1)
 
-    (( cnt - SECTORS <= 0 )) && exit_ 1 "Require $((SECTORS/1024))M but destination is only $((cnt/1024))M"
+    (( cnt - SECTORS <= 0 )) && exit_ 10 "Require $((SECTORS/1024))M but destination is only $((cnt/1024))M"
 
     if [[ $_RMODE = true ]]; then
         _from_file || return 1
@@ -852,7 +892,7 @@ Clone() {
     fi
 
     if [[ $HAS_GRUB = true ]]; then
-        message -c "Installing Grub"
+        message -c -t "Installing Grub"
         {
             if [[ $ENCRYPT ]]; then 
                 crypt_setup $ENCRYPT || return 1
@@ -862,18 +902,21 @@ Clone() {
         } >/dev/null 2>>$F_LOG
         message -y
     fi
+    return 0
 }
 
 Main() {
+    tput civis
     echo "Backup started at $(date)"
     if [[ -b $SRC && -b $DEST ]]; then 
         Clone || exit_ 1
     elif [[ -d "$SRC" && -b $DEST ]]; then
         Clone -r || exit_ 1
     elif [[ -b "$SRC" && -d $DEST ]]; then 
-        To_file || exit_ 6
+        To_file || exit_ 6 "Destination not empty!"
     fi
     echo "Backup finished at $(date)"
+    tput cnorm
 }
 
 
@@ -899,24 +942,25 @@ for c in lvm parallel rsync tar flock bc blockdev fdisk sfdisk cryptsetup; do
         *)  package=$c
             ;;
     esac
-    hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing. Please install package $package."; abort='exit 1'; }
+    hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing. Please install package $package."; abort='exit_ 1'; }
 done
 eval "$abort"
 
+hash pv && INTERACTIVE=true
 
 #Lock the script, only one instance is allowed to run at the same time!
 exec 200>"$PIDFILE"
-flock -n 200 || exit 1
+flock -n 200 || exit_ 1
 pid=$$
 echo $pid 1>&200
 
 #Make sure BASH is the right version so we can use array references!
 v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
-(( v<43 )) && echo "ERROR: Bash version must be 4.3 or greater!" && exit 1
+(( v<43 )) && exit_ 1 "ERROR: Bash version must be 4.3 or greater!"
 
 [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
-while getopts ':hiqcxs:d:e:n:' option; do
+while getopts ':hqcxs:d:e:n:' option; do
     case "$option" in
         h)  usage
             ;;
@@ -929,9 +973,6 @@ while getopts ':hiqcxs:d:e:n:' option; do
         e)  ENCRYPT=$OPTARG
             ;;
         q)  exec &> /dev/null
-            ;;
-        i)  { hash pv 2>/dev/null && INTERACTIVE=true; } || 
-            { echo >&2 "WARNING: Package pv is not installed. Interactive mode disabled."; }
             ;;
         c)  IS_CHECKSUM=true
             ;;
@@ -950,33 +991,33 @@ shift $((OPTIND - 1))
 
 #Check for GRUB
 if [[ -b "$SRC" ]] && dd bs=512 count=1 if="$SRC" 2>/dev/null | strings | grep -q 'GRUB'; then
-    hash grub-install 2>/dev/null || { echo >&2 "ERROR: grub-install missing. Please install package grub2-common."; abort='exit 1'; }
-    [[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: No GRUB binaries found. Please install package grub-pc-bin."; abort='exit 1'; }
+    hash grub-install 2>/dev/null || { echo >&2 "ERROR: grub-install missing. Please install package grub2-common."; abort='exit_ 1'; }
+    [[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: No GRUB binaries found. Please install package grub-pc-bin."; abort='exit_ 1'; }
 fi
 
 [[ -z $SRC || -z $DEST ]] && \
     usage
 
 [[ -d $SRC && ! -b $DEST ]] && \
-    echo "$DEST is not a valid block device." && exit 1
+    exit_ 1 "$DEST is not a valid block device."
 
 [[ ! -b $SRC && -d $DEST ]] && \
-    echo "$SRC is not a valid block device." && exit 1
+    exit_ 1 "$SRC is not a valid block device."
 
 [[ ! -d $SRC && ! -b $SRC && -b $DEST ]] && \
-    echo "Invalid device or directory: $SRC" && exit 1
+    exit_ 1 "Invalid device or directory: $SRC"
 
 [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] && \
-    echo "Invalid device or directory: $DEST" && exit 1
+    exit_ 1 "Invalid device or directory: $DEST"
 
 [[ $SRC == $DEST ]] && \
-    echo "Source and destination cannot be the same!" && exit 1
+    exit_ 1 "Source and destination cannot be the same!"
 
 #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
 for d in "$SRC" "$DEST"; do
     if [[ -d $d ]]; then
         d=$(lsblk -lnpso NAME,TYPE $(mount | grep -E "$d\s" | cut -d ' ' -f1) | grep 'disk' | cut -d ' ' -f1) #get disk dev, e.g. /dev/sda
-        [[ $d == $SRC || $d == $DEST ]] && echo "Source and destination cannot be the same!" && exit 1
+        [[ $d == $SRC || $d == $DEST ]] && exit_ 1 "Source and destination cannot be the same!"
     fi
 done
 
@@ -989,7 +1030,7 @@ if [[ -d $SRC ]]; then
      -f $SRC/$F_PVS_LIST &&
      -f $SRC/$F_SECTORS_SRC &&
      -f $SRC/$F_SECTORS_USED &&
-     -f $SRC/$F_PART_TABLE ]] || { message -n "Cannot restore dump, files missing" && exit 1; }
+     -f $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, files missing"
 fi
 
 VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sed -e 's/^\s*//' | cut -d ' ' -f2 | uniq)
