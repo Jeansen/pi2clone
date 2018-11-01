@@ -9,12 +9,12 @@ do live backups without having to use a special rescue image. And I always wante
 
 While bcrm can do do a simple (file-based) clone from system A to B, it can actually do a lot more:
 
--   Clone or Restore a "legacy" system to an UEFI system and vice-versa.
+-   ~~Clone or Restore a "legacy" system to an UEFI system and vice-versa.~~
 -   Clone or Restore a system and encrypt it with LUKS
 -   Clone or Restore LVM-base setups
 -   Optionally create and validate checksums
 -   Optionally compress backups
--   Do things in parallel (\*where possible)
+-   Do things in parallel (where possible)
 -   Provide a simple UI (including progress counters)
 -   Protect a user in doing too dangerous things
 
