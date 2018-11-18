@@ -1080,6 +1080,8 @@ shift $((OPTIND - 1))
 
 [[ $UEFI == true && -d /sys/firmware/efi ]] || exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
 
+[[ -n $(lsblk -no mountpoint $DEST) ]] && exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
+
 
 #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
 for d in "$SRC" "$DEST"; do
