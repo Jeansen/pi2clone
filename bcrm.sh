@@ -23,7 +23,7 @@ F_SECTORS_SRC='sectors'
 F_SECTORS_USED='sectors_used'
 F_PART_TABLE='part_table'
 F_CHESUM='check.md5'
-F_LOG='/tmp/pi2clone.log'
+F_LOG='/tmp/bcrm.log'
 
 
 SCRIPTNAME=$(basename "$0")
@@ -88,13 +88,7 @@ setHeader() {
 
 ### PRIVATE - only used by PUBLIC functions
 
-encrypt() {
-    { echo ';' | sfdisk "$DEST" && sfdisk -Vq; } || return 1
-    sleep 3
-	ENCRYPT_PART=$(sfdisk -qlo device $DEST | tail -n 1)
-	echo -n "$1" | cryptsetup luksFormat $ENCRYPT_PART -
-	echo -n "$1" | cryptsetup open $ENCRYPT_PART $LUKS_LVM_NAME --type luks -
-}
+# By convenction methods ending with a '_' overwrite or wrap commands with the same name.
 
 mount_() {
     local cmd="mount"
@@ -148,8 +142,16 @@ umount_() {
 }
 
 exit_() {
-    message -n -t "$2"
+    [[ -n $2 ]] && message -n -t "$2"
     Cleanup $1
+}
+
+encrypt() {
+  { echo ';' | sfdisk "$DEST" && sfdisk -Vq; } || return 1
+  sleep 3
+	ENCRYPT_PART=$(sfdisk -qlo device $DEST | tail -n 1)
+	echo -n "$1" | cryptsetup luksFormat $ENCRYPT_PART -
+	echo -n "$1" | cryptsetup open $ENCRYPT_PART $LUKS_LVM_NAME --type luks -
 }
 
 message() {
@@ -193,7 +195,7 @@ message() {
         [[ -n $text ]] && echo -e -n "$text" && tput el
         echo
     }
-    [[ $update = true ]] && tput rc
+    [[ $update == true ]] && tput rc
 }
 
 expand_disk() {
@@ -240,6 +242,31 @@ expand_disk() {
     echo "$pdata"
 }
 
+mbr2gpt() {
+    local efisysid='C12A7328-F81F-11D2-BA4B-00A0C93EC93B'
+    local dest="$1"
+    local overlap=$(echo q | gdisk "$dest" | grep -P '\d*\s*blocks!' | awk '{print $1}')
+    local pdata=$(sfdisk -d "$dest")
+
+    if [[ $overlap > 0 ]]; then
+        local sectors=$(echo "$pdata" | tail -n 1 | grep -o -P 'size=\s*(\d*)' | awk '{print $2}')
+        flock $dest sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors-overlap))/")
+    fi
+
+    sgdisk -z "$dest"
+    sgdisk -g "$dest"
+    blockdev --rereadpt "$dest"
+
+    sleep 1
+    local pdata=$(sfdisk -d "$dest")
+    local fstsctr=$(echo "$pdata" | grep -o -P 'size=\s*(\d*)' | awk '{print $2}' | head -n 1 )
+    pdata=$(echo "$pdata" | sed -e "s/$fstsctr/$((fstsctr-1024000))/")
+    pdata=$(echo "$pdata" | grep 'size=' | sed -e 's/^[^,]*,//; s/uuid=[a-Z0-9-]*,\{,1\}//')
+    pdata=$(echo -e "size=1024000, type=${efisysid}\n${pdata}")
+    sfdisk "$dest" < <(echo "$pdata")
+    blockdev --rereadpt "$dest"
+}
+
 create_m5dsums() {
     # find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
     pushd "$1" || return 1
@@ -259,12 +286,12 @@ set_dest_uuids() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
+        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS || $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
         [[ -n $UUID ]] && DESTS[$UUID]="$NAME"
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
         DNAMES+=($NAME)
-    done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" | sort -k 2,2 )
+    done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" | sort -n )
 }
 
 count() {
@@ -275,23 +302,31 @@ count() {
 
 set_src_uuids() {
     SPUUIDS=() SUUIDS=() SNAMES=()
+    local n=0
+
+    if [[ $UEFI == true && $n -eq 0 ]]; then
+        SFS[$n]=vfat
+        n=$((n+1))
+    fi
+
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mountpoint<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT ]] && continue
-        [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[${NAME: -1}]="$UUID"
-        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[${NAME: -1}]="$FSTYPE"
+        [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[$n]="$UUID"
+        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[$n]="$FSTYPE"
         [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
-        [[ $FSTYPE == LVM2_member ]] && LMBRS[${NAME: -1}]="$UUID"
-        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[${NAME: -1}]="$FSTYPE"
+        [[ $FSTYPE == LVM2_member ]] && LMBRS[$n]="$UUID"
+        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[$n]="$FSTYPE"
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
         SNAMES+=($NAME)
         [[ -b $SRC ]] && count "$KNAME"
-    done < <( if [[ -n $1 ]]; then cat "$1" | sort -k 2,2; 
-              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -k 2,2;
+        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && n=$((n+1))
+    done < <( if [[ -n $1 ]]; then cat "$1" | sort -n; 
+              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -n;
               fi )
 }
 
@@ -317,31 +352,48 @@ init_srcs() {
 }
 
 disk_setup() {
+    local n=0
     while read -r e; do
         read -r name<<< "$e"
         eval "$name"
-        if [[ ${NAME: -1} =~ ^[0-9]$ ]]; then
-            if [[ ${SFS[${NAME: -1}]} == swap ]]; then
-                mkswap "$NAME"
+        if [[ ${NAME} =~ [0-9]$ ]]; then
+            if [[ ${SFS[${n}]} == swap ]]; then
+                mkswap -f "$NAME"
             else
-                [[ ${SFS[${NAME: -1}]} ]] && mkfs -t "${SFS[${NAME: -1}]}" "$NAME"
-                [[ ${LMBRS[${NAME: -1}]} ]] && pvcreate -f "$NAME"
+                [[ ${SFS[$n]} ]] && mkfs -t "${SFS[$n]}" "$NAME"
+                [[ ${LMBRS[$n]} ]] && pvcreate -f "$NAME"
             fi
+            n=$((n+1))
         fi
-    done < <( lsblk -Ppo NAME "$DEST" )
+    done < <( lsblk -Ppo NAME "$DEST" | grep -P '[0-9$]' | sort -n)
     sleep 3
 }
 
 boot_setup() {
-    p=$(declare -p "$1")
-    eval "declare -A sd=${p#*=}"
+    local p=$(declare -p "$1")
+    eval "declare -A sd=${p#*=}" #redeclare p1 A-rray 
+
+    local path=(
+        "/cmdline.txt"
+        "/etc/fstab"
+        "/grub/grub.cfg"
+        "/boot/grub/grub.cfg"
+        "/etc/initramfs-tools/conf.d/resume"
+    )
 
     for k in "${!sd[@]}"; do
         for d in "${DESTS[@]}"; do
             sed -i "s|$k|${sd[$k]}|" \
-                "/mnt/$d/cmdline.txt" "/mnt/$d/etc/fstab" \
-                "/mnt/$d/grub/grub.cfg" "/mnt/$d/boot/grub/grub.cfg" "/mnt/$d/etc/initramfs-tools/conf.d/resume" \
+                "/mnt/$d/${path[0]}" "/mnt/$d/${path[1]}" \
+                "/mnt/$d/${path[2]}" "/mnt/$d/${path[3]}" \
                 2>/dev/null
+
+            #resume file might be wrong, so we just set it explicitely
+            if [[ -e /mnt/$d/${path[4]} ]]; then
+                local uuid fstype
+                read -r uuid fstype<<< $(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
+                echo "RESUME=$uuid" > $"/mnt/$d/${path[4]}" 
+            fi
         done
     done
 }
@@ -358,17 +410,28 @@ grub_setup() {
         mount --bind "/$f" "/mnt/$d/$f";
     done
 
+    #TODO order, e.g first /boot, then /boot/efi.
     for m in "${!MOUNTS[@]}"; do
         [[ "$m" == / ]] && continue 
         [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "/mnt/$d/$m"
     done
 
-    # grub-install --boot-directory="/mnt/$d/boot" "$DEST" || return 1
-    chroot "/mnt/$d" sh -c "
-        apt-get install -y binutils && 
-        update-grub && 
-        grub-install $DEST &&
-        update-initramfs -u -k all"
+    if [[ $UEFI == true ]]; then
+        while read -r e; do
+            read -r name uuid parttype<<< "$e"
+            eval "$name" "$uuid" "$parttype"
+        done < <( lsblk -pPo name,uuid,parttype $DEST | grep -i 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b' )
+
+        echo -e "${uuid}\t/boot/efi\tvfat\tumask=0077\t0\t1" >> "/mnt/$d/etc/fstab"
+        mkdir -p /mnt/$d/boot/efi && mount $uuid /mnt/$d/boot/efi
+
+        local apt_pkgs="grub-efi-amd64"
+    else
+        local apt_pkgs="binutils grub2-common grub-pc-bin"
+    fi
+
+    pkg_install "$d" "$apt_pkgs" || return 1
+
     create_rclocal "/mnt/$d"
     umount -Rl "/mnt/$d"
     return 0
@@ -432,14 +495,17 @@ crypt_setup() {
     sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=y/' "/mnt/$d/etc/default/grub" ||
     echo "GRUB_ENABLE_CRYPTODISK=y" >> "/mnt/$d/etc/default/grub"
 
-
-    chroot "/mnt/$d" sh -c "
-        apt-get install -y lvm2 cryptsetup keyutils binutils &&
-        update-grub && 
-        grub-install $DEST &&
-        update-initramfs -u -k all"
+    pkg_install "$d" "lvm2 cryptsetup keyutils binutils grub2-common grub-pc-bin" || return 1
     create_rclocal "/mnt/$d"
     umount -R "/mnt/$d"
+}
+
+pkg_install() {
+    chroot "/mnt/$1" sh -c "
+        apt-get install -y $2 &&
+        update-grub &&
+        grub-install $DEST &&
+        update-initramfs -u -k all" || return 1
 }
 
 create_rclocal() {
@@ -576,7 +642,7 @@ To_file() {
             cmd="tar --warning=none --directory=/mnt/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
-            if [[ $INTERACTIVE = true ]]; then 
+            if [[ $INTERACTIVE == true ]]; then 
                 message -u -c -t "Cloning $sdev to $ddev [ scan ]"
                 local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s /mnt/$tdev | awk '{print $1}')
                 cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
@@ -584,7 +650,7 @@ To_file() {
                 local stop=false
                 while read -r e; do 
                     [[ $e -ge 100 ]] && stop=true
-                    [[ $stop = true ]] && e=100
+                    [[ $stop == true ]] && e=100
                     message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
                 done < <(eval "$cmd" 2>&1)
             else
@@ -605,11 +671,11 @@ To_file() {
         for ((i=0;i<${#s[@]};i++)); do umount_ "${s[$i]}"; done
     done
 
-    [[ $IS_LVM = true ]] && rm /etc/lvm/backup/* && vgcfgbackup > /dev/null && cp -r /etc/lvm/backup lvm
+    [[ $IS_LVM == true ]] && rm /etc/lvm/backup/* && vgcfgbackup > /dev/null && cp -r /etc/lvm/backup lvm
 
     popd >/dev/null || return 1
     echo $SECTORS > "$DEST/$F_SECTORS_USED"
-    if [[ $IS_CHECKSUM = true ]]; then
+    if [[ $IS_CHECKSUM == true ]]; then
         message -c -t "Creating checksums"
         {
             create_m5dsums "$DEST" "$F_CHESUM" || return 1
@@ -650,7 +716,7 @@ Clone() {
             read -r vg_name vg_size vg_free<<< "$e"
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*}-${vg_free%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_size%%.*}
-        done < <( if [[ $_RMODE = true ]]; then cat $SRC/$F_VGS_LIST;
+        done < <( if [[ $_RMODE == true ]]; then cat $SRC/$F_VGS_LIST;
                   else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free;
                   fi )
 
@@ -673,7 +739,7 @@ Clone() {
                 (( size == 100 )) && size=$((size - max_size))
                 lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
             fi
-        done < <( if [[ $_RMODE = true ]]; then cat $SRC/$F_LVS_LIST;
+        done < <( if [[ $_RMODE == true ]]; then cat $SRC/$F_LVS_LIST;
                   else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role;
                   fi )
 
@@ -683,7 +749,7 @@ Clone() {
                 eval "$kname" "$name" "$fstype" "$type"
                 [[ $TYPE == 'lvm' && $d == "$SRC" ]] && SRC_LFS[${NAME##*-}]=$FSTYPE
                 if [[ $TYPE == 'lvm' && $d == "$DEST" ]]; then
-                    { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME";
+                    { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME";
                 fi
             done < <( if [[ -d $d ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$d"; fi )
         done
@@ -697,6 +763,8 @@ Clone() {
         fi
 
         dd if=/dev/zero of="$DEST" bs=512 count=100000
+        dd bs=512 if=/dev/zero of="$DEST" count=4096 seek=$((`blockdev --getsz $DEST` - 4096))
+
         #For some reason sfdisk < 2.29 does not create PARTUUIDs when importing a partition table.
         #But when we create a partition and afterward import a prviously dumped partition table, it works!
         # echo -e "n\np\n\n\n\nw\n" | fdisk "$DEST"
@@ -706,11 +774,13 @@ Clone() {
         if [[ $ENCRYPT ]]; then
             encrypt "$ENCRYPT"
         else
-            sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" \
-                "$(if [[ $_RMODE = true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)" \
-                "$(if [[ $_RMODE = true ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq; fi)")
-            sfdisk -Vq "$DEST" || return 1
+            flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" \
+                "$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)" \
+                "$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq; fi)")
+            flock "$DEST" sfdisk -Vq "$DEST" || return 1
         fi
+
+        [[ $UEFI == true ]] && mbr2gpt $DEST
         sleep 3
     }
 
@@ -746,7 +816,7 @@ Clone() {
                 if [[ $fs == vfat ]]; then
                     fakeroot cat "${SRC}/${file}"* | tar -xJf - -C "/mnt/$ddev"
                 else
-                    if [[ $INTERACTIVE = true ]]; then 
+                    if [[ $INTERACTIVE == true ]]; then 
                         local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
                         while read -r e; do 
                             message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
@@ -799,7 +869,7 @@ Clone() {
 
                 mount_ "$ddev"
 
-                if [[ $INTERACTIVE = true ]]; then
+                if [[ $INTERACTIVE == true ]]; then
                     message -u -c -t "Cloning $sdev to $ddev [ scan ]"
                     local size=$( \
                         rsync -aSXxH --stats --dry-run "/mnt/$tdev/" "/mnt/$ddev" \
@@ -811,7 +881,7 @@ Clone() {
 
                     while read -r e; do 
                         [[ $e -ge 100 ]] && stop=true
-                        [[ $stop = true ]] && e=100
+                        [[ $stop == true ]] && e=100
                         message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
                     done < <((rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
                 else
@@ -834,7 +904,7 @@ Clone() {
         return 0
     }
 
-    if [[ $_RMODE = true && $IS_CHECKSUM = true ]]; then
+    if [[ $_RMODE == true && $IS_CHECKSUM == true ]]; then
         message -c -t "Validating checksums"
         {
             validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
@@ -844,7 +914,7 @@ Clone() {
 
     message -c -t "Cloning disk layout"
     {
-        local f=$([[ $_RMODE = true ]] && echo $SRC/$F_PART_LIST)
+        local f=$([[ $_RMODE == true ]] && echo $SRC/$F_PART_LIST)
         _prepare_disk #First collect what we have in our backup
         init_srcs $f
         set_src_uuids $f #Then create the filesystems and PVs
@@ -885,13 +955,13 @@ Clone() {
 
     (( cnt - SECTORS <= 0 )) && exit_ 10 "Require $((SECTORS/1024))M but destination is only $((cnt/1024))M"
 
-    if [[ $_RMODE = true ]]; then
+    if [[ $_RMODE == true ]]; then
         _from_file || return 1
     else
         _clone || return 1
     fi
 
-    if [[ $HAS_GRUB = true ]]; then
+    if [[ $HAS_GRUB == true ]]; then
         message -c -t "Installing Grub"
         {
             if [[ $ENCRYPT ]]; then 
@@ -933,7 +1003,6 @@ if [ "$(id -u)" != "0" ]; then
   exec sudo "$0" "$@" 
 fi
 
-
 #Inform about ALL missing but necessary tools.
 for c in lvm parallel rsync tar flock bc blockdev fdisk sfdisk cryptsetup; do
     case "$c" in
@@ -942,7 +1011,7 @@ for c in lvm parallel rsync tar flock bc blockdev fdisk sfdisk cryptsetup; do
         *)  package=$c
             ;;
     esac
-    hash $c 2>/dev/null || { echo >&2 "ERROR: $c missing. Please install package $package."; abort='exit_ 1'; }
+    hash $c 2>/dev/null || { message -n -t "ERROR: $c missing. Please install package $package."; abort='exit_ 1'; }
 done
 eval "$abort"
 
@@ -960,7 +1029,7 @@ v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 
 [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
-while getopts ':hqcxs:d:e:n:' option; do
+while getopts ':huqcxs:d:e:n:' option; do
     case "$option" in
         h)  usage
             ;;
@@ -971,6 +1040,8 @@ while getopts ':hqcxs:d:e:n:' option; do
         n)  VG_SRC_NAME_CLONE=$OPTARG
             ;;
         e)  ENCRYPT=$OPTARG
+            ;;
+        u)  UEFI=true
             ;;
         q)  exec &> /dev/null
             ;;
@@ -988,12 +1059,6 @@ while getopts ':hqcxs:d:e:n:' option; do
 done
 shift $((OPTIND - 1))
 
-
-#Check for GRUB
-if [[ -b "$SRC" ]] && dd bs=512 count=1 if="$SRC" 2>/dev/null | strings | grep -q 'GRUB'; then
-    hash grub-install 2>/dev/null || { echo >&2 "ERROR: grub-install missing. Please install package grub2-common."; abort='exit_ 1'; }
-    [[ -d /usr/lib/grub/i386-pc ]] || { echo >&2 "ERROR: No GRUB binaries found. Please install package grub-pc-bin."; abort='exit_ 1'; }
-fi
 
 [[ -z $SRC || -z $DEST ]] && \
     usage
@@ -1013,6 +1078,9 @@ fi
 [[ $SRC == $DEST ]] && \
     exit_ 1 "Source and destination cannot be the same!"
 
+[[ $UEFI == true && -d /sys/firmware/efi ]] || exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
+
+
 #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
 for d in "$SRC" "$DEST"; do
     if [[ -d $d ]]; then
@@ -1023,7 +1091,7 @@ done
 
 
 if [[ -d $SRC ]]; then
-  [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM = true ||
+  [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
      -f $SRC/$F_PART_LIST &&
      -f $SRC/$F_VGS_LIST &&
      -f $SRC/$F_LVS_LIST &&
