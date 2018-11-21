@@ -478,7 +478,7 @@ crypt_setup() {
 
 	exit 0' > "/mnt/$d/etc/initramfs-tools/hooks/lukslvm" && chmod +x "/mnt/$d/etc/initramfs-tools/hooks/lukslvm"
 
-    dd bs=512 count=4 if=/dev/urandom of="/mnt/$d/crypto_keyfile.bin"
+    dd oflag=direct bs=512 count=4 if=/dev/urandom of="/mnt/$d/crypto_keyfile.bin"
     echo -n "$1" | cryptsetup luksAddKey "$ENCRYPT_PART" "/mnt/$d/crypto_keyfile.bin" -
     chmod 000 "/mnt/$d/crypto_keyfile.bin"
 
@@ -762,8 +762,8 @@ Clone() {
             vgremove -q -f "$vgname"
         fi
 
-        dd if=/dev/zero of="$DEST" bs=512 count=100000
-        dd bs=512 if=/dev/zero of="$DEST" count=4096 seek=$((`blockdev --getsz $DEST` - 4096))
+        dd oflag=direct if=/dev/zero of="$DEST" bs=512 count=100000
+        dd oflag=direct bs=512 if=/dev/zero of="$DEST" count=4096 seek=$((`blockdev --getsz $DEST` - 4096))
 
         #For some reason sfdisk < 2.29 does not create PARTUUIDs when importing a partition table.
         #But when we create a partition and afterward import a prviously dumped partition table, it works!
