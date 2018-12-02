@@ -64,6 +64,8 @@ Where:
     -n  LVM only: Define new volume group name
     -e  LVM only: Create encrypted disk with supplied passphrase.
 
+    -u  Convert to UEFI
+
     -q  Quiet, do not show any output
     -h  Show this help text
 "
@@ -113,7 +115,7 @@ mount_() {
     shift $((OPTIND - 1))
 
     mkdir -p "$path"
-    $cmd "$src" "$path" && MNTJRNL["$src"]="$path" || return 1
+    { $cmd "$src" "$path" && MNTJRNL["$src"]="$path";} || return 1
 }
 
 umount_() {
@@ -147,11 +149,11 @@ exit_() {
 }
 
 encrypt() {
-  { echo ';' | sfdisk "$DEST" && sfdisk -Vq; } || return 1
-  sleep 3
-	ENCRYPT_PART=$(sfdisk -qlo device $DEST | tail -n 1)
-	echo -n "$1" | cryptsetup luksFormat $ENCRYPT_PART -
-	echo -n "$1" | cryptsetup open $ENCRYPT_PART $LUKS_LVM_NAME --type luks -
+    { echo ';' | sfdisk "$DEST" && sfdisk -Vq; } || return 1 #delete all partitions and create one for the whole disk.
+    sleep 3
+    ENCRYPT_PART=$(sfdisk -qlo device $DEST | tail -n 1)
+    echo -n "$1" | cryptsetup luksFormat $ENCRYPT_PART -
+    echo -n "$1" | cryptsetup open $ENCRYPT_PART $LUKS_LVM_NAME --type luks -
 }
 
 message() {
@@ -253,17 +255,17 @@ mbr2gpt() {
         flock $dest sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors-overlap))/")
     fi
 
-    sgdisk -z "$dest"
-    sgdisk -g "$dest"
+    blockdev --rereadpt "$dest"
+    flock $dest sgdisk -z "$dest"
+    flock $dest sgdisk -g "$dest"
     blockdev --rereadpt "$dest"
 
-    sleep 1
     local pdata=$(sfdisk -d "$dest")
     local fstsctr=$(echo "$pdata" | grep -o -P 'size=\s*(\d*)' | awk '{print $2}' | head -n 1 )
     pdata=$(echo "$pdata" | sed -e "s/$fstsctr/$((fstsctr-1024000))/")
     pdata=$(echo "$pdata" | grep 'size=' | sed -e 's/^[^,]*,//; s/uuid=[a-Z0-9-]*,\{,1\}//')
     pdata=$(echo -e "size=1024000, type=${efisysid}\n${pdata}")
-    sfdisk "$dest" < <(echo "$pdata")
+    flock $dest sfdisk "$dest" < <(echo "$pdata")
     blockdev --rereadpt "$dest"
 }
 
@@ -286,7 +288,8 @@ set_dest_uuids() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS || $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
+        [[ $UEFI == true && $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
+        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         [[ -n $UUID ]] && DESTS[$UUID]="$NAME"
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
@@ -314,17 +317,15 @@ set_src_uuids() {
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT ]] && continue
         [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[$n]="$UUID"
-        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[$n]="$FSTYPE"
+        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[$n]="$FSTYPE" && n=$((n+1))
         [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $FSTYPE == LVM2_member ]] && LMBRS[$n]="$UUID"
-        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[$n]="$FSTYPE"
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
         SNAMES+=($NAME)
         [[ -b $SRC ]] && count "$KNAME"
-        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && n=$((n+1))
     done < <( if [[ -n $1 ]]; then cat "$1" | sort -n; 
               else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -n;
               fi )
@@ -351,20 +352,27 @@ init_srcs() {
               fi )
 }
 
+is_partition() {
+    read -r name parttype type fstype<<< $(lsblk -Ppo NAME,PARTTYPE,TYPE,FSTYPE "$1" | grep "$2")
+    eval "$name" "$parttype" "$type" "$fstype"
+    [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && return 0
+    return 1
+}
+
 disk_setup() {
+    if [[ $UEFI == true ]]; then
+        for v in ${SFS[@]}; do local sfs+=($v); done
+        SFS=(${SFS[@]})
+    fi
+
     local n=0
     while read -r e; do
         read -r name<<< "$e"
         eval "$name"
-        if [[ ${NAME} =~ [0-9]$ ]]; then
-            if [[ ${SFS[${n}]} == swap ]]; then
-                mkswap -f "$NAME"
-            else
-                [[ ${SFS[$n]} ]] && mkfs -t "${SFS[$n]}" "$NAME"
-                [[ ${LMBRS[$n]} ]] && pvcreate -f "$NAME"
-            fi
-            n=$((n+1))
-        fi
+        [[ -n ${LMBRS[$n]} ]] && pvcreate -f "$NAME" && continue
+        [[ -n ${SFS[${n}]} && ${SFS[${n}]} == swap ]] && mkswap -f "$NAME" && continue
+        [[ -n ${SFS[$n]} ]] && mkfs -t "${SFS[$n]}" "$NAME"
+        n=$((n+1))
     done < <( lsblk -Ppo NAME "$DEST" | grep -P '[0-9$]' | sort -n)
     sleep 3
 }
@@ -427,7 +435,7 @@ grub_setup() {
 
         local apt_pkgs="grub-efi-amd64"
     else
-        local apt_pkgs="binutils grub2-common grub-pc-bin"
+        local apt_pkgs="binutils"
     fi
 
     pkg_install "$d" "$apt_pkgs" || return 1
@@ -497,14 +505,14 @@ crypt_setup() {
 
     pkg_install "$d" "lvm2 cryptsetup keyutils binutils grub2-common grub-pc-bin" || return 1
     create_rclocal "/mnt/$d"
-    umount -R "/mnt/$d"
+    umount -lR "/mnt/$d"
 }
 
 pkg_install() {
     chroot "/mnt/$1" sh -c "
         apt-get install -y $2 &&
-        update-grub &&
         grub-install $DEST &&
+        update-grub &&
         update-initramfs -u -k all" || return 1
 }
 
@@ -650,9 +658,10 @@ To_file() {
                 local stop=false
                 while read -r e; do 
                     [[ $e -ge 100 ]] && stop=true
-                    [[ $stop == true ]] && e=100
+                    [[ $stop == true ]] && e=100 #Just a precaution
                     message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
                 done < <(eval "$cmd" 2>&1)
+                message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
             else
                 message -c -t "Cloning $sdev to $ddev"
                 {
@@ -779,9 +788,10 @@ Clone() {
                 "$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq; fi)")
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
         fi
+        sleep 1
+        blockdev --rereadpt "$DEST"
 
         [[ $UEFI == true ]] && mbr2gpt $DEST
-        sleep 3
     }
 
     _finish() {
@@ -990,7 +1000,10 @@ Main() {
 }
 
 
-### ENTRYPOINT
+# ------------------------------------------------------------------------------------------------------------------- #
+# ENTRYPOINT
+# ------------------------------------------------------------------------------------------------------------------- #
+
 exec 3>&1 4>&2
 trap Cleanup INT TERM EXIT
 
@@ -1078,9 +1091,9 @@ shift $((OPTIND - 1))
 [[ $SRC == $DEST ]] && \
     exit_ 1 "Source and destination cannot be the same!"
 
-[[ $UEFI == true && -d /sys/firmware/efi ]] || exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
+[[ "$UEFI" == true && ! -d /sys/firmware/efi ]] && exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
 
-[[ -n $(lsblk -no mountpoint $DEST) ]] && exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
+[[ -n $(lsblk -no mountpoint $DEST 2>/dev/null) ]] && exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
 
 
 #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
