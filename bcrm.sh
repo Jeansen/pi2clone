@@ -38,7 +38,7 @@ declare -A SRC_LFS DESTS SRC2DEST PSRC2PDEST NSRC2NDEST
 
 declare SPUUIDS=() SUUIDS=()
 declare DPUUIDS=() DUUIDS=()
-declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=()
+declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
 
 declare VG_SRC_NAME VG_SRC_NAME_CLONE
 
@@ -46,13 +46,14 @@ declare HAS_GRUB=false
 declare IS_LVM=false
 
 declare SECTORS=0
+declare MIN_RESIZE=2048
 declare IS_CHECKSUM=false
 declare INTERACTIVE=false
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 
 
 USAGE="
-Usage: $(basename $0) -s src -d dest [-h]|[-n <name>][-q][-c][-e]
+Usage: $(basename $0) -s src -d dest [-c] [-x] [-n <name>] [-e <passphrase>] [-u] [-p] [-m <sizee in MB>] [-q] [-h]
 
 Where:
     -s  Source block device or folder
@@ -65,9 +66,12 @@ Where:
     -e  LVM only: Create encrypted disk with supplied passphrase.
 
     -u  Convert to UEFI
+    -p  LVM only: Use all disks found on destination as PVs for VG
+    -m  Do not resize partitions smallter than the size provided (default 2048)
 
     -q  Quiet, do not show any output
     -h  Show this help text
+
 "
 
 ### DEBUG ONLY
@@ -207,18 +211,10 @@ expand_disk() {
     local expand_factor=$(echo "scale=2; $ds / $ss" | bc)
     local size new_size
     local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
-    local plist=$(if [[ -f "$4" ]]; then cat "$4"; else echo "$4"; fi)
 
     while read -r e; do
         size=
         new_size=
-
-        uuid="$(echo $e | grep -io 'uuid=[0-9a-zA-Z-]*' | sed -n 's/.*uuid=\(.*\).*/\1/p')" 
-        if [[ -n $uuid ]]; then
-            fl=$(grep -i "$uuid" < <(echo "$plist"))
-            mp=$(sed -n 's/.*MOUNTPOINT="\(.*\)"/\1/p' < <(echo "$fl"))
-            if [[ $mp =~ ^/boot|^/boot/efi ]]; then continue; fi
-        fi
 
         if [[ $e =~ ^/ ]]; then
             echo "$e" | grep -qE 'size=\s*([0-9])' && \
@@ -226,6 +222,7 @@ expand_disk() {
         fi
 
         if [[ -n "$size" ]]; then
+            [[ $(($size / 2 / 1024)) -le $MIN_RESIZE ]] && continue
             new_size=$(echo "scale=2; $size * $expand_factor" | bc) && \
             pdata=$(sed "s/$size/${new_size%%.*}/" < <(echo "$pdata"))
         fi
@@ -289,12 +286,13 @@ set_dest_uuids() {
         read -r kdev name fstype uuid puuid type parttype mnt<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $UEFI == true && $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
-        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
+        [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
         [[ -n $UUID ]] && DESTS[$UUID]="$NAME"
+        [[ ${PVS[@]} =~ $NAME ]] && continue
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
         DNAMES+=($NAME)
-    done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" | sort -n )
+    done < <( lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -n | uniq | grep -v 'disk')
 }
 
 count() {
@@ -315,19 +313,21 @@ set_src_uuids() {
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mountpoint<<< "$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+
         [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT ]] && continue
         [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[$n]="$UUID"
+        [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[$n]="$FSTYPE" && n=$((n+1))
-        [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
-        [[ $FSTYPE == LVM2_member ]] && LMBRS[$n]="$UUID"
+        [[ $FSTYPE == LVM2_member ]] && LMBRS[$n]="$UUID" && n=$((n+1)) && continue
+        [[ ${PVS[@]} =~ $NAME ]] && continue
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
         SNAMES+=($NAME)
         [[ -b $SRC ]] && count "$KNAME"
     done < <( if [[ -n $1 ]]; then cat "$1" | sort -n; 
-              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -n;
+              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | sort -n | uniq | grep -v 'disk';
               fi )
 }
 
@@ -338,7 +338,7 @@ init_srcs() {
         [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
-        [[ $TYPE == lvm ]] && LSRCS+=($NAME) && IS_LVM=true
+        [[ $TYPE == lvm && -z $1 ]] && LSRCS+=($NAME)
         [[ $TYPE == part ]] && SRCS+=($NAME)
         FILESYSTEMS[$NAME]="$FSTYPE"
         PARTUUIDS[$NAME]="$PARTUUID"
@@ -348,7 +348,7 @@ init_srcs() {
         [[ -n $PARTUUID ]] && NAMES[$PARTUUID]=$NAME
         [[ -n $UUID && -n $PARTUUID ]] && PUUIDS2UUIDS[$PARTUUID]="$UUID"
     done < <( if [[ -n $1 ]]; then cat "$1"; 
-              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC";
+              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | sort -n | uniq | grep -v 'disk';
               fi )
 }
 
@@ -359,6 +359,33 @@ is_partition() {
     return 1
 }
 
+vg_extend() {
+    #$1: VG name of VG to extend
+    while read -r e; do
+        read -r name type <<< "$e"
+        [[ -n $(lsblk -no mountpoint $name 2>/dev/null) ]] && continue
+        echo ';' | flock $name sfdisk -q $name && sfdisk $name -Vq
+        local part=$(lsblk $name -lnpo name,type | grep part | awk '{print $1}')
+        pvcreate -f $part && vgextend $1 $part
+        PVS+=($part)
+    done < <( lsblk -po name,type | grep disk | grep -Ev "$DEST|$SRC")
+}
+
+pvs_init() {
+    #$1: VG name of VG to extend
+    while read -r e; do
+        read -r name type <<< "$e"
+        local part=$(lsblk $name -lnpo name,type | grep part | awk '{print $1}')
+        PVS+=($part)
+    done < <( lsblk -po name,type | grep disk | grep -Ev "$DEST|$SRC")
+}
+
+vg_disks() {
+    for f in $(pvs --no-headings -o pv_name,lv_dm_path | grep -E "${1}\-\w+" | awk '{print $1}' | uniq); do 
+        VG_DISKS+=($(lsblk -pnls $f | grep disk | awk '{print $1}'))
+    done
+}
+
 disk_setup() {
     if [[ $UEFI == true ]]; then
         for v in ${SFS[@]}; do local sfs+=($v); done
@@ -367,13 +394,13 @@ disk_setup() {
 
     local n=0
     while read -r e; do
-        read -r name<<< "$e"
+        read -r name parttype<<< "$e"
         eval "$name"
         [[ -n ${LMBRS[$n]} ]] && pvcreate -f "$NAME" && continue
         [[ -n ${SFS[${n}]} && ${SFS[${n}]} == swap ]] && mkswap -f "$NAME" && continue
         [[ -n ${SFS[$n]} ]] && mkfs -t "${SFS[$n]}" "$NAME"
         n=$((n+1))
-    done < <( lsblk -Ppo NAME "$DEST" | grep -P '[0-9$]' | sort -n)
+    done < <( lsblk -Ppo NAME,PARTTYPE "$DEST" | grep -E '[0-9$]' | sort -n | grep -v 'PARTTYPE="0x5"')
     sleep 3
 }
 
@@ -716,10 +743,8 @@ Clone() {
         local size s1 s2
         local dest=$1
 
-        while read -r e; do
-            read -r pv_name vg_name<<< "$e"
-            [[ -z $vg_name && $pv_name =~ $dest ]] && vgcreate "$VG_SRC_NAME_CLONE" "$pv_name"
-        done < <( pvs --noheadings -o pv_name,vg_name )
+        vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name,vg_name | grep -Ev '(\w+)\s*(\w+)$')
+        [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE"
 
         while read -r e; do
             read -r vg_name vg_size vg_free<<< "$e"
@@ -752,23 +777,26 @@ Clone() {
                   else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role;
                   fi )
 
-        for d in "$SRC" "$DEST"; do
-            while read -r e; do
-                read -r kname name fstype type<<< "$e"
-                eval "$kname" "$name" "$fstype" "$type"
-                [[ $TYPE == 'lvm' && $d == "$SRC" ]] && SRC_LFS[${NAME##*-}]=$FSTYPE
-                if [[ $TYPE == 'lvm' && $d == "$DEST" ]]; then
-                    { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME";
-                fi
-            done < <( if [[ -d $d ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$d"; fi )
-        done
+        while read -r e; do
+            read -r kname name fstype type<<< "$e"
+            eval "$kname" "$name" "$fstype" "$type"
+            [[ $TYPE == 'lvm' ]] && SRC_LFS[${NAME##*-}]=$FSTYPE
+        done < <( if [[ -d $SRC ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$SRC" ${VG_DISKS[@]}; fi )
+
+        while read -r e; do
+            read -r kname name fstype type<<< "$e"
+            eval "$kname" "$name" "$fstype" "$type"
+            echo "LFSNAME = $name"
+            { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME";
+        done < <( lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | uniq | grep ${VG_SRC_NAME_CLONE/-/--})
     }
 
     _prepare_disk() {
         if hash lvm 2>/dev/null; then
-            local vgname=$(vgs -o pv_name,vg_name | grep "$DEST" | tr -s ' ' | cut -d ' ' -f3)
-            vgchange -q -an "$vgname"
-            vgremove -q -f "$vgname"
+            # local vgname=$(vgs -o pv_name,vg_name | eval grep "'${DEST}|${VG_DISKS/ /|}'" | awk '{print $2}')
+            local vgname=$(vgs -o pv_name,vg_name | grep "${DEST}" | awk '{print $2}')
+            vgreduce --removemissing "$vgname"
+            vgremove -f "$vgname"
         fi
 
         dd oflag=direct if=/dev/zero of="$DEST" bs=512 count=100000
@@ -783,9 +811,9 @@ Clone() {
         if [[ $ENCRYPT ]]; then
             encrypt "$ENCRYPT"
         else
-            flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" \
-                "$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)" \
-                "$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq; fi)")
+            local a="$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)"
+
+            flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$a")
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
         fi
         sleep 1
@@ -848,8 +876,8 @@ Clone() {
     }
 
     _clone() {
-        for x in SRCS LSRCS; do
-            eval declare -n s="$x"
+        for dev in SRCS LSRCS; do
+            eval declare -n s="$dev"
 
             for ((i=0;i<${#s[@]};i++)); do
                 local sdev=${s[$i]}
@@ -863,7 +891,7 @@ Clone() {
                 local tdev=$sdev
 
                 {
-                    if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
+                    if [[ $dev == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
                         local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | cut -d ' ' -f1)
                         local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | cut -d ' ' -f2)
                         tdev='snap4clone'
@@ -903,7 +931,7 @@ Clone() {
                 {
                     sleep 3
                     umount_ "/dev/${VG_SRC_NAME}/$tdev"
-                    lvremove -q -f "${VG_SRC_NAME}/$tdev"
+                    [[ $dev == LSRCS ]] && lvremove -q -f "${VG_SRC_NAME}/$tdev"
 
                     _finish
                 } >/dev/null 2>>$F_LOG
@@ -944,6 +972,7 @@ Clone() {
 
         set_dest_uuids     #Now collect what we have created
 
+
         if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#SNAMES[@]} != "${#DNAMES[@]}" ]]; then
             echo >&2 "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
             return 1
@@ -960,7 +989,7 @@ Clone() {
     [[ -d $SRC ]] && SECTORS=$(cat $SRC/$F_SECTORS_USED)
 
     local cnt
-    [[ -b $DEST ]] && cnt=$(echo $(lsblk --bytes -o SIZE,TYPE $DEST | grep 'disk' | sed -e 's/\s+*.*//') / 1024 | bc)
+    [[ -b $DEST ]] && cnt=$(echo $(lsblk --bytes -o SIZE,TYPE $DEST | grep 'disk' | awk '{print $1}') / 1024 | bc)
     [[ -d $DEST ]] && cnt=$(df -k --output=avail $DEST | tail -n -1)
 
     (( cnt - SECTORS <= 0 )) && exit_ 10 "Require $((SECTORS/1024))M but destination is only $((cnt/1024))M"
@@ -1042,7 +1071,7 @@ v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
 
 [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
-while getopts ':huqcxs:d:e:n:' option; do
+while getopts ':huqcxps:d:e:n:m:' option; do
     case "$option" in
         h)  usage
             ;;
@@ -1056,11 +1085,15 @@ while getopts ':huqcxs:d:e:n:' option; do
             ;;
         u)  UEFI=true
             ;;
+        p)  PVALL=true
+            ;;
         q)  exec &> /dev/null
             ;;
         c)  IS_CHECKSUM=true
             ;;
         x)  export XZ_OPT=-4T0
+            ;;
+        m)  export MIN_RESIZE="${OPTARG:-2048}"
             ;;
         :)  printf "missing argument for -%s\n" "$OPTARG"
             usage
@@ -1095,6 +1128,7 @@ shift $((OPTIND - 1))
 
 [[ -n $(lsblk -no mountpoint $DEST 2>/dev/null) ]] && exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
 
+[[ "$PVALL" == true && -n $ENCRYPT ]] && exit_ 1 "Encryption only supported for simple LVM setups with a single PV!"
 
 #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
 for d in "$SRC" "$DEST"; do
@@ -1116,12 +1150,16 @@ if [[ -d $SRC ]]; then
      -f $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, files missing"
 fi
 
-VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sed -e 's/^\s*//' | cut -d ' ' -f2 | uniq)
+VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | uniq)
+
 if [[ -z $VG_SRC_NAME ]]; then
     while read -r e g; do 
         grep -q ${SRC##*/} < <(dmsetup deps -o devname $e | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
     done < <( if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name; fi)
 fi
+
+[[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME && IS_LVM=true
+[[ $PVALL == true  ]] && pvs_init $VG_SRC_NAME #TODO if there is already a VG for the other disks, w'll have to remove it
 
 [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
 
