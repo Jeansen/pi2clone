@@ -44,6 +44,7 @@ declare VG_SRC_NAME VG_SRC_NAME_CLONE
 
 declare HAS_GRUB=false
 declare IS_LVM=false
+declare PVALL=false
 
 declare SECTORS=0
 declare MIN_RESIZE=2048
@@ -304,10 +305,17 @@ count() {
 set_src_uuids() {
     SPUUIDS=() SUUIDS=() SNAMES=()
     local n=0
+    local plist
 
     if [[ $UEFI == true && $n -eq 0 ]]; then
         SFS[$n]=vfat
         n=$((n+1))
+    fi
+
+    if [[ -n $1 ]]; then 
+        plist=$(cat "$1")
+    else 
+        plist=$(lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]})
     fi
 
     while read -r e; do
@@ -326,9 +334,7 @@ set_src_uuids() {
         SUUIDS+=($UUID)
         SNAMES+=($NAME)
         [[ -b $SRC ]] && count "$KNAME"
-    done < <( if [[ -n $1 ]]; then cat "$1" | sort -n; 
-              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | sort -n | uniq | grep -v 'disk';
-              fi )
+    done < <( echo "$plist" | sort -n | uniq | grep -v 'disk' )
 }
 
 init_srcs() {
@@ -360,7 +366,14 @@ is_partition() {
 }
 
 vg_extend() {
-    #$1: VG name of VG to extend
+    local dest=$DEST
+    local src=$SRC
+    PVS=()
+
+    if [[ -d $SRC ]]; then
+        src=$(df -P "$SRC" | tail -1 | awk '{print $1}')
+    fi
+    
     while read -r e; do
         read -r name type <<< "$e"
         [[ -n $(lsblk -no mountpoint $name 2>/dev/null) ]] && continue
@@ -368,16 +381,23 @@ vg_extend() {
         local part=$(lsblk $name -lnpo name,type | grep part | awk '{print $1}')
         pvcreate -f $part && vgextend $1 $part
         PVS+=($part)
-    done < <( lsblk -po name,type | grep disk | grep -Ev "$DEST|$SRC")
+    done < <( lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
 }
 
 pvs_init() {
-    #$1: VG name of VG to extend
+    local dest="$DEST"
+    local src="$SRC"
+
+    if [[ -d $SRC ]]; then
+        src=$(df -P "$SRC" | tail -1 | awk '{print $1}')
+    fi
+
     while read -r e; do
         read -r name type <<< "$e"
+        [[ -n $(lsblk -no mountpoint $name 2>/dev/null) ]] && continue
         local part=$(lsblk $name -lnpo name,type | grep part | awk '{print $1}')
         PVS+=($part)
-    done < <( lsblk -po name,type | grep disk | grep -Ev "$DEST|$SRC")
+    done < <( lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
 }
 
 vg_disks() {
@@ -972,7 +992,6 @@ Clone() {
 
         set_dest_uuids     #Now collect what we have created
 
-
         if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#SNAMES[@]} != "${#DNAMES[@]}" ]]; then
             echo >&2 "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
             return 1
@@ -1159,7 +1178,7 @@ if [[ -z $VG_SRC_NAME ]]; then
 fi
 
 [[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME && IS_LVM=true
-[[ $PVALL == true  ]] && pvs_init $VG_SRC_NAME #TODO if there is already a VG for the other disks, w'll have to remove it
+[[ $PVALL == true  ]] && pvs_init #TODO if there is already a VG for the other disks, w'll have to remove it
 
 [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
 
