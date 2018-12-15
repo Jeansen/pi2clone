@@ -1034,6 +1034,142 @@ Clone() { #{{{
 } #}}}
 
 Main() { #{{{
+    exec 3>&1 4>&2
+    trap Cleanup INT TERM EXIT
+
+    tput sc
+    echo > $F_LOG
+
+    # exec 2> /dev/null
+    #Force root
+    if [ "$(id -u)" != "0" ]; then
+    exec sudo "$0" "$@" 
+    fi
+
+    hash pv && INTERACTIVE=true
+
+    #Lock the script, only one instance is allowed to run at the same time!
+    exec 200>"$PIDFILE"
+    flock -n 200 || exit_ 1
+    pid=$$
+    echo $pid 1>&200
+
+    #Make sure BASH is the right version so we can use array references!
+    v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
+    (( v<43 )) && exit_ 1 "ERROR: Bash version must be 4.3 or greater!"
+
+    [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
+
+
+    PKGS='xz awk lvm rsync tar flock bc blockdev fdisk sfdisk'
+    while getopts ':huqcxps:d:e:n:m:' option; do
+        case "$option" in
+            h)  usage
+                ;;
+            s)  SRC=$(readlink -m $OPTARG)
+                ;;
+            d)  DEST=$(readlink -m $OPTARG)
+                ;;
+            n)  VG_SRC_NAME_CLONE=$OPTARG
+                ;;
+            e)  ENCRYPT=$OPTARG
+                PKGS+=cryptsetup
+                ;;
+            u)  UEFI=true
+                ;;
+            p)  PVALL=true
+                ;;
+            q)  exec &> /dev/null
+                ;;
+            c)  IS_CHECKSUM=true
+                PKGS+=parallel
+                ;;
+            x)  export XZ_OPT=-4T0
+                ;;
+            m)  export MIN_RESIZE="${OPTARG:-2048}"
+                ;;
+            :)  printf "missing argument for -%s\n" "$OPTARG"
+                usage
+                ;;
+            ?)  printf "illegal option: -%s\n" "$OPTARG"
+                usage
+                ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    #Inform about ALL missing but necessary tools.
+    for c in $PKGS; do
+        case "$c" in
+            lvm)  package=lvm2
+                ;;
+            *)  package=$c
+                ;;
+        esac
+        hash $c 2>/dev/null || { message -n -t "ERROR: $c missing. Please install package $package."; abort='exit_ 1'; }
+    done
+    eval "$abort"
+
+
+    [[ -z $SRC || -z $DEST ]] && \
+        usage
+
+    [[ -d $SRC && ! -b $DEST ]] && \
+        exit_ 1 "$DEST is not a valid block device."
+
+    [[ ! -b $SRC && -d $DEST ]] && \
+        exit_ 1 "$SRC is not a valid block device."
+
+    [[ ! -d $SRC && ! -b $SRC && -b $DEST ]] && \
+        exit_ 1 "Invalid device or directory: $SRC"
+
+    [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] && \
+        exit_ 1 "Invalid device or directory: $DEST"
+
+    [[ $SRC == $DEST ]] && \
+        exit_ 1 "Source and destination cannot be the same!"
+
+    [[ "$UEFI" == true && ! -d /sys/firmware/efi ]] && exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
+
+    [[ -n $(lsblk -no mountpoint $DEST 2>/dev/null) ]] && exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
+
+    [[ "$PVALL" == true && -n $ENCRYPT ]] && exit_ 1 "Encryption only supported for simple LVM setups with a single PV!"
+
+    #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
+    for d in "$SRC" "$DEST"; do
+        if [[ -d $d ]]; then
+            d=$(lsblk -lnpso NAME,TYPE $(mount | grep -E "$d\s" | awk '{print $1}') | grep 'disk' | awk '{print $1}') #get disk dev, e.g. /dev/sda
+            [[ $d == $SRC || $d == $DEST ]] && exit_ 1 "Source and destination cannot be the same!"
+        fi
+    done
+
+    #Check that all expected files exists when restoring
+    if [[ -d $SRC ]]; then
+    [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
+        -f $SRC/$F_PART_LIST &&
+        -f $SRC/$F_VGS_LIST &&
+        -f $SRC/$F_LVS_LIST &&
+        -f $SRC/$F_PVS_LIST &&
+        -f $SRC/$F_SECTORS_SRC &&
+        -f $SRC/$F_SECTORS_USED &&
+        -f $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, files missing"
+    fi
+
+    VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | uniq)
+
+    if [[ -z $VG_SRC_NAME ]]; then
+        while read -r e g; do 
+            grep -q ${SRC##*/} < <(dmsetup deps -o devname $e | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
+        done < <( if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name; fi)
+    fi
+
+    [[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME && IS_LVM=true
+    [[ $PVALL == true  ]] && pvs_init #TODO if there is already a VG for the other disks, w'll have to remove it
+
+    [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
+
+
+    #main
     tput civis
     echo "Backup started at $(date)"
     if [[ -b $SRC && -b $DEST ]]; then 
@@ -1048,144 +1184,5 @@ Main() { #{{{
 } #}}}
 
 
-# ------------------------------------------------------------------------------------------------------------------- #
-# ENTRYPOINT
-# ------------------------------------------------------------------------------------------------------------------- #
-
-exec 3>&1 4>&2
-trap Cleanup INT TERM EXIT
-
-tput sc
-echo > $F_LOG
-
-# exec 2> /dev/null
-#Force root
-if [ "$(id -u)" != "0" ]; then
-  exec sudo "$0" "$@" 
-fi
-
-hash pv && INTERACTIVE=true
-
-#Lock the script, only one instance is allowed to run at the same time!
-exec 200>"$PIDFILE"
-flock -n 200 || exit_ 1
-pid=$$
-echo $pid 1>&200
-
-#Make sure BASH is the right version so we can use array references!
-v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
-(( v<43 )) && exit_ 1 "ERROR: Bash version must be 4.3 or greater!"
-
-[[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
-
-
-PKGS='xz awk lvm rsync tar flock bc blockdev fdisk sfdisk'
-
-while getopts ':huqcxps:d:e:n:m:' option; do
-    case "$option" in
-        h)  usage
-            ;;
-        s)  SRC=$(readlink -m $OPTARG)
-            ;;
-        d)  DEST=$(readlink -m $OPTARG)
-            ;;
-        n)  VG_SRC_NAME_CLONE=$OPTARG
-            ;;
-        e)  ENCRYPT=$OPTARG
-            PKGS+=cryptsetup
-            ;;
-        u)  UEFI=true
-            ;;
-        p)  PVALL=true
-            ;;
-        q)  exec &> /dev/null
-            ;;
-        c)  IS_CHECKSUM=true
-            PKGS+=parallel
-            ;;
-        x)  export XZ_OPT=-4T0
-            ;;
-        m)  export MIN_RESIZE="${OPTARG:-2048}"
-            ;;
-        :)  printf "missing argument for -%s\n" "$OPTARG"
-            usage
-            ;;
-        ?)  printf "illegal option: -%s\n" "$OPTARG"
-            usage
-            ;;
-    esac
-done
-shift $((OPTIND - 1))
-
-#Inform about ALL missing but necessary tools.
-for c in $PKGS; do
-    case "$c" in
-        lvm)  package=lvm2
-            ;;
-        *)  package=$c
-            ;;
-    esac
-    hash $c 2>/dev/null || { message -n -t "ERROR: $c missing. Please install package $package."; abort='exit_ 1'; }
-done
-eval "$abort"
-
-
-[[ -z $SRC || -z $DEST ]] && \
-    usage
-
-[[ -d $SRC && ! -b $DEST ]] && \
-    exit_ 1 "$DEST is not a valid block device."
-
-[[ ! -b $SRC && -d $DEST ]] && \
-    exit_ 1 "$SRC is not a valid block device."
-
-[[ ! -d $SRC && ! -b $SRC && -b $DEST ]] && \
-    exit_ 1 "Invalid device or directory: $SRC"
-
-[[ -b $SRC && ! -b $DEST && ! -d $DEST ]] && \
-    exit_ 1 "Invalid device or directory: $DEST"
-
-[[ $SRC == $DEST ]] && \
-    exit_ 1 "Source and destination cannot be the same!"
-
-[[ "$UEFI" == true && ! -d /sys/firmware/efi ]] && exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
-
-[[ -n $(lsblk -no mountpoint $DEST 2>/dev/null) ]] && exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
-
-[[ "$PVALL" == true && -n $ENCRYPT ]] && exit_ 1 "Encryption only supported for simple LVM setups with a single PV!"
-
-#Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
-for d in "$SRC" "$DEST"; do
-    if [[ -d $d ]]; then
-        d=$(lsblk -lnpso NAME,TYPE $(mount | grep -E "$d\s" | awk '{print $1}') | grep 'disk' | awk '{print $1}') #get disk dev, e.g. /dev/sda
-        [[ $d == $SRC || $d == $DEST ]] && exit_ 1 "Source and destination cannot be the same!"
-    fi
-done
-
-
-if [[ -d $SRC ]]; then
-  [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
-     -f $SRC/$F_PART_LIST &&
-     -f $SRC/$F_VGS_LIST &&
-     -f $SRC/$F_LVS_LIST &&
-     -f $SRC/$F_PVS_LIST &&
-     -f $SRC/$F_SECTORS_SRC &&
-     -f $SRC/$F_SECTORS_USED &&
-     -f $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, files missing"
-fi
-
-VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | uniq)
-
-if [[ -z $VG_SRC_NAME ]]; then
-    while read -r e g; do 
-        grep -q ${SRC##*/} < <(dmsetup deps -o devname $e | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
-    done < <( if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name; fi)
-fi
-
-[[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME && IS_LVM=true
-[[ $PVALL == true  ]] && pvs_init #TODO if there is already a VG for the other disks, w'll have to remove it
-
-[[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
-
-Main
+Main $*
 
