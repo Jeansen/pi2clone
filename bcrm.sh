@@ -43,6 +43,7 @@ declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
 declare VG_SRC_NAME VG_SRC_NAME_CLONE
 
 declare HAS_GRUB=false
+declare HAS_EFI=false
 declare IS_LVM=false
 declare PVALL=false
 declare IS_CHECKSUM=false
@@ -465,7 +466,7 @@ grub_setup() { #{{{
         [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "/mnt/$d/$m"
     done
 
-    if [[ $UEFI == true ]]; then
+    if [[ $UEFI == true || $HAS_EFI == true ]]; then
         while read -r e; do
             read -r name uuid parttype<<< "$e"
             eval "$name" "$uuid" "$parttype"
@@ -624,7 +625,7 @@ Cleanup() { #{{{
     } >>$F_LOG 2>&1
     tput cnorm
     exec 200>&-
-    exit ${1:-255} #Make sure we really exit the script!
+    exit ${1:-0} #Make sure we really exit the script!
 } #}}}
 
 To_file() { #{{{
@@ -646,7 +647,7 @@ To_file() { #{{{
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle. 
                 #Otherwise resultes from lsblk might still show old values!
-        lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v $snp > $F_PART_LIST
+        lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v "$snp" > $F_PART_LIST
     } #}}}
 
     message -c -t "Creating backup of disk layout" 
@@ -665,6 +666,8 @@ To_file() { #{{{
         done < <(pvs --noheadings -o pv_name,vg_name | xargs)
     fi
 
+    #TODO remove this extra counter and do a simpler loop
+    local g=0
     for x in SRCS LSRCS; do
         eval declare -n s="$x"
 
@@ -700,12 +703,12 @@ To_file() { #{{{
             if [[ $INTERACTIVE == true ]]; then 
                 message -u -c -t "Cloning $sdev to $ddev [ scan ]"
                 local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s /mnt/$tdev | awk '{print $1}')
-                cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
+                cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - ${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "  
 
                 while read -r e; do
                     [[ $e -ge 100 ]] && e=100 #Just a precaution
                     message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
-                done < <(eval "$cmd" 2>&1)
+                done < <(eval "$cmd" 2>>$F_LOG)
                 message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
             else
                 message -c -t "Cloning $sdev to $ddev"
@@ -720,6 +723,7 @@ To_file() { #{{{
                 lvremove -f "${VG_SRC_NAME}/$tdev"
             } >>$F_LOG 2>&1
             message -y
+            g=$((g+1))
         done
 
         for ((i=0;i<${#s[@]};i++)); do umount_ "${s[$i]}"; done
@@ -842,6 +846,7 @@ Clone() { #{{{
 
     _finish() { #{{{
         [[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
+        [[ -d /mnt/$ddev/EFI ]] && HAS_EFI=true
         [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST"
         [[ ${#PSRC2PDEST[@]} -gt 0 ]] && boot_setup "PSRC2PDEST"
         [[ ${#NSRC2NDEST[@]} -gt 0 ]] && boot_setup "NSRC2NDEST"
@@ -870,13 +875,14 @@ Clone() { #{{{
                 pushd "/mnt/$ddev" >/dev/null || return 1
 
                 if [[ $fs == vfat ]]; then
-                    fakeroot cat "${SRC}/${file}"* | tar -xJf - -C "/mnt/$ddev"
+                    fakeroot cat "${SRC}/${file}"* | tar -xf - -C "/mnt/$ddev"
                 else
                     if [[ $INTERACTIVE == true ]]; then 
                         local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
                         while read -r e; do
                             [[ $e -ge 100 ]] && e=100
                             message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
+                            #Note that with pv stderr holds then current percentage value!
                         done < <((cat "${SRC}/${file}"* | pv --interval 0.5 --numeric -s "$size" | tar -xf - -C "/mnt/$ddev") 2>&1 )
                         message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
                     else
@@ -1033,7 +1039,7 @@ Clone() { #{{{
     return 0
 } #}}}
 
-Main() { #{{{
+Main() 
     exec 3>&1 4>&2
     trap Cleanup INT TERM EXIT
 
@@ -1138,21 +1144,22 @@ Main() { #{{{
     #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
     for d in "$SRC" "$DEST"; do
         if [[ -d $d ]]; then
-            d=$(lsblk -lnpso NAME,TYPE $(mount | grep -E "$d\s" | awk '{print $1}') | grep 'disk' | awk '{print $1}') #get disk dev, e.g. /dev/sda
+            #get disk dev, e.g. /dev/sda. Not sure what to when type is vboxsf ... Ignoring errors for the moment.
+            d=$(lsblk -lnpso NAME,TYPE $(mount | grep -E "$d\s" | awk '{print $1}') 2>/dev/null | grep 'disk' | awk '{print $1}') 
             [[ $d == $SRC || $d == $DEST ]] && exit_ 1 "Source and destination cannot be the same!"
         fi
     done
 
     #Check that all expected files exists when restoring
     if [[ -d $SRC ]]; then
-    [[ -f $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
-        -f $SRC/$F_PART_LIST &&
-        -f $SRC/$F_VGS_LIST &&
-        -f $SRC/$F_LVS_LIST &&
-        -f $SRC/$F_PVS_LIST &&
-        -f $SRC/$F_SECTORS_SRC &&
-        -f $SRC/$F_SECTORS_USED &&
-        -f $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, files missing"
+    [[ -s $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
+        -s $SRC/$F_PART_LIST &&
+        -s $SRC/$F_VGS_LIST &&
+        -s $SRC/$F_LVS_LIST &&
+        -s $SRC/$F_PVS_LIST &&
+        -s $SRC/$F_SECTORS_SRC &&
+        -s $SRC/$F_SECTORS_USED &&
+        -s $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, one or more meta files missing or empty."
     fi
 
     VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | uniq)
@@ -1167,7 +1174,6 @@ Main() { #{{{
     [[ $PVALL == true  ]] && pvs_init #TODO if there is already a VG for the other disks, w'll have to remove it
 
     [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
-
 
     #main
     tput civis
@@ -1184,5 +1190,5 @@ Main() { #{{{
 } #}}}
 
 
-Main $*
+Main "$@"
 
