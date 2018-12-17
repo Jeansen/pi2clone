@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-# Copyright (C) 2017-2018 Marcel Lautenbach
+# Copyright (C) 2017-2019 Marcel Lautenbach
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License asublished by
@@ -324,7 +324,6 @@ set_src_uuids() { #{{{
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $FSTYPE == LVM2_member ]] && LMBRS[$n]="$UUID" && n=$((n+1)) && continue
-        [[ ${PVS[@]} =~ $NAME ]] && continue
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
         SNAMES+=($NAME)
@@ -375,22 +374,6 @@ vg_extend() { #{{{
         echo ';' | flock $name sfdisk -q $name && sfdisk $name -Vq
         local part=$(lsblk $name -lnpo name,type | grep part | awk '{print $1}')
         pvcreate -f $part && vgextend $1 $part
-        PVS+=($part)
-    done < <( lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
-} #}}}
-
-pvs_init() { #{{{
-    local dest="$DEST"
-    local src="$SRC"
-
-    if [[ -d $SRC ]]; then
-        src=$(df -P "$SRC" | tail -1 | awk '{print $1}')
-    fi
-
-    while read -r e; do
-        read -r name type <<< "$e"
-        [[ -n $(lsblk -no mountpoint $name 2>/dev/null) ]] && continue
-        local part=$(lsblk $name -lnpo name,type | grep part | awk '{print $1}')
         PVS+=($part)
     done < <( lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
 } #}}}
@@ -1039,7 +1022,7 @@ Clone() { #{{{
     return 0
 } #}}}
 
-Main() 
+Main() { #{{{
     exec 3>&1 4>&2
     trap Cleanup INT TERM EXIT
 
@@ -1171,7 +1154,6 @@ Main()
     fi
 
     [[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME && IS_LVM=true
-    [[ $PVALL == true  ]] && pvs_init #TODO if there is already a VG for the other disks, w'll have to remove it
 
     [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
 
