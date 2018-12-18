@@ -828,6 +828,7 @@ Clone() { #{{{
     } #}}}
 
     _finish() { #{{{
+        [[ -f /mnt/$ddev/etc/hostname && -n $HOST_NAME ]] && echo $HOST_NAME > /mnt/$ddev/etc/hostname
         [[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
         [[ -d /mnt/$ddev/EFI ]] && HAS_EFI=true
         [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST"
@@ -994,12 +995,11 @@ Clone() { #{{{
     } >>$F_LOG 2>&1
     message -y
 
-    [[ -d $SRC ]] && SECTORS=$(cat $SRC/$F_SECTORS_USED)
-
+    #Check if destination is big enough.
     local cnt
+    [[ $_RMODE == true ]] && SECTORS=$(cat $SRC/$F_SECTORS_USED)
     [[ -b $DEST ]] && cnt=$(echo $(lsblk --bytes -o SIZE,TYPE $DEST | grep 'disk' | awk '{print $1}') / 1024 | bc)
     [[ -d $DEST ]] && cnt=$(df -k --output=avail $DEST | tail -n -1)
-
     (( cnt - SECTORS <= 0 )) && exit_ 10 "Require $((SECTORS/1024))M but destination is only $((cnt/1024))M"
 
     if [[ $_RMODE == true ]]; then
@@ -1051,7 +1051,7 @@ Main() { #{{{
 
 
     PKGS='xz awk lvm rsync tar flock bc blockdev fdisk sfdisk'
-    while getopts ':huqcxps:d:e:n:m:' option; do
+    while getopts ':huqcxps:d:e:n:m:H:' option; do
         case "$option" in
             h)  usage
                 ;;
@@ -1063,6 +1063,8 @@ Main() { #{{{
                 ;;
             e)  ENCRYPT=$OPTARG
                 PKGS+=cryptsetup
+                ;;
+            H)  HOST_NAME=$OPTARG
                 ;;
             u)  UEFI=true
                 ;;
