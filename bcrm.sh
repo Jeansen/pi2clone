@@ -1039,6 +1039,11 @@ Clone() { #{{{
 } #}}}
 
 Main() { #{{{
+    _validate_block_device() { #{{{
+        local t=$(lsblk --nodeps --noheadings -o TYPE $1)
+        [[ $t != disk ]] && exit_ 1 "Invalid block device. $1 is not a disk."
+    } #}}}
+
     exec 3>&1 4>&2
     trap Cleanup INT TERM EXIT
 
@@ -1149,6 +1154,10 @@ Main() { #{{{
 
     [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] &&
         exit_ 1 "Invalid device or directory: $DEST"
+
+    for d in "$SRC" "$DEST"; do
+        [[ -b $d ]] && _validate_block_device $d
+    done
 
     [[ $SRC == $DEST ]] &&
         exit_ 1 "Source and destination cannot be the same!"
