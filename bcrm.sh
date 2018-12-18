@@ -96,7 +96,7 @@ setHeader() { #{{{
 
 ### PRIVATE - only used by PUBLIC functions
 
-# By convenction methods ending with a '_' overwrite or wrap commands with the same name.
+# By convention methods ending with a '_' overwrite or wrap commands with the same name.
 
 mount_() { #{{{
     local cmd="mount"
@@ -596,12 +596,11 @@ usage() { #{{{
 } #}}}
 
 
-### PUBLIC - To be used in MAIN only
+### PUBLIC - To be used in Main() only
 
 Cleanup() { #{{{
     exec 1>&3 2>&4
     {
-        [[ -d $SRC/lvm_ ]] && rm -rf "$SRC/lmv_"
         umount_
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an $VG_SRC_NAME_CLONE
         [[ $ENCRYPT ]] && cryptsetup close /dev/mapper/$LUKS_LVM_NAME
@@ -711,8 +710,6 @@ To_file() { #{{{
 
         for ((i=0;i<${#s[@]};i++)); do umount_ "${s[$i]}"; done
     done
-
-    [[ $IS_LVM == true ]] && rm /etc/lvm/backup/* && vgcfgbackup > /dev/null && cp -r /etc/lvm/backup lvm
 
     popd >/dev/null || return 1
     echo $SECTORS > "$DEST/$F_SECTORS_USED"
