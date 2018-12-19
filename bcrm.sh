@@ -1044,20 +1044,20 @@ Main() { #{{{
         [[ $t != disk ]] && exit_ 1 "Invalid block device. $1 is not a disk."
     } #}}}
 
-    hash pv && INTERACTIVE=true
-
-    #Make sure BASH is the right version so we can use array references!
-    v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
-    ((v < 43)) && exit_ 1 "ERROR: Bash version must be 4.3 or greater!"
-
-    #Force root
-    [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
-
     exec 3>&1 4>&2
     trap Cleanup INT TERM EXIT
 
     tput sc
     echo >$F_LOG
+
+    #Force root
+    [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
+
+    hash pv && INTERACTIVE=true
+
+    #Make sure BASH is the right version so we can use array references!
+    v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
+    ((v < 43)) && exit_ 1 "ERROR: Bash version must be 4.3 or greater!"
 
     #Lock the script, only one instance is allowed to run at the same time!
     exec 200>"$PIDFILE"
@@ -1065,7 +1065,7 @@ Main() { #{{{
     pid=$$
     echo $pid 1>&200
 
-    PKGS='xz awk lvm rsync tar flock bc blockdev fdisk sfdisk'
+    PKGS=(awk lvm rsync tar flock bc blockdev fdisk sfdisk)
     while getopts ':huqcxps:d:e:n:m:H:' option; do
         case "$option" in
         h)
@@ -1082,7 +1082,7 @@ Main() { #{{{
             ;;
         e)
             ENCRYPT=$OPTARG
-            PKGS+=cryptsetup
+            PKGS+=(cryptsetup)
             ;;
         H)
             HOST_NAME=$OPTARG
@@ -1098,10 +1098,11 @@ Main() { #{{{
             ;;
         c)
             IS_CHECKSUM=true
-            PKGS+=parallel
+            PKGS+=(parallel)
             ;;
         x)
             export XZ_OPT=-4T0
+            PKGS+=(xz)
             ;;
         m)
             export MIN_RESIZE="${OPTARG:-2048}"
@@ -1118,21 +1119,23 @@ Main() { #{{{
     done
     shift $((OPTIND - 1))
 
+    local packages=()
     #Inform about ALL missing but necessary tools.
-    for c in $PKGS; do
-        case "$c" in
-        lvm)
-            package=lvm2
-            ;;
-        *)
-            package=$c
-            ;;
-        esac
+    for c in ${PKGS[@]}; do
         hash $c 2>/dev/null || {
-            message -n -t "ERROR: $c missing. Please install package $package."
+            case "$c" in
+            lvm)
+                packages+=(lvm2)
+                ;;
+            *)
+                packages+=($c)
+                ;;
+            esac
             abort='exit_ 1'
         }
     done
+
+    [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages ${packages[@]}."
     eval "$abort"
 
     [[ -z $SRC || -z $DEST ]] &&
