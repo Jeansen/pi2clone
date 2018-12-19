@@ -874,8 +874,11 @@ Clone() { #{{{
                 mount_ "$ddev" -t "$fs"
                 pushd "/mnt/$ddev" >/dev/null || return 1
 
+                cmd="tar -xf - -C /mnt/$ddev"
+                [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
+
                 if [[ $fs == vfat ]]; then
-                    fakeroot cat "${SRC}/${file}"* | tar -xf - -C "/mnt/$ddev"
+                    fakeroot cat "${SRC}/${file}"* | eval "$cmd"
                 else
                     if [[ $INTERACTIVE == true ]]; then
                         local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
@@ -883,11 +886,11 @@ Clone() { #{{{
                             [[ $e -ge 100 ]] && e=100
                             message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
                             #Note that with pv stderr holds the current percentage value!
-                        done < <((cat "${SRC}/${file}"* | pv --interval 0.5 --numeric -s "$size" | tar -xf - -C "/mnt/$ddev") 2>&1)
+                        done < <((cat "${SRC}/${file}"* | pv --interval 0.5 --numeric -s "$size" | eval "$cmd") 2>&1)
                         message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
                     else
                         message -c -t "Restoring $file"
-                        cat "${SRC}/${file}"* | tar -xf - -C "/mnt/$ddev"
+                        cat "${SRC}/${file}"* | eval "$cmd"
                     fi
                 fi
 
