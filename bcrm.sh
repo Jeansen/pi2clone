@@ -695,14 +695,14 @@ To_file() { #{{{
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
             if [[ $INTERACTIVE == true ]]; then
-                message -u -c -t "Cloning $sdev to $ddev [ scan ]"
+                message -u -c -t "Cloning $sdev to $DEST [ scan ]"
                 local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s /mnt/$tdev | awk '{print $1}')
                 cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - ${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
 
                 while read -r e; do
                     [[ $e -ge 100 ]] && e=100 #Just a precaution
                     message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
-                done < <(eval "$cmd" 2>>$F_LOG)
+                done < <(eval "$cmd" 2>&1) #Note that with pv stderr holds the current percentage value!
                 message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
             else
                 message -c -t "Cloning $sdev to $ddev"
@@ -882,7 +882,7 @@ Clone() { #{{{
                         while read -r e; do
                             [[ $e -ge 100 ]] && e=100
                             message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
-                            #Note that with pv stderr holds then current percentage value!
+                            #Note that with pv stderr holds the current percentage value!
                         done < <((cat "${SRC}/${file}"* | pv --interval 0.5 --numeric -s "$size" | tar -xf - -C "/mnt/$ddev") 2>&1)
                         message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
                     else
@@ -1044,31 +1044,26 @@ Main() { #{{{
         [[ $t != disk ]] && exit_ 1 "Invalid block device. $1 is not a disk."
     } #}}}
 
+    hash pv && INTERACTIVE=true
+
+    #Make sure BASH is the right version so we can use array references!
+    v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
+    ((v < 43)) && exit_ 1 "ERROR: Bash version must be 4.3 or greater!"
+
+    #Force root
+    [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
+
     exec 3>&1 4>&2
     trap Cleanup INT TERM EXIT
 
     tput sc
     echo >$F_LOG
 
-    # exec 2> /dev/null
-    #Force root
-    if [[ "$(id -u)" != "0" ]]; then
-        exec sudo "$0" "$@"
-    fi
-
-    hash pv && INTERACTIVE=true
-
     #Lock the script, only one instance is allowed to run at the same time!
     exec 200>"$PIDFILE"
-    flock -n 200 || exit_ 1
+    flock -n 200 || exit_ 1 "Another instance with PID $pid is already running!"
     pid=$$
     echo $pid 1>&200
-
-    #Make sure BASH is the right version so we can use array references!
-    v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
-    ((v < 43)) && exit_ 1 "ERROR: Bash version must be 4.3 or greater!"
-
-    [[ $(id -u) != 0 ]] && exec sudo "$0" "$@"
 
     PKGS='xz awk lvm rsync tar flock bc blockdev fdisk sfdisk'
     while getopts ':huqcxps:d:e:n:m:H:' option; do
