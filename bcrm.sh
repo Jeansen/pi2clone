@@ -97,6 +97,13 @@ setHeader() { #{{{
 
 # By convention methods ending with a '_' overwrite or wrap commands with the same name.
 
+echo_() {
+    exec 1>&3 #restore stdout
+    echo "$1"
+    exec 3>&1 #save stdout
+    exec > $F_LOG 2>&1 #again all to the log
+}
+
 mount_() { #{{{
     local cmd="mount"
 
@@ -178,6 +185,7 @@ message() { #{{{
     clor_no=$(tput setaf 1)
     clr_rmso=$(tput sgr0)
 
+    exec 1>&3 #restore stdout
     #prepare
     while getopts ':nucyt:' option; do
         case "$option" in
@@ -217,6 +225,9 @@ message() { #{{{
         echo
     }
     [[ $update == true ]] && tput rc
+    tput civis
+    exec 3>&1 #save stdout
+    exec > $F_LOG 2>&1 #again all to the log
 } #}}}
 
 expand_disk() { #{{{
@@ -611,12 +622,12 @@ usage() { #{{{
 ### PUBLIC - To be used in Main() only
 
 Cleanup() { #{{{
-    exec 1>&3 2>&4
     {
         umount_
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an $VG_SRC_NAME_CLONE
         [[ $ENCRYPT ]] && cryptsetup close /dev/mapper/$LUKS_LVM_NAME
-    } >>$F_LOG 2>&1
+    }
+    exec 1>&3 2>&4
     tput cnorm
     exec 200>&-
     exit ${1:-0} #Make sure we really exit the script!
@@ -637,7 +648,7 @@ To_file() { #{{{
             lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' >$F_LVS_LIST
             blockdev --getsz "$SRC" >$F_SECTORS_SRC
             sfdisk -d "$SRC" >$F_PART_TABLE
-        } >>$F_LOG 2>&1
+        }
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle.
         #Otherwise resultes from lsblk might still show old values!
@@ -650,7 +661,7 @@ To_file() { #{{{
         init_srcs
         set_src_uuids
         mounts
-    } >>$F_LOG 2>&1
+    }
     message -y
 
     local VG_SRC_NAME=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | awk '{print $2}')
@@ -689,7 +700,7 @@ To_file() { #{{{
                 else
                     mount_ "$sdev" -t "${FILESYSTEMS[$sdev]}"
                 fi
-            } >>$F_LOG 2>&1
+            }
 
             cmd="tar --warning=none --directory=/mnt/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
@@ -709,13 +720,13 @@ To_file() { #{{{
                 {
                     cmd="$cmd -Scpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
                     eval "$cmd"
-                } >>$F_LOG 2>&1
+                }
             fi
 
             {
                 umount_ "/dev/${VG_SRC_NAME}/$tdev"
                 lvremove -f "${VG_SRC_NAME}/$tdev"
-            } >>$F_LOG 2>&1
+            }
             message -y
             g=$((g + 1))
         done
@@ -729,7 +740,7 @@ To_file() { #{{{
         message -c -t "Creating checksums"
         {
             create_m5dsums "$DEST" "$F_CHESUM" || return 1
-        } >>$F_LOG 2>&1
+        }
         message -y
     fi
     return 0
@@ -809,7 +820,9 @@ Clone() { #{{{
             eval "$kname" "$name" "$fstype" "$type"
             echo "LFSNAME = $name"
             { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME"
-        done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | uniq | grep ${VG_SRC_NAME_CLONE/-/--})
+        done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | uniq | grep ${VG_SRC_NAME_CLONE/-/--}); : 'The
+        device mapper doubles hyphens in a LV/VG names exactly so it can distinguish between hyphens _inside_ an LV or
+        VG name and a hyphen used as separator _between_ them.'
     } #}}}
 
     _prepare_disk() { #{{{
@@ -932,7 +945,7 @@ Clone() { #{{{
                     else
                         mount_ "$sdev"
                     fi
-                } >>$F_LOG 2>&1
+                }
 
                 mount_ "$ddev"
 
@@ -955,7 +968,7 @@ Clone() { #{{{
                     message -c -t "Cloning $sdev to $ddev"
                     {
                         rsync -aSXxH "/mnt/$tdev/" "/mnt/$ddev"
-                    } >/dev/null 2>>$F_LOG
+                    } >/dev/null
                 fi
                 {
                     sleep 3
@@ -963,7 +976,7 @@ Clone() { #{{{
                     [[ $dev == LSRCS ]] && lvremove -q -f "${VG_SRC_NAME}/$tdev"
 
                     _finish
-                } >>$F_LOG 2>&1
+                }
                 message -y
             done
         done
@@ -975,7 +988,7 @@ Clone() { #{{{
         message -c -t "Validating checksums"
         {
             validate_m5dsums "$SRC" "$F_CHESUM" || { message -n && exit_ 1; }
-        } >>$F_LOG 2>&1
+        }
         message -y
     fi
 
@@ -1011,7 +1024,7 @@ Clone() { #{{{
         for ((i = 0; i < ${#SNAMES[@]}; i++)); do NSRC2NDEST[${SNAMES[$i]}]=${DNAMES[$i]}; done
 
         [[ $_RMODE == false ]] && mounts
-    } >>$F_LOG 2>&1
+    }
     message -y
 
     #Check if destination is big enough.
@@ -1035,7 +1048,7 @@ Clone() { #{{{
             else
                 grub_setup || return 1
             fi
-        } >>$F_LOG 2>&1
+        }
         message -y
     fi
     return 0
@@ -1047,11 +1060,12 @@ Main() { #{{{
         [[ $t != disk ]] && exit_ 1 "Invalid block device. $1 is not a disk."
     } #}}}
 
-    exec 3>&1 4>&2
     trap Cleanup INT TERM EXIT
-
-    tput sc
     echo >$F_LOG
+
+    exec 3>&1 4>&2
+    tput sc
+    exec > $F_LOG 2>&1
 
     #Force root
     [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
@@ -1203,8 +1217,7 @@ Main() { #{{{
     [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
 
     #main
-    tput civis
-    echo "Backup started at $(date)"
+    echo_ "Backup started at $(date)"
     if [[ -b $SRC && -b $DEST ]]; then
         Clone || exit_ 1
     elif [[ -d "$SRC" && -b $DEST ]]; then
@@ -1212,8 +1225,7 @@ Main() { #{{{
     elif [[ -b "$SRC" && -d $DEST ]]; then
         To_file || exit_ 6 "Destination not empty!"
     fi
-    echo "Backup finished at $(date)"
-    tput cnorm
+    echo_ "Backup finished at $(date)"
 } #}}}
 
 Main "$@"
