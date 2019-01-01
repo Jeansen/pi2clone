@@ -39,21 +39,23 @@ declare SPUUIDS=() SUUIDS=()
 declare DPUUIDS=() DUUIDS=()
 declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
 
-declare VG_SRC_NAME VG_SRC_NAME_CLONE
+declare VG_SRC_NAME
+declare VG_SRC_NAME_CLONE
 
-declare HAS_GRUB=false
-declare HAS_EFI=false
+declare HAS_GRUB=false #If the cloned system uses GRUB
+declare HAS_EFI=false #If the cloned system is UEFI enabled
+declare SYS_HAS_EFI=false #If the currently running system has UEFI
 declare IS_LVM=false
-declare PVALL=false
-declare IS_CHECKSUM=false
-declare INTERACTIVE=false
+declare PVALL=false #Use all PVS for LVM
+declare IS_CHECKSUM=false #-c
+declare INTERACTIVE=false #Show Progress (if pv is installed)
 
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 declare SECTORS=0
 declare MIN_RESIZE=2048
 
 USAGE="
-Usage: $(basename $0) -s src -d dest [-c] [-x] [-n <name>] [-e <passphrase>] [-u] [-p] [-m <sizee in MB>] [-q] [-h]
+Usage: $(basename $0) -s src -d dest [-c] [-x] [-H <hostname>] [-n <name>] [-e <passphrase>] [-u] [-p] [-m <sizee in MB>] [-q] [-h]
 
 Where:
     -s  Source block device or folder
@@ -61,17 +63,17 @@ Where:
 
     -c  Create/Validate checksums
     -x  Use compression (compression ration about 1:3, but very slow!)
+    -H  Set hostname
 
     -n  LVM only: Define new volume group name
     -e  LVM only: Create encrypted disk with supplied passphrase.
 
     -u  Convert to UEFI
     -p  LVM only: Use all disks found on destination as PVs for VG
-    -m  Do not resize partitions smallter than the size provided (default 2048)
+    -m  Do not resize partitions smaller than the size provided (default 2048)
 
     -q  Quiet, do not show any output
     -h  Show this help text
-
 "
 
 ### DEBUG ONLY
@@ -97,12 +99,12 @@ setHeader() { #{{{
 
 # By convention methods ending with a '_' overwrite or wrap commands with the same name.
 
-echo_() {
+echo_() { #{{{
     exec 1>&3 #restore stdout
     echo "$1"
     exec 3>&1 #save stdout
     exec > $F_LOG 2>&1 #again all to the log
-}
+} #}}}
 
 mount_() { #{{{
     local cmd="mount"
@@ -227,7 +229,7 @@ message() { #{{{
     [[ $update == true ]] && tput rc
     tput civis
     exec 3>&1 #save stdout
-    exec > $F_LOG 2>&1 #again all to the log
+    exec >> $F_LOG 2>&1 #again all to the log
 } #}}}
 
 expand_disk() { #{{{
@@ -473,7 +475,7 @@ grub_setup() { #{{{
         [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "/mnt/$d/$m"
     done
 
-    if [[ $UEFI == true || $HAS_EFI == true ]]; then
+    if [[ $UEFI == true && $HAS_EFI == true ]]; then
         while read -r e; do
             read -r name uuid parttype <<<"$e"
             eval "$name" "$uuid" "$parttype"
@@ -481,7 +483,11 @@ grub_setup() { #{{{
 
         echo -e "${uuid}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"/mnt/$d/etc/fstab"
         mkdir -p /mnt/$d/boot/efi && mount $uuid /mnt/$d/boot/efi
+    fi
 
+    [[ $HAS_EFI == true && $SYS_HAS_EFI == false ]] && return 1
+
+    if [[ $HAS_EFI == true ]]; then
         local apt_pkgs="grub-efi-amd64"
     else
         local apt_pkgs="binutils"
@@ -626,7 +632,8 @@ Cleanup() { #{{{
         umount_
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an $VG_SRC_NAME_CLONE
         [[ $ENCRYPT ]] && cryptsetup close /dev/mapper/$LUKS_LVM_NAME
-    }
+    } &> /dev/null
+
     exec 1>&3 2>&4
     tput cnorm
     exec 200>&-
@@ -706,17 +713,17 @@ To_file() { #{{{
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
             if [[ $INTERACTIVE == true ]]; then
-                message -u -c -t "Cloning $sdev to $DEST [ scan ]"
+                message -u -c -t "Creating backup for $sdev in $ddev [ scan ]"
                 local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s /mnt/$tdev | awk '{print $1}')
                 cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - ${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
 
                 while read -r e; do
                     [[ $e -ge 100 ]] && e=100 #Just a precaution
-                    message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
+                    message -u -c -t "Creating backup for $sdev in $ddev [ $(printf '%02d%%' $e) ]"
                 done < <(eval "$cmd" 2>&1) #Note that with pv stderr holds the current percentage value!
-                message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
+                message -u -c -t "Creating backup for $sdev in $ddev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
             else
-                message -c -t "Cloning $sdev to $ddev"
+                message -c -t "Creating backup for $sdev in $ddev"
                 {
                     cmd="$cmd -Scpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
                     eval "$cmd"
@@ -932,6 +939,9 @@ Clone() { #{{{
 
                 local tdev=$sdev
 
+                [[ -d /mnt/$sdev/EFI ]] && HAS_EFI=true
+                [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
+
                 {
                     if [[ $dev == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
                         local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
@@ -1065,12 +1075,12 @@ Main() { #{{{
 
     exec 3>&1 4>&2
     tput sc
-    exec > $F_LOG 2>&1
 
     #Force root
     [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
 
     hash pv && INTERACTIVE=true
+    SYS_HAS_EFI=$([[ -d /sys/firmware/efi ]] && echo true || echo false)
 
     #Make sure BASH is the right version so we can use array references!
     v=$(echo "${BASH_VERSION%.*}" | tr -d '.')
@@ -1177,11 +1187,11 @@ Main() { #{{{
     [[ $SRC == $DEST ]] &&
         exit_ 1 "Source and destination cannot be the same!"
 
-    [[ "$UEFI" == true && ! -d /sys/firmware/efi ]] && exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
+    [[ $UEFI == true && $SYS_HAS_EFI == false ]] && exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
 
     [[ -n $(lsblk -no mountpoint $DEST 2>/dev/null) ]] && exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
 
-    [[ "$PVALL" == true && -n $ENCRYPT ]] && exit_ 1 "Encryption only supported for simple LVM setups with a single PV!"
+    [[ $PVALL == true && -n $ENCRYPT ]] && exit_ 1 "Encryption only supported for simple LVM setups with a single PV!"
 
     #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
     for d in "$SRC" "$DEST"; do
@@ -1194,14 +1204,16 @@ Main() { #{{{
 
     #Check that all expected files exists when restoring
     if [[ -d $SRC ]]; then
-    [[ -s $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
-        -s $SRC/$F_PART_LIST &&
-        -s $SRC/$F_VGS_LIST &&
-        -s $SRC/$F_LVS_LIST &&
-        -s $SRC/$F_PVS_LIST &&
-        -s $SRC/$F_SECTORS_SRC &&
-        -s $SRC/$F_SECTORS_USED &&
-        -s $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, one or more meta files missing or empty."
+        [[ -s $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
+            -s $SRC/$F_PART_LIST &&
+            -s $SRC/$F_SECTORS_SRC &&
+            -s $SRC/$F_SECTORS_USED &&
+            -s $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, one or more meta files are missing or empty."
+        if [[ $IS_LVM == true ]]; then
+            [[ -s $SRC/$F_VGS_LIST &&
+            -s $SRC/$F_LVS_LIST &&
+            -s $SRC/$F_PVS_LIST ]] || exit_ 2 "Cannot restore dump, one or more meta files for LVM are missing or empty."
+        fi
     fi
 
     VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | uniq)
@@ -1215,6 +1227,8 @@ Main() { #{{{
     [[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME && IS_LVM=true
 
     [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
+
+    exec > $F_LOG 2>&1
 
     #main
     echo_ "Backup started at $(date)"
