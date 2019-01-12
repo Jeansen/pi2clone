@@ -55,25 +55,24 @@ declare SECTORS=0
 declare MIN_RESIZE=2048
 
 USAGE="
-Usage: $(basename $0) -s src -d dest [-c] [-x] [-H <hostname>] [-n <name>] [-e <passphrase>] [-u] [-p] [-m <sizee in MB>] [-q] [-h]
+Usage: $(basename $0) -s <source> -d <destination> [options]
 
-Where:
-    -s  Source block device or folder
-    -d  Destination block device or folder
+-c] [-x] [-H <hostname>] [-n <name>] [-e <passphrase>] [-u] [-p] [-m <sizee in MB>] [-q] [-h]
 
-    -c  Create/Validate checksums
-    -x  Use compression (compression ration about 1:3, but very slow!)
-    -H  Set hostname
+Options:
+    -c \t\t\t\t Create/Validate checksums
+    -x \t\t\t\t Use compression (compression ration about 1:3, but very slow!)
+    -H, --hostname \t\t Set hostname
 
-    -n  LVM only: Define new volume group name
-    -e  LVM only: Create encrypted disk with supplied passphrase.
+    -n, --new-vg-name \t\t LVM only: Define new volume group name
+    -e, --encrypt-with-password  LVM only: Create encrypted disk with supplied passphrase.
 
-    -u  Convert to UEFI
-    -p  LVM only: Use all disks found on destination as PVs for VG
-    -m  Do not resize partitions smaller than the size provided (default 2048)
+    -u \t\t\t\t Convert to UEFI
+    -p \t\t\t\t LVM only: Use all disks found on destination as PVs for VG
+    -m, --resize-threshold \t Do not resize partitions smaller than the size provided (default 2048)
 
-    -q  Quiet, do not show any output
-    -h  Show this help text
+    -q \t\t\t\t Quiet, do not show any output
+    -h, --help \t\t\t Show this help text
 "
 
 ### DEBUG ONLY
@@ -621,7 +620,7 @@ mounts() { #{{{
 } #}}}
 
 usage() { #{{{
-    printf "%s\n" "$USAGE"
+    printf "%b\n" "$USAGE"
     exit_ 1
 } #}}}
 
@@ -1093,58 +1092,77 @@ Main() { #{{{
     echo $pid 1>&200
 
     PKGS=(awk lvm rsync tar flock bc blockdev fdisk sfdisk)
-    while getopts ':huqcxps:d:e:n:m:H:' option; do
-        case "$option" in
-        h)
-            usage
+
+    option=$(getopt \
+        -o 'huqcxps:d:e:n:m:H:' \
+        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:' \
+        -n "$(basename "$0" \
+    )" -- "$@")
+
+    eval set -- "$option"
+
+    while true; do
+        case "$1" in
+        '-h'|'--help')
+            usage;
+            shift 1; continue
             ;;
-        s)
-            SRC=$(readlink -m $OPTARG)
+        '-s')
+            SRC=$(readlink -m $2);
+            shift 2; continue
             ;;
-        d)
-            DEST=$(readlink -m $OPTARG)
+        '-d')
+            DEST=$(readlink -m $2);
+            shift 2; continue
             ;;
-        n)
-            VG_SRC_NAME_CLONE=$OPTARG
+        '-n'|'--new-vg-name')
+            VG_SRC_NAME_CLONE=$2;
+            shift 2: continue
             ;;
-        e)
-            ENCRYPT=$OPTARG
-            PKGS+=(cryptsetup)
+        '-e'|'--encrypt-with-password')
+            ENCRYPT=$2;
+            PKGS+=(cryptsetup);
+            shift 2; continue
             ;;
-        H)
-            HOST_NAME=$OPTARG
+        '-H'|'--hostname')
+            HOST_NAME=$2;
+            shift 2; continue
             ;;
-        u)
-            UEFI=true
+        '-u')
+            UEFI=true;
+            shift 1; continue
             ;;
-        p)
-            PVALL=true
+        '-p')
+            PVALL=true;
+            shift 1; continue
             ;;
-        q)
-            exec &>/dev/null
+        '-q')
+            exec &>/dev/null;
+            shift 1; continue
             ;;
-        c)
-            IS_CHECKSUM=true
-            PKGS+=(parallel)
+        '-c')
+            IS_CHECKSUM=true;
+            PKGS+=(parallel);
+            shift 1; continue
             ;;
-        x)
-            export XZ_OPT=-4T0
-            PKGS+=(xz)
+        '-x')
+            export XZ_OPT=-4T0;
+            PKGS+=(xz);
+            shift 1; continue
             ;;
-        m)
-            export MIN_RESIZE="${OPTARG:-2048}"
+        '-m'|'--resize-threshold')
+            export MIN_RESIZE="${2:-2048}";
+            shift 2; continue
             ;;
-        :)
-            printf "missing argument for -%s\n" "$OPTARG"
-            usage
+		'--')
+			shift; break
             ;;
-        ?)
-            printf "illegal option: -%s\n" "$OPTARG"
+        *)
             usage
             ;;
         esac
     done
-    shift $((OPTIND - 1))
+
 
     local packages=()
     #Inform about ALL missing but necessary tools.
