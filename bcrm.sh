@@ -319,7 +319,7 @@ set_dest_uuids() { #{{{
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
         DNAMES+=($NAME)
-    done < <(lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -n | uniq | grep -v 'disk')
+    done < <(lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -n | uniq | grep -vE '\bdisk|\bUUID=""')
 } #}}}
 
 set_src_uuids() { #{{{
@@ -360,7 +360,7 @@ init_srcs() { #{{{
     while read -r e; do
         read -r kdev name fstype uuid puuid type parttype mountpoint <<<"$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
+        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $TYPE == lvm && -z $1 ]] && LSRCS+=($NAME)
@@ -824,7 +824,6 @@ Clone() { #{{{
         while read -r e; do
             read -r kname name fstype type <<<"$e"
             eval "$kname" "$name" "$fstype" "$type"
-            echo "LFSNAME = $name"
             { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME"
         done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | uniq | grep ${VG_SRC_NAME_CLONE/-/--}); : 'The
         device mapper doubles hyphens in a LV/VG names exactly so it can distinguish between hyphens _inside_ an LV or
@@ -1066,7 +1065,7 @@ Clone() { #{{{
 Main() { #{{{
     _validate_block_device() { #{{{
         local t=$(lsblk --nodeps --noheadings -o TYPE $1)
-        [[ $t != disk ]] && exit_ 1 "Invalid block device. $1 is not a disk."
+        ! [[ $t =~ disk|loop ]] && exit_ 1 "Invalid block device. $1 is not a disk."
     } #}}}
 
     trap Cleanup INT TERM EXIT
