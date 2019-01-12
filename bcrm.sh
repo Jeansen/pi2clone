@@ -1038,7 +1038,7 @@ Clone() { #{{{
     #Check if destination is big enough.
     local cnt
     [[ $_RMODE == true ]] && SECTORS=$(cat $SRC/$F_SECTORS_USED)
-    [[ -b $DEST ]] && cnt=$(echo $(lsblk --bytes -o SIZE,TYPE $DEST | grep 'disk' | awk '{print $1}') / 1024 | bc)
+    [[ -b $DEST ]] && cnt=$(echo $(blockdev --getsize64 /dev/loop0) / 1024 | bc)
     [[ -d $DEST ]] && cnt=$(df -k --output=avail $DEST | tail -n -1)
     ((cnt - SECTORS <= 0)) && exit_ 10 "Require $((SECTORS / 1024))M but destination is only $((cnt / 1024))M"
 
