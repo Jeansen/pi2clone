@@ -54,26 +54,6 @@ declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 declare SECTORS=0
 declare MIN_RESIZE=2048
 
-USAGE="
-Usage: $(basename $0) -s <source> -d <destination> [options]
-
--c] [-x] [-H <hostname>] [-n <name>] [-e <passphrase>] [-u] [-p] [-m <sizee in MB>] [-q] [-h]
-
-Options:
-    -c \t\t\t\t Create/Validate checksums
-    -x \t\t\t\t Use compression (compression ration about 1:3, but very slow!)
-    -H, --hostname \t\t Set hostname
-
-    -n, --new-vg-name \t\t LVM only: Define new volume group name
-    -e, --encrypt-with-password  LVM only: Create encrypted disk with supplied passphrase.
-
-    -u \t\t\t\t Convert to UEFI
-    -p \t\t\t\t LVM only: Use all disks found on destination as PVs for VG
-    -m, --resize-threshold \t Do not resize partitions smaller than the size provided (default 2048)
-
-    -q \t\t\t\t Quiet, do not show any output
-    -h, --help \t\t\t Show this help text
-"
 
 ### DEBUG ONLY
 
@@ -620,7 +600,21 @@ mounts() { #{{{
 } #}}}
 
 usage() { #{{{
-    printf "%b\n" "$USAGE"
+    local -A usage
+
+    printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n\n"
+    printf "Options:\n\n"
+    printf "  %-30s %s\n" "-c" "Create/Validate checksums"
+    printf "  %-30s %s\n" "-x" "Use compression (compression ration about 1:3, but very slow!)"
+    printf "  %-30s %s\n\n" "-H, --hostname" "Set hostname"
+    printf "  %-30s %s\n" "-n, --new-vg-name" "LVM only: Define new volume group name"
+    printf "  %-30s %s\n" "-e, --encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
+    printf "  %-30s %s\n\n" "-p" "LVM only: Use all disks found on destination as PVs for VG"
+    printf "  %-30s %s\n" "-u" "Convert to UEFI"
+    printf "  %-30s %s\n\n" "-m, --resize-threshold" "Do not resize partitions smaller than <MB> (default 2048)"
+    printf "  %-30s %s\n" "-q" "Quiet, do not show any output"
+    printf "  %-30s %s\n" "-h ,--help " "Show this help text"
+
     exit_ 1
 } #}}}
 
