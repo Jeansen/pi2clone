@@ -400,10 +400,14 @@ disk_setup() { #{{{
         read -r name parttype <<<"$e"
         eval "$name"
         [[ -n ${LMBRS[$n]} ]] && pvcreate -f "$NAME" && continue
-        [[ -n ${SFS[${n}]} && ${SFS[${n}]} == swap ]] && mkswap -f "$NAME" && continue
-        [[ -n ${SFS[$n]} ]] && mkfs -t "${SFS[$n]}" "$NAME"
+        if [[ -n ${SFS[$n]} && ${SFS[$n]} == swap ]]; then
+            mkswap -f "$NAME"
+        elif [[ -n ${SFS[$n]} ]]; then
+            mkfs -t "${SFS[$n]}" "$NAME"
+        fi
         n=$((n + 1))
     done < <(lsblk -Ppo NAME,PARTTYPE "$DEST" | grep -E '[0-9$]' | sort -n | grep -v 'PARTTYPE="0x5"')
+
     sleep 3
 } #}}}
 
@@ -448,10 +452,15 @@ grub_setup() { #{{{
         mount --bind "/$f" "/mnt/$d/$f"
     done
 
-    #TODO order, e.g first /boot, then /boot/efi.
-    for m in "${!MOUNTS[@]}"; do
+    IFS=$'\n'
+    local mounts=($(sort <<<"${!MOUNTS[*]}"))
+    unset IFS
+
+    for m in $mounts; do
         [[ "$m" == / ]] && continue
-        [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "/mnt/$d/$m"
+        if [[ "$m" =~ ^/ ]]; then
+            mount_ "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" -p "/mnt/$d/$m"
+        fi
     done
 
     if [[ $UEFI == true && $HAS_EFI == true ]]; then
@@ -830,6 +839,7 @@ Clone() { #{{{
             local vgname=$(vgs -o pv_name,vg_name | grep "${DEST}" | awk '{print $2}')
             vgreduce --removemissing "$vgname"
             vgremove -f "$vgname"
+            pvremove -f "${DEST}*"
         fi
 
         dd oflag=direct if=/dev/zero of="$DEST" bs=512 count=100000
@@ -1032,7 +1042,7 @@ Clone() { #{{{
     #Check if destination is big enough.
     local cnt
     [[ $_RMODE == true ]] && SECTORS=$(cat $SRC/$F_SECTORS_USED)
-    [[ -b $DEST ]] && cnt=$(echo $(blockdev --getsize64 /dev/loop0) / 1024 | bc)
+    [[ -b $DEST ]] && cnt=$(echo $(blockdev --getsize64 $DEST) / 1024 | bc)
     [[ -d $DEST ]] && cnt=$(df -k --output=avail $DEST | tail -n -1)
     ((cnt - SECTORS <= 0)) && exit_ 10 "Require $((SECTORS / 1024))M but destination is only $((cnt / 1024))M"
 
