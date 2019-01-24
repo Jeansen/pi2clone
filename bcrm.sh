@@ -615,6 +615,8 @@ usage() { #{{{
 
     printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n\n"
     printf "Options:\n\n"
+        
+    printf "  %-30s %s\n" "--destination-image" "Use the given image as a loop device"
     printf "  %-30s %s\n" "-c" "Create/Validate checksums"
     printf "  %-30s %s\n" "-x" "Use compression (compression ration about 1:3, but very slow!)"
     printf "  %-30s %s\n\n" "-H, --hostname" "Set hostname"
@@ -634,8 +636,9 @@ usage() { #{{{
 Cleanup() { #{{{
     {
         umount_
-        [[ $VG_SRC_NAME_CLONE ]] && vgchange -an $VG_SRC_NAME_CLONE
-        [[ $ENCRYPT ]] && cryptsetup close /dev/mapper/$LUKS_LVM_NAME
+        [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
+        [[ $ENCRYPT ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
+        [[ $CREATE_LOOP_DEV == true  ]] && losetup -d "$DEST"
     } &> /dev/null
 
     exec 1>&3 2>&4
@@ -1100,7 +1103,7 @@ Main() { #{{{
 
     option=$(getopt \
         -o 'huqcxps:d:e:n:m:H:' \
-        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:' \
+        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:' \
         -n "$(basename "$0" \
     )" -- "$@")
 
@@ -1114,6 +1117,12 @@ Main() { #{{{
             ;;
         '-s')
             SRC=$(readlink -m $2);
+            shift 2; continue
+            ;;
+        '--destination-image')
+            losetup -Pf "$2"
+            CREATE_LOOP_DEV=true
+            DEST=$(losetup -ln --output name,back-file | grep "$2" | cut -d ' ' -f1);
             shift 2; continue
             ;;
         '-d')
