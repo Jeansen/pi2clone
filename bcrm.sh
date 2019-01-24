@@ -49,10 +49,12 @@ declare IS_LVM=false
 declare PVALL=false #Use all PVS for LVM
 declare IS_CHECKSUM=false #-c
 declare INTERACTIVE=false #Show Progress (if pv is installed)
+declare CREATE_LOOP_DEV=false
 
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 declare SECTORS=0
 declare MIN_RESIZE=2048
+declare MNTPNT=/tmp/mnt
 
 
 ### DEBUG ONLY
@@ -90,7 +92,7 @@ mount_() { #{{{
 
     local OPTIND
     local src="$1"
-    local path="/mnt/$src"
+    local path="${MNTPNT}/$src"
     shift
 
     while getopts ':p:t:' option; do
@@ -111,7 +113,7 @@ mount_() { #{{{
     done
     shift $((OPTIND - 1))
 
-    mkdir -p "$path"
+    [[ ! -d "$path" ]] && mkdir -p "$path"
     { $cmd "$src" "$path" && MNTJRNL["$src"]="$path"; } || return 1
 } #}}}
 
@@ -426,15 +428,15 @@ boot_setup() { #{{{
     for k in "${!sd[@]}"; do
         for d in "${DESTS[@]}"; do
             sed -i "s|$k|${sd[$k]}|" \
-                "/mnt/$d/${path[0]}" "/mnt/$d/${path[1]}" \
-                "/mnt/$d/${path[2]}" "/mnt/$d/${path[3]}" \
+                "${MNTPNT}/$d/${path[0]}" "${MNTPNT}/$d/${path[1]}" \
+                "${MNTPNT}/$d/${path[2]}" "${MNTPNT}/$d/${path[3]}" \
                 2>/dev/null
 
             #resume file might be wrong, so we just set it explicitely
-            if [[ -e /mnt/$d/${path[4]} ]]; then
+            if [[ -e ${MNTPNT}/$d/${path[4]} ]]; then
                 local uuid fstype
                 read -r uuid fstype <<<$(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
-                echo "RESUME=$uuid" >$"/mnt/$d/${path[4]}"
+                echo "RESUME=$uuid" >$"${MNTPNT}/$d/${path[4]}"
             fi
         done
     done
@@ -442,24 +444,24 @@ boot_setup() { #{{{
 
 grub_setup() { #{{{
     local d=${DESTS[${SRC2DEST[${MOUNTS['/']}]}]}
-    mount "$d" "/mnt/$d"
+    mount "$d" "${MNTPNT}/$d"
 
-    sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*||" "/mnt/$d/etc/default/grub"
-    sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=n/' "/mnt/$d/etc/default/grub"
-    sed -i 's/^/#/' "/mnt/$d/etc/crypttab"
+    sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*||" "${MNTPNT}/$d/etc/default/grub"
+    sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=n/' "${MNTPNT}/$d/etc/default/grub"
+    sed -i 's/^/#/' "${MNTPNT}/$d/etc/crypttab"
 
     for f in sys dev dev/pts proc run; do
-        mount --bind "/$f" "/mnt/$d/$f"
+        mount --bind "/$f" "${MNTPNT}/$d/$f"
     done
 
     IFS=$'\n'
     local mounts=($(sort <<<"${!MOUNTS[*]}"))
     unset IFS
 
-    for m in $mounts; do
+    for m in ${mounts[*]}; do
         [[ "$m" == / ]] && continue
         if [[ "$m" =~ ^/ ]]; then
-            mount_ "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" -p "/mnt/$d/$m"
+            mount_ "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" -p "${MNTPNT}/$d/$m"
         fi
     done
 
@@ -469,8 +471,8 @@ grub_setup() { #{{{
             eval "$name" "$uuid" "$parttype"
         done < <(lsblk -pPo name,uuid,parttype $DEST | grep -i 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b')
 
-        echo -e "${uuid}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"/mnt/$d/etc/fstab"
-        mkdir -p /mnt/$d/boot/efi && mount $uuid /mnt/$d/boot/efi
+        echo -e "${uuid}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"${MNTPNT}/$d/etc/fstab"
+        mkdir -p ${MNTPNT}/$d/boot/efi && mount $uuid ${MNTPNT}/$d/boot/efi
     fi
 
     [[ $HAS_EFI == true && $SYS_HAS_EFI == false ]] && return 1
@@ -483,26 +485,26 @@ grub_setup() { #{{{
 
     pkg_install "$d" "$apt_pkgs" || return 1
 
-    create_rclocal "/mnt/$d"
-    umount -Rl "/mnt/$d"
+    create_rclocal "${MNTPNT}/$d"
+    umount -Rl "${MNTPNT}/$d"
     return 0
 } #}}}
 
 crypt_setup() { #{{{
     local d=${DESTS[${SRC2DEST[${MOUNTS['/']}]}]}
-    mount "$d" "/mnt/$d"
+    mount "$d" "${MNTPNT}/$d"
 
     for f in sys dev dev/pts proc run; do
-        mount --bind "/$f" "/mnt/$d/$f"
+        mount --bind "/$f" "${MNTPNT}/$d/$f"
     done
 
     for m in "${!MOUNTS[@]}"; do
         [[ "$m" == / ]] && continue
-        [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "/mnt/$d/$m"
+        [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "${MNTPNT}/$d/$m"
     done
 
     printf '%s' '#!/bin/sh
-    exec /bin/cat /${1}' >/mnt/$d/home/dummy && chmod +x /mnt/$d/home/dummy
+    exec /bin/cat /${1}' >${MNTPNT}/$d/home/dummy && chmod +x ${MNTPNT}/$d/home/dummy
 
     printf '%s' '#!/bin/sh
 	set -e
@@ -527,32 +529,32 @@ crypt_setup() { #{{{
 	mkdir -p $DESTDIR/home
 	cp -a /home/dummy $DESTDIR/home
 
-	exit 0' >"/mnt/$d/etc/initramfs-tools/hooks/lukslvm" && chmod +x "/mnt/$d/etc/initramfs-tools/hooks/lukslvm"
+	exit 0' >"${MNTPNT}/$d/etc/initramfs-tools/hooks/lukslvm" && chmod +x "${MNTPNT}/$d/etc/initramfs-tools/hooks/lukslvm"
 
-    dd oflag=direct bs=512 count=4 if=/dev/urandom of="/mnt/$d/crypto_keyfile.bin"
-    echo -n "$1" | cryptsetup luksAddKey "$ENCRYPT_PART" "/mnt/$d/crypto_keyfile.bin" -
-    chmod 000 "/mnt/$d/crypto_keyfile.bin"
+    dd oflag=direct bs=512 count=4 if=/dev/urandom of="${MNTPNT}/$d/crypto_keyfile.bin"
+    echo -n "$1" | cryptsetup luksAddKey "$ENCRYPT_PART" "${MNTPNT}/$d/crypto_keyfile.bin" -
+    chmod 000 "${MNTPNT}/$d/crypto_keyfile.bin"
 
     # local dev=$(lsblk -asno pkname /dev/mapper/$LUKS_LVM_NAME | head -n 1)
-    echo "$LUKS_LVM_NAME UUID=$(cryptsetup luksUUID "$ENCRYPT_PART") /crypto_keyfile.bin luks,keyscript=/home/dummy" >"/mnt/$d/etc/crypttab"
+    echo "$LUKS_LVM_NAME UUID=$(cryptsetup luksUUID "$ENCRYPT_PART") /crypto_keyfile.bin luks,keyscript=/home/dummy" >"${MNTPNT}/$d/etc/crypttab"
 
-    sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*[^\"]||" "/mnt/$d/etc/default/grub"
+    sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*[^\"]||" "${MNTPNT}/$d/etc/default/grub"
 
-    grep -q 'GRUB_CMDLINE_LINUX' "/mnt/$d/etc/default/grub" &&
-        sed -i -E "/GRUB_CMDLINE_LINUX=/ s|\"(.*)\"|\"cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):$LUKS_LVM_NAME \1\"|" "/mnt/$d/etc/default/grub" ||
-        echo "GRUB_CMDLINE_LINUX=cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):$LUKS_LVM_NAME" >>"/mnt/$d/etc/default/grub"
+    grep -q 'GRUB_CMDLINE_LINUX' "${MNTPNT}/$d/etc/default/grub" &&
+        sed -i -E "/GRUB_CMDLINE_LINUX=/ s|\"(.*)\"|\"cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):$LUKS_LVM_NAME \1\"|" "${MNTPNT}/$d/etc/default/grub" ||
+        echo "GRUB_CMDLINE_LINUX=cryptdevice=UUID=$(cryptsetup luksUUID $ENCRYPT_PART):$LUKS_LVM_NAME" >>"${MNTPNT}/$d/etc/default/grub"
 
-    grep -q 'GRUB_ENABLE_CRYPTODISK' "/mnt/$d/etc/default/grub" &&
-        sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=y/' "/mnt/$d/etc/default/grub" ||
-        echo "GRUB_ENABLE_CRYPTODISK=y" >>"/mnt/$d/etc/default/grub"
+    grep -q 'GRUB_ENABLE_CRYPTODISK' "${MNTPNT}/$d/etc/default/grub" &&
+        sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=y/' "${MNTPNT}/$d/etc/default/grub" ||
+        echo "GRUB_ENABLE_CRYPTODISK=y" >>"${MNTPNT}/$d/etc/default/grub"
 
     pkg_install "$d" "lvm2 cryptsetup keyutils binutils grub2-common grub-pc-bin" || return 1
-    create_rclocal "/mnt/$d"
-    umount -lR "/mnt/$d"
+    create_rclocal "${MNTPNT}/$d"
+    umount -lR "${MNTPNT}/$d"
 } #}}}
 
 pkg_install() { #{{{
-    chroot "/mnt/$1" sh -c "
+    chroot "${MNTPNT}/$1" sh -c "
         apt-get install -y $2 &&
         grub-install $DEST &&
         update-grub &&
@@ -581,15 +583,15 @@ mounts() { #{{{
         local sdev=$x
         local sid=${UUIDS[$sdev]}
 
-        mkdir -p "/mnt/$sdev"
+        mkdir -p "${MNTPNT}/$sdev"
 
         mount_ "$sdev"
 
-        f[0]='cat /mnt/$sdev/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | tr -s " " | cut -d " " -f1,2'
-        f[1]='cat /mnt/$sdev/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | tr -s " " | cut -d " " -f1,2'
-        f[2]='cat /mnt/$sdev/etc/fstab | grep "^/" | tr -s " " | cut -d " " -f1,2'
+        f[0]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | tr -s " " | cut -d " " -f1,2'
+        f[1]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | tr -s " " | cut -d " " -f1,2'
+        f[2]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^/" | tr -s " " | cut -d " " -f1,2'
 
-        if [[ -f /mnt/$sdev/etc/fstab ]]; then
+        if [[ -f ${MNTPNT}/$sdev/etc/fstab ]]; then
             for ((i = 0; i < ${#f[@]}; i++)); do
                 while read -r e; do
                     read -r name mnt <<<"$e"
@@ -705,18 +707,18 @@ To_file() { #{{{
                     lvremove -f "${VG_SRC_NAME}/$tdev"
                     lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name"
                     sleep 3
-                    mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "/mnt/$tdev"
+                    mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev"
                 else
                     mount_ "$sdev" -t "${FILESYSTEMS[$sdev]}"
                 fi
             }
 
-            cmd="tar --warning=none --directory=/mnt/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
+            cmd="tar --warning=none --directory=${MNTPNT}/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
             if [[ $INTERACTIVE == true ]]; then
                 message -u -c -t "Creating backup for $sdev in $ddev [ scan ]"
-                local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s /mnt/$tdev | awk '{print $1}')
+                local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s ${MNTPNT}/$tdev | awk '{print $1}')
                 cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - ${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
 
                 while read -r e; do
@@ -866,9 +868,9 @@ Clone() { #{{{
     } #}}}
 
     _finish() { #{{{
-        [[ -f /mnt/$ddev/etc/hostname && -n $HOST_NAME ]] && echo $HOST_NAME >/mnt/$ddev/etc/hostname
-        [[ -f /mnt/$ddev/grub/grub.cfg || -f /mnt/$ddev/grub.cfg || -f /mnt/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
-        [[ -d /mnt/$ddev/EFI ]] && HAS_EFI=true
+        [[ -f ${MNTPNT}/$ddev/etc/hostname && -n $HOST_NAME ]] && echo $HOST_NAME >${MNTPNT}/$ddev/etc/hostname
+        [[ -f ${MNTPNT}/$ddev/grub/grub.cfg || -f ${MNTPNT}/$ddev/grub.cfg || -f ${MNTPNT}/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
+        [[ -d ${MNTPNT}/$ddev/EFI ]] && HAS_EFI=true
         [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST"
         [[ ${#PSRC2PDEST[@]} -gt 0 ]] && boot_setup "PSRC2PDEST"
         [[ ${#NSRC2NDEST[@]} -gt 0 ]] && boot_setup "NSRC2NDEST"
@@ -894,9 +896,9 @@ Clone() { #{{{
 
             if [[ -n $ddev ]]; then
                 mount_ "$ddev" -t "$fs"
-                pushd "/mnt/$ddev" >/dev/null || return 1
+                pushd "${MNTPNT}/$ddev" >/dev/null || return 1
 
-                cmd="tar -xf - -C /mnt/$ddev"
+                cmd="tar -xf - -C ${MNTPNT}/$ddev"
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
                 if [[ $fs == vfat ]]; then
@@ -937,11 +939,11 @@ Clone() { #{{{
 
                 [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
 
-                mkdir -p "/mnt/$ddev" "/mnt/$sdev"
+                mkdir -p "${MNTPNT}/$ddev" "${MNTPNT}/$sdev"
 
                 local tdev=$sdev
 
-                [[ -d /mnt/$sdev/EFI ]] && HAS_EFI=true
+                [[ -d ${MNTPNT}/$sdev/EFI ]] && HAS_EFI=true
                 [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
 
                 {
@@ -949,11 +951,11 @@ Clone() { #{{{
                         local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
                         local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | awk '{print $2}')
                         tdev='snap4clone'
-                        mkdir -p "/mnt/$tdev"
+                        mkdir -p "${MNTPNT}/$tdev"
                         lvremove -q -f "${VG_SRC_NAME}/$tdev"
                         lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name" &&
                             sleep 3 &&
-                            mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "/mnt/$tdev" || return 1
+                            mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev" || return 1
                     else
                         mount_ "$sdev"
                     fi
@@ -964,22 +966,22 @@ Clone() { #{{{
                 if [[ $INTERACTIVE == true ]]; then
                     message -u -c -t "Cloning $sdev to $ddev [ scan ]"
                     local size=$(
-                        rsync -aSXxH --stats --dry-run "/mnt/$tdev/" "/mnt/$ddev" |
+                        rsync -aSXxH --stats --dry-run "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev" |
                             grep -oP 'Number of files: \d*(,\d*)*' |
                             cut -d ':' -f2 |
                             tr -d ' ' |
-                            sed -e 's/,//'
+                            sed -e 's/,//g'
                     )
 
                     while read -r e; do
                         [[ $e -ge 100 ]] && e=100
                         message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
-                    done < <((rsync -vaSXxH "/mnt/$tdev/" "/mnt/$ddev" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
+                    done < <((rsync -vaSXxH "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
                     message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' 100) ]"
                 else
                     message -c -t "Cloning $sdev to $ddev"
                     {
-                        rsync -aSXxH "/mnt/$tdev/" "/mnt/$ddev"
+                        rsync -aSXxH "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev"
                     } >/dev/null
                 fi
                 {
