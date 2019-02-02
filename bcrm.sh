@@ -436,7 +436,8 @@ boot_setup() { #{{{
             if [[ -e ${MNTPNT}/$d/${path[4]} ]]; then
                 local uuid fstype
                 read -r uuid fstype <<<$(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
-                echo "RESUME=$uuid" >$"${MNTPNT}/$d/${path[4]}"
+                uuid=${uuid//\"/} #get rid of ""
+                eval sed -i -E '/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i' "${MNTPNT}/$d/${path[4]}"
             fi
         done
     done
