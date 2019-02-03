@@ -50,6 +50,7 @@ declare PVALL=false #Use all PVS for LVM
 declare IS_CHECKSUM=false #-c
 declare INTERACTIVE=false #Show Progress (if pv is installed)
 declare CREATE_LOOP_DEV=false
+declare SPLIT=false
 
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 declare SECTORS=0
@@ -297,6 +298,7 @@ set_dest_uuids() { #{{{
         [[ $UEFI == true && $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
         [[ -n $UUID ]] && DESTS[$UUID]="$NAME"
+        [[ -n $PARTUUID ]] && DESTS[$PARTUUID]="$NAME"
         [[ ${PVS[@]} =~ $NAME ]] && continue
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
@@ -620,6 +622,7 @@ usage() { #{{{
     printf "  %-30s %s\n" "--destination-image" "Use the given image as a loop device"
     printf "  %-30s %s\n" "-c" "Create/Validate checksums"
     printf "  %-30s %s\n" "-x" "Use compression (compression ration about 1:3, but very slow!)"
+    printf "  %-30s %s\n" "--split" "Split backup into chunks of 1G files"
     printf "  %-30s %s\n\n" "-H, --hostname" "Set hostname"
     printf "  %-30s %s\n" "-n, --new-vg-name" "LVM only: Define new volume group name"
     printf "  %-30s %s\n" "-e, --encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
@@ -697,7 +700,7 @@ To_file() { #{{{
             local spid=${PARTUUIDS[$sdev]}
             local fs=${FILESYSTEMS[$sdev]}
             local type=${TYPES[$sdev]}
-            local mount=${MOUNTS[$sid]}
+            local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
 
             local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
             local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | awk '{print $2}')
@@ -718,12 +721,18 @@ To_file() { #{{{
             }
 
             cmd="tar --warning=none --directory=${MNTPNT}/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
+            file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
+
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
             if [[ $INTERACTIVE == true ]]; then
                 message -u -c -t "Creating backup for $sdev in $ddev [ scan ]"
                 local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s ${MNTPNT}/$tdev | awk '{print $1}')
-                cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - ${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
+                if [[ $SPLIT == true ]]; then
+                    cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
+                else
+                    cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size > $file"
+                fi
 
                 while read -r e; do
                     [[ $e -ge 100 ]] && e=100 #Just a precaution
@@ -733,7 +742,11 @@ To_file() { #{{{
             else
                 message -c -t "Creating backup for $sdev in $ddev"
                 {
-                    cmd="$cmd -Scpf - . | split -b 1G - ${i}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
+                    if [[ $SPLIT == true ]]; then
+                        cmd="$cmd -Scpf - . | split -b 1G - $file"
+                    else
+                        cmd="$cmd -Scpf $file ."
+                    fi
                     eval "$cmd"
                 }
             fi
@@ -888,38 +901,40 @@ Clone() { #{{{
         pushd "$SRC" >/dev/null || return 1
 
         for file in [0-9]*; do
-            files[${file::-2}]=1
+			      local k=$(echo $file | sed "s/\.[a-z]*$//")
+            files[$k]=1
         done
 
         #Now, we are ready to restore files from previous backup images
         for file in ${!files[@]}; do
             read -r i uuid puuid fs type dev mnt <<<"${file//./ }"
             local ddev=${DESTS[${SRC2DEST[$uuid]}]}
-
+            [[ -z $ddev ]] && ddev=${DESTS[${PSRC2PDEST[$puuid]}]} 
+			
             MOUNTS[${mnt//_/\/}]="$uuid"
 
             if [[ -n $ddev ]]; then
                 mount_ "$ddev" -t "$fs"
                 pushd "${MNTPNT}/$ddev" >/dev/null || return 1
 
-                cmd="tar -xf - -C ${MNTPNT}/$ddev"
+                local cmd="tar -xf - -C ${MNTPNT}/$ddev"
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
-
-                if [[ $fs == vfat ]]; then
-                    fakeroot cat "${SRC}/${file}"* | eval "$cmd"
+                
+                if [[ $INTERACTIVE == true ]]; then
+                  local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
+                  cmd="cat ${SRC}/${file}* | pv --interval 0.5 --numeric -s $size | $cmd"
+                  [[ $fs == vfat ]] && cmd="fakeroot $cmd"
+                  while read -r e; do
+                    [[ $e -ge 100 ]] && e=100
+                    message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
+                    #Note that with pv stderr holds the current percentage value!
+                  done < <((eval "$cmd") 2>&1)
+                  message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
                 else
-                    if [[ $INTERACTIVE == true ]]; then
-                        local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
-                        while read -r e; do
-                            [[ $e -ge 100 ]] && e=100
-                            message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
-                            #Note that with pv stderr holds the current percentage value!
-                        done < <((cat "${SRC}/${file}"* | pv --interval 0.5 --numeric -s "$size" | eval "$cmd") 2>&1)
-                        message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
-                    else
-                        message -c -t "Restoring $file"
-                        cat "${SRC}/${file}"* | eval "$cmd"
-                    fi
+                  message -c -t "Restoring $file"
+                  cmd="cat ${SRC}/${file}* | $cmd"
+                  [[ $fs == vfat ]] && cmd="fakeroot $cmd"
+                  eval "$cmd"
                 fi
 
                 popd >/dev/null || return 1
@@ -1104,7 +1119,7 @@ Main() { #{{{
 
     option=$(getopt \
         -o 'huqcxps:d:e:n:m:H:' \
-        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:' \
+        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split' \
         -n "$(basename "$0" \
     )" -- "$@")
 
@@ -1154,6 +1169,10 @@ Main() { #{{{
         '-q')
             exec &>/dev/null;
             shift 1; continue
+            ;;
+        '--split')
+            SPLIT=true;
+            shift 1: continue
             ;;
         '-c')
             IS_CHECKSUM=true;
