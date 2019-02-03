@@ -955,20 +955,17 @@ Clone() { #{{{
                 local sdev=${s[$i]}
                 local sid=${UUIDS[$sdev]}
                 local ddev=${DESTS[${SRC2DEST[$sid]}]}
+                local tdev=$sdev
+                local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
+                local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | awk '{print $2}')
 
                 [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
-
                 mkdir -p "${MNTPNT}/$ddev" "${MNTPNT}/$sdev"
-
-                local tdev=$sdev
-
                 [[ -d ${MNTPNT}/$sdev/EFI ]] && HAS_EFI=true
                 [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
 
                 {
                     if [[ $dev == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
-                        local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
-                        local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | awk '{print $2}')
                         tdev='snap4clone'
                         mkdir -p "${MNTPNT}/$tdev"
                         lvremove -q -f "${VG_SRC_NAME}/$tdev"
