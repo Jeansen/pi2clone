@@ -1269,7 +1269,7 @@ Main() { #{{{
 
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
-            grep -q ${SRC##*/} < <(dmsetup deps -o devname $e | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
+            grep -q ${SRC##*/} < <(dmsetup deps -o devname | uniq | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
         done < <(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name; fi)
     fi
 
