@@ -818,6 +818,7 @@ Clone() { #{{{
         while read -r e; do
             read -r lv_name vg_name lv_size vg_size vg_free lv_role <<<"$e"
             if [[ $vg_name == "$VG_SRC_NAME" ]]; then
+                [[ -n $LVM_EXPAND && $lv_name == "$LVM_EXPAND" ]] && continue
                 [[ $lv_role =~ snapshot ]] && continue
                 size=$(echo "$lv_size * 100 / $denom_size" | bc)
 
@@ -829,6 +830,7 @@ Clone() { #{{{
                 fi
             fi
         done < <( if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role; fi)
+        [[ -n $LVM_EXPAND ]] && lvcreate --yes -l${LVM_EXPAND_BY:-100}%FREE -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
         while read -r e; do
             read -r kname name fstype type <<<"$e"
@@ -1083,6 +1085,17 @@ Main() { #{{{
         ! [[ $t =~ disk|loop ]] && exit_ 1 "Invalid block device. $1 is not a disk."
     } #}}}
 
+    _is_valid_lv() { #{{{
+        local lv_name="$1"
+        local vg_name="$2"
+
+        if [[ $_RMODE == true ]]; then
+            grep -qw "$lv_name" < <(cat "$SRC/$F_LVS_LIST" | awk '{print $1}' | uniq)
+        else 
+            lvs --noheadings -o lv_name,vg_name | grep -w "$vg_name" | grep -qw "$1"
+        fi
+    } #}}}
+
     trap Cleanup INT TERM EXIT
     echo >$F_LOG
 
@@ -1109,7 +1122,7 @@ Main() { #{{{
 
     option=$(getopt \
         -o 'huqcxps:d:e:n:m:H:' \
-        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split' \
+        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split,lvm-expand:' \
         -n "$(basename "$0" \
     )" -- "$@")
 
@@ -1175,8 +1188,14 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-m'|'--resize-threshold')
-            export MIN_RESIZE="${2:-2048}";
+            MIN_RESIZE="${2:-2048}";
             shift 2; continue
+            ;;
+        '--lvm-expand')
+            read -r LVM_EXPAND LVM_EXPAND_BY <<< ${2/:/ }
+            [[ "$LVM_EXPAND_BY" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $1 $2"
+            shift 2; continue
+
             ;;
 		'--')
 			shift; break
@@ -1270,7 +1289,10 @@ Main() { #{{{
 
     [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
 
+    [[ -n $LVM_EXPAND ]] && ! _is_valid_lv "$LVM_EXPAND" "$VG_SRC_NAME" && exit_ 2 "Volumen name ${LVM_EXPAND} does not exists in ${VG_SRC_NAME}!"
+
     grep -q $VG_SRC_NAME_CLONE < <(dmsetup deps -o devname ) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
+
 
     exec > $F_LOG 2>&1
 
