@@ -627,6 +627,9 @@ usage() { #{{{
     printf "  %-30s %s\n" "-n, --new-vg-name"           "LVM only: Define new volume group name"
     printf "  %-30s %s\n" "-e, --encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
     printf "  %-30s %s\n\n" "-p"                        "LVM only: Use all disks found on destination as PVs for VG"
+    printf "  %-30s %s\n" "--lvm-expand"                "LVM only: Have the given lvm use the remaining free space."
+    printf "  %-30s %s\n" ""                            "An optional percentage can be supplied, e.g. 'root:80'"
+    printf "  %-30s %s\n\n" ""                            "Which would add 80% of the remaining free space in a VG to this LV"
     printf "  %-30s %s\n" "-u"                          "Convert to UEFI"
     printf "  %-30s %s\n\n" "-m, --resize-threshold"    "Do not resize partitions smaller than <MB> (default 2048)"
     printf "  %-30s %s\n" "-q"                          "Quiet, do not show any output"
@@ -1080,6 +1083,8 @@ Clone() { #{{{
 } #}}}
 
 Main() { #{{{
+    local args=$# #getop changes the $# value. To be sure we save the original arguments count.
+
     _validate_block_device() { #{{{
         local t=$(lsblk --nodeps --noheadings -o TYPE "$1")
         ! [[ $t =~ disk|loop ]] && exit_ 1 "Invalid block device. $1 is not a disk."
@@ -1102,6 +1107,18 @@ Main() { #{{{
     exec 3>&1 4>&2
     tput sc
 
+    option=$(getopt \
+        -o 'huqcxps:d:e:n:m:H:' \
+        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split,lvm-expand:' \
+        -n "$(basename "$0" \
+    )" -- "$@")
+
+    [[ $? -ne 0 ]] && usage
+
+    eval set -- "$option"
+
+    [[ $1 == -h || $1 == --help || $args -eq 0 ]] && usage #Don't have to be root to get the usage info
+
     #Force root
     [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
 
@@ -1120,18 +1137,10 @@ Main() { #{{{
 
     PKGS=(awk lvm rsync tar flock bc blockdev fdisk sfdisk)
 
-    option=$(getopt \
-        -o 'huqcxps:d:e:n:m:H:' \
-        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split,lvm-expand:' \
-        -n "$(basename "$0" \
-    )" -- "$@")
-
-    eval set -- "$option"
-
     while true; do
         case "$1" in
         '-h'|'--help')
-            usage;
+            usage
             shift 1; continue
             ;;
         '-s')
