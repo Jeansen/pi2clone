@@ -43,7 +43,7 @@ declare VG_SRC_NAME
 declare VG_SRC_NAME_CLONE
 
 declare HAS_GRUB=false
-declare HAS_EFI=false #If the cloned system is UEFI enabled
+declare HAS_EFI=false     #If the cloned system is UEFI enabled
 declare SYS_HAS_EFI=false #If the currently running system has UEFI
 declare IS_LVM=false
 declare PVALL=false
@@ -84,8 +84,8 @@ setHeader() { #{{{
 echo_() { #{{{
     exec 1>&3 #restore stdout
     echo "$1"
-    exec 3>&1 #save stdout
-    exec > $F_LOG 2>&1 #again all to the log
+    exec 3>&1         #save stdout
+    exec >$F_LOG 2>&1 #again all to the log
 } #}}}
 
 mount_() { #{{{
@@ -210,8 +210,8 @@ message() { #{{{
     }
     [[ $update == true ]] && tput rc
     tput civis
-    exec 3>&1 #save stdout
-    exec >> $F_LOG 2>&1 #again all to the log
+    exec 3>&1          #save stdout
+    exec >>$F_LOG 2>&1 #again all to the log
 } #}}}
 
 expand_disk() { #{{{
@@ -358,7 +358,7 @@ init_srcs() { #{{{
         [[ -n $UUID && -n $PARTUUID ]] && PUUIDS2UUIDS[$PARTUUID]="$UUID"
     done < <( if [[ -n $1 ]]; then cat "$1";
               else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | sort -n | uniq | grep -v 'disk';
-              fi )
+    fi)
 } #}}}
 
 is_partition() { #{{{
@@ -507,7 +507,7 @@ crypt_setup() { #{{{
     done
 
     printf '%s' '#!/bin/sh
-    exec /bin/cat /${1}' > "${MNTPNT}/$d/home/dummy" && chmod +x "${MNTPNT}/$d/home/dummy"
+    exec /bin/cat /${1}' >"${MNTPNT}/$d/home/dummy" && chmod +x "${MNTPNT}/$d/home/dummy"
 
     printf '%s' '#!/bin/sh
 	set -e
@@ -618,7 +618,7 @@ usage() { #{{{
 
     printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n\n"
     printf "Options:\n\n"
-        
+
     printf "  %-30s %s\n" "--destination-image"         "Use the given image as a loop device"
     printf "  %-30s %s\n" "-c"                          "Create/Validate checksums"
     printf "  %-30s %s\n" "-x"                          "Use compression (compression ration about 1:3, but very slow!)"
@@ -645,8 +645,8 @@ Cleanup() { #{{{
         umount_
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
         [[ $ENCRYPT ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
-        [[ $CREATE_LOOP_DEV == true  ]] && losetup -d "$DEST"
-    } &> /dev/null
+        [[ $CREATE_LOOP_DEV == true ]] && losetup -d "$DEST"
+    } &>/dev/null
 
     exec 1>&3 2>&4
     tput cnorm
@@ -813,9 +813,9 @@ Clone() { #{{{
 
         denom_size=$((s1 < s2 ? s2 : s1))
 
-        # It might happen that a volume is so small, that it is only 0% in size. In this case we assume the
-        # lowest possible value: 1%. This also means we have to decrease the maximum possible size. E.g. two volumes
-        # with 0% and 100% would have to be 1% and 99% to make things work.
+        : 'It might happen that a volume is so small, that it is only 0% in size. In this case we assume the
+        lowest possible value: 1%. This also means we have to decrease the maximum possible size. E.g. two volumes
+        with 0% and 100% would have to be 1% and 99% to make things work.'
         local max_size=100
 
         while read -r e; do
@@ -825,14 +825,14 @@ Clone() { #{{{
                 [[ $lv_role =~ snapshot ]] && continue
                 size=$(echo "$lv_size * 100 / $denom_size" | bc)
 
-                if ((s1 < s2 || size - max_size == 0 )); then
+                if ((s1 < s2 || size - max_size == 0)); then
                     lvcreate --yes -L"${lv_size%%.*}" -n "$lv_name" "$VG_SRC_NAME_CLONE"
                 else
                     ((size == 0)) && size=1 && max_size=$((max_size - size))
                     lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
                 fi
             fi
-        done < <( if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role; fi)
+        done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role; fi)
         [[ -n $LVM_EXPAND ]] && lvcreate --yes -l${LVM_EXPAND_BY:-100}%FREE -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
         while read -r e; do
@@ -883,7 +883,7 @@ Clone() { #{{{
     } #}}}
 
     _finish() { #{{{
-        [[ -f "${MNTPNT}/$ddev/etc/hostname" && -n $HOST_NAME ]] && echo "$HOST_NAME" > "${MNTPNT}/$ddev/etc/hostname"
+        [[ -f "${MNTPNT}/$ddev/etc/hostname" && -n $HOST_NAME ]] && echo "$HOST_NAME" >"${MNTPNT}/$ddev/etc/hostname"
         [[ -f ${MNTPNT}/$ddev/grub/grub.cfg || -f ${MNTPNT}/$ddev/grub.cfg || -f ${MNTPNT}/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
         [[ -d ${MNTPNT}/$ddev/EFI ]] && HAS_EFI=true
         [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST"
@@ -899,7 +899,7 @@ Clone() { #{{{
         pushd "$SRC" >/dev/null || return 1
 
         for file in [0-9]*; do
-			      local k=$(echo "$file" | sed "s/\.[a-z]*$//")
+            local k=$(echo "$file" | sed "s/\.[a-z]*$//")
             files[$k]=1
         done
 
@@ -907,8 +907,8 @@ Clone() { #{{{
         for file in ${!files[@]}; do
             read -r i uuid puuid fs type dev mnt <<<"${file//./ }"
             local ddev=${DESTS[${SRC2DEST[$uuid]}]}
-            [[ -z $ddev ]] && ddev=${DESTS[${PSRC2PDEST[$puuid]}]} 
-			
+            [[ -z $ddev ]] && ddev=${DESTS[${PSRC2PDEST[$puuid]}]}
+
             MOUNTS[${mnt//_/\/}]="$uuid"
 
             if [[ -n $ddev ]]; then
@@ -917,7 +917,7 @@ Clone() { #{{{
 
                 local cmd="tar -xf - -C ${MNTPNT}/$ddev"
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
-                
+
                 if [[ $INTERACTIVE == true ]]; then
                   local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
                   cmd="cat ${SRC}/${file}* | pv --interval 0.5 --numeric -s $size | $cmd"
@@ -1096,7 +1096,7 @@ Main() { #{{{
 
         if [[ $_RMODE == true ]]; then
             grep -qw "$lv_name" < <(cat "$SRC/$F_LVS_LIST" | awk '{print $1}' | uniq)
-        else 
+        else
             lvs --noheadings -o lv_name,vg_name | grep -w "$vg_name" | grep -qw "$1"
         fi
     } #}}}
@@ -1111,7 +1111,7 @@ Main() { #{{{
         -o 'huqcxps:d:e:n:m:H:' \
         --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split,lvm-expand:' \
         -n "$(basename "$0" \
-    )" -- "$@")
+        )" -- "$@")
 
     [[ $? -ne 0 ]] && usage
 
@@ -1139,7 +1139,7 @@ Main() { #{{{
 
     while true; do
         case "$1" in
-        '-h'|'--help')
+        '-h' | '--help')
             usage
             shift 1; continue
             ;;
@@ -1154,20 +1154,20 @@ Main() { #{{{
             shift 2; continue
             ;;
         '-d')
-            DEST=$(readlink -m "$2");
+            DEST=$(readlink -m "$2")
             shift 2; continue
             ;;
-        '-n'|'--new-vg-name')
-            VG_SRC_NAME_CLONE="$2";
+        '-n' | '--new-vg-name')
+            VG_SRC_NAME_CLONE="$2"
             shift 2; continue
             ;;
-        '-e'|'--encrypt-with-password')
-            ENCRYPT="$2";
-            PKGS+=(cryptsetup);
+        '-e' | '--encrypt-with-password')
+            ENCRYPT="$2"
+            PKGS+=(cryptsetup)
             shift 2; continue
             ;;
-        '-H'|'--hostname')
-            HOST_NAME="$2";
+        '-H' | '--hostname')
+            HOST_NAME="$2"
             shift 2; continue
             ;;
         '-u')
@@ -1179,7 +1179,7 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-q')
-            exec &>/dev/null;
+            exec &>/dev/null
             shift 1; continue
             ;;
         '--split')
@@ -1187,34 +1187,33 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-c')
-            IS_CHECKSUM=true;
-            PKGS+=(parallel);
+            IS_CHECKSUM=true
+            PKGS+=(parallel)
             shift 1; continue
             ;;
         '-x')
-            export XZ_OPT=-4T0;
-            PKGS+=(xz);
+            export XZ_OPT=-4T0
+            PKGS+=(xz)
             shift 1; continue
             ;;
-        '-m'|'--resize-threshold')
-            MIN_RESIZE="${2:-2048}";
+        '-m' | '--resize-threshold')
+            MIN_RESIZE="${2:-2048}"
             shift 2; continue
             ;;
         '--lvm-expand')
-            read -r LVM_EXPAND LVM_EXPAND_BY <<< ${2/:/ }
+            read -r LVM_EXPAND LVM_EXPAND_BY <<<${2/:/ }
             [[ "$LVM_EXPAND_BY" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $1 $2"
             shift 2; continue
 
             ;;
-		'--')
-			shift; break
+        '--')
+			      shift; break
             ;;
         *)
             usage
             ;;
         esac
     done
-
 
     local packages=()
     #Inform about ALL missing but necessary tools.
@@ -1300,10 +1299,9 @@ Main() { #{{{
 
     [[ -n $LVM_EXPAND ]] && ! _is_valid_lv "$LVM_EXPAND" "$VG_SRC_NAME" && exit_ 2 "Volumen name ${LVM_EXPAND} does not exists in ${VG_SRC_NAME}!"
 
-    grep -q $VG_SRC_NAME_CLONE < <(dmsetup deps -o devname ) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
+    grep -q $VG_SRC_NAME_CLONE < <(dmsetup deps -o devname) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
 
-
-    exec > $F_LOG 2>&1
+    exec >$F_LOG 2>&1
 
     #main
     echo_ "Backup started at $(date)"
