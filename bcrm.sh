@@ -42,13 +42,13 @@ declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
 declare VG_SRC_NAME
 declare VG_SRC_NAME_CLONE
 
-declare HAS_GRUB=false #If the cloned system uses GRUB
+declare HAS_GRUB=false
 declare HAS_EFI=false #If the cloned system is UEFI enabled
 declare SYS_HAS_EFI=false #If the currently running system has UEFI
 declare IS_LVM=false
-declare PVALL=false #Use all PVS for LVM
-declare IS_CHECKSUM=false #-c
-declare INTERACTIVE=false #Show Progress (if pv is installed)
+declare PVALL=false
+declare IS_CHECKSUM=false
+declare INTERACTIVE=false
 declare CREATE_LOOP_DEV=false
 declare SPLIT=false
 
@@ -154,9 +154,9 @@ exit_() { #{{{
 encrypt() { #{{{
     { echo ';' | sfdisk "$DEST" && sfdisk -Vq; } || return 1 #delete all partitions and create one for the whole disk.
     sleep 3
-    ENCRYPT_PART=$(sfdisk -qlo device $DEST | tail -n 1)
-    echo -n "$1" | cryptsetup luksFormat $ENCRYPT_PART -
-    echo -n "$1" | cryptsetup open $ENCRYPT_PART $LUKS_LVM_NAME --type luks -
+    ENCRYPT_PART=$(sfdisk -qlo device "$DEST" | tail -n 1)
+    echo -n "$1" | cryptsetup luksFormat "$ENCRYPT_PART" -
+    echo -n "$1" | cryptsetup open "$ENCRYPT_PART" "$LUKS_LVM_NAME" --type luks -
 } #}}}
 
 message() { #{{{
@@ -232,7 +232,7 @@ expand_disk() { #{{{
         fi
 
         if [[ -n "$size" ]]; then
-            [[ $(($size / 2 / 1024)) -le $MIN_RESIZE ]] && continue
+            [[ $(($size / 2 / 1024)) -le "$MIN_RESIZE" ]] && continue
             new_size=$(echo "scale=2; $size * $expand_factor" | bc) &&
                 pdata=$(sed "s/$size/${new_size%%.*}/" < <(echo "$pdata"))
         fi
@@ -259,7 +259,7 @@ mbr2gpt() { #{{{
 
     if [[ $overlap > 0 ]]; then
         local sectors=$(echo "$pdata" | tail -n 1 | grep -o -P 'size=\s*(\d*)' | awk '{print $2}')
-        flock $dest sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors - overlap))/")
+        flock "$dest" sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors - overlap))/")
     fi
 
     blockdev --rereadpt "$dest"
@@ -272,7 +272,7 @@ mbr2gpt() { #{{{
     pdata=$(echo "$pdata" | sed -e "s/$fstsctr/$((fstsctr - 1024000))/")
     pdata=$(echo "$pdata" | grep 'size=' | sed -e 's/^[^,]*,//; s/uuid=[a-Z0-9-]*,\{,1\}//')
     pdata=$(echo -e "size=1024000, type=${efisysid}\n${pdata}")
-    flock $dest sfdisk "$dest" < <(echo "$pdata")
+    flock "$dest" sfdisk "$dest" < <(echo "$pdata")
     blockdev --rereadpt "$dest"
 } #}}}
 
@@ -379,11 +379,11 @@ vg_extend() { #{{{
 
     while read -r e; do
         read -r name type <<<"$e"
-        [[ -n $(lsblk -no mountpoint $name 2>/dev/null) ]] && continue
-        echo ';' | flock $name sfdisk -q $name && sfdisk $name -Vq
-        local part=$(lsblk $name -lnpo name,type | grep part | awk '{print $1}')
-        pvcreate -f $part && vgextend $1 $part
-        PVS+=($part)
+        [[ -n $(lsblk -no mountpoint "$name" 2>/dev/null) ]] && continue
+        echo ';' | flock "$name" sfdisk -q "$name" && sfdisk "$name" -Vq
+        local part=$(lsblk "$name" -lnpo name,type | grep part | awk '{print $1}')
+        pvcreate -f "$part" && vgextend "$1" "$part"
+        PVS+=("$part")
     done < <(lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
 } #}}}
 
@@ -472,10 +472,10 @@ grub_setup() { #{{{
         while read -r e; do
             read -r name uuid parttype <<<"$e"
             eval "$name" "$uuid" "$parttype"
-        done < <(lsblk -pPo name,uuid,parttype $DEST | grep -i 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b')
+        done < <(lsblk -pPo name,uuid,parttype "$DEST" | grep -i 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b')
 
         echo -e "${uuid}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"${MNTPNT}/$d/etc/fstab"
-        mkdir -p ${MNTPNT}/$d/boot/efi && mount $uuid ${MNTPNT}/$d/boot/efi
+        mkdir -p "${MNTPNT}/$d/boot/efi" && mount "$uuid" "${MNTPNT}/$d/boot/efi"
     fi
 
     [[ $HAS_EFI == true && $SYS_HAS_EFI == false ]] && return 1
@@ -507,7 +507,7 @@ crypt_setup() { #{{{
     done
 
     printf '%s' '#!/bin/sh
-    exec /bin/cat /${1}' >${MNTPNT}/$d/home/dummy && chmod +x ${MNTPNT}/$d/home/dummy
+    exec /bin/cat /${1}' > "${MNTPNT}/$d/home/dummy" && chmod +x "${MNTPNT}/$d/home/dummy"
 
     printf '%s' '#!/bin/sh
 	set -e
@@ -619,18 +619,18 @@ usage() { #{{{
     printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n\n"
     printf "Options:\n\n"
         
-    printf "  %-30s %s\n" "--destination-image" "Use the given image as a loop device"
-    printf "  %-30s %s\n" "-c" "Create/Validate checksums"
-    printf "  %-30s %s\n" "-x" "Use compression (compression ration about 1:3, but very slow!)"
-    printf "  %-30s %s\n" "--split" "Split backup into chunks of 1G files"
-    printf "  %-30s %s\n\n" "-H, --hostname" "Set hostname"
-    printf "  %-30s %s\n" "-n, --new-vg-name" "LVM only: Define new volume group name"
+    printf "  %-30s %s\n" "--destination-image"         "Use the given image as a loop device"
+    printf "  %-30s %s\n" "-c"                          "Create/Validate checksums"
+    printf "  %-30s %s\n" "-x"                          "Use compression (compression ration about 1:3, but very slow!)"
+    printf "  %-30s %s\n" "--split"                     "Split backup into chunks of 1G files"
+    printf "  %-30s %s\n\n" "-H, --hostname"            "Set hostname"
+    printf "  %-30s %s\n" "-n, --new-vg-name"           "LVM only: Define new volume group name"
     printf "  %-30s %s\n" "-e, --encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
-    printf "  %-30s %s\n\n" "-p" "LVM only: Use all disks found on destination as PVs for VG"
-    printf "  %-30s %s\n" "-u" "Convert to UEFI"
-    printf "  %-30s %s\n\n" "-m, --resize-threshold" "Do not resize partitions smaller than <MB> (default 2048)"
-    printf "  %-30s %s\n" "-q" "Quiet, do not show any output"
-    printf "  %-30s %s\n" "-h ,--help " "Show this help text"
+    printf "  %-30s %s\n\n" "-p"                        "LVM only: Use all disks found on destination as PVs for VG"
+    printf "  %-30s %s\n" "-u"                          "Convert to UEFI"
+    printf "  %-30s %s\n\n" "-m, --resize-threshold"    "Do not resize partitions smaller than <MB> (default 2048)"
+    printf "  %-30s %s\n" "-q"                          "Quiet, do not show any output"
+    printf "  %-30s %s\n" "-h ,--help"                  "Show this help text"
 
     exit_ 1
 } #}}}
@@ -685,7 +685,7 @@ To_file() { #{{{
     local VG_SRC_NAME=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | awk '{print $2}')
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
-            grep -q ${SRC##*/} < <(dmsetup deps -o devname $e | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
+            grep -q "${SRC##*/}" < <(dmsetup deps -o devname "$e" | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME="$g"
         done < <(pvs --noheadings -o pv_name,vg_name | xargs)
     fi
 
@@ -799,18 +799,14 @@ Clone() { #{{{
         local size s1 s2
         local dest=$1
 
-        vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name,vg_name | grep -Ev '(\w+)\s*(\w+)$')
+        vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name,vg_name | sed -e 's/^ *//' | grep -Ev '/.*\s+\w+') #TODO optimize, check for better solution
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE"
 
         while read -r e; do
             read -r vg_name vg_size vg_free <<<"$e"
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*} - ${vg_free%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_size%%.*}
-        done < <(if [[ $_RMODE == true ]]; then
-            cat $SRC/$F_VGS_LIST
-        else
-            vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free
-        fi)
+        done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_VGS_LIST"; else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free; fi)
 
         denom_size=$((s1 < s2 ? s2 : s1))
 
@@ -821,27 +817,24 @@ Clone() { #{{{
 
         while read -r e; do
             read -r lv_name vg_name lv_size vg_size vg_free lv_role <<<"$e"
-            [[ $lv_role =~ snapshot ]] && continue
-            size=$(echo "$lv_size * 100 / $denom_size" | bc)
+            if [[ $vg_name == "$VG_SRC_NAME" ]]; then
+                [[ $lv_role =~ snapshot ]] && continue
+                size=$(echo "$lv_size * 100 / $denom_size" | bc)
 
-            if ((s1 < s2)); then
-                lvcreate --yes -L"${lv_size}" -n "$lv_name" "$VG_SRC_NAME_CLONE"
-            else
-                ((size == 0)) && size=1 && max_size=$((max_size - size))
-                ((size == 100)) && size=$((size - max_size))
-                lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
+                if ((s1 < s2 || size - max_size == 0 )); then
+                    lvcreate --yes -L"${lv_size%%.*}" -n "$lv_name" "$VG_SRC_NAME_CLONE"
+                else
+                    ((size == 0)) && size=1 && max_size=$((max_size - size))
+                    lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
+                fi
             fi
-        done < <(if [[ $_RMODE == true ]]; then
-            cat $SRC/$F_LVS_LIST
-        else
-            lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role
-        fi)
+        done < <( if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role; fi)
 
         while read -r e; do
             read -r kname name fstype type <<<"$e"
             eval "$kname" "$name" "$fstype" "$type"
             [[ $TYPE == 'lvm' ]] && SRC_LFS[${NAME##*-}]=$FSTYPE
-        done < <(if [[ -d $SRC ]]; then cat $SRC/$F_PART_LIST; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$SRC" ${VG_DISKS[@]}; fi)
+        done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PART_LIST"; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$SRC" ${VG_DISKS[@]}; fi)
 
         while read -r e; do
             read -r kname name fstype type <<<"$e"
@@ -885,7 +878,7 @@ Clone() { #{{{
     } #}}}
 
     _finish() { #{{{
-        [[ -f ${MNTPNT}/$ddev/etc/hostname && -n $HOST_NAME ]] && echo $HOST_NAME >${MNTPNT}/$ddev/etc/hostname
+        [[ -f "${MNTPNT}/$ddev/etc/hostname" && -n $HOST_NAME ]] && echo "$HOST_NAME" > "${MNTPNT}/$ddev/etc/hostname"
         [[ -f ${MNTPNT}/$ddev/grub/grub.cfg || -f ${MNTPNT}/$ddev/grub.cfg || -f ${MNTPNT}/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
         [[ -d ${MNTPNT}/$ddev/EFI ]] && HAS_EFI=true
         [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST"
@@ -901,7 +894,7 @@ Clone() { #{{{
         pushd "$SRC" >/dev/null || return 1
 
         for file in [0-9]*; do
-			      local k=$(echo $file | sed "s/\.[a-z]*$//")
+			      local k=$(echo "$file" | sed "s/\.[a-z]*$//")
             files[$k]=1
         done
 
@@ -1024,10 +1017,10 @@ Clone() { #{{{
 
     message -c -t "Cloning disk layout"
     {
-        local f=$([[ $_RMODE == true ]] && echo $SRC/$F_PART_LIST)
+        local f=$([[ $_RMODE == true ]] && echo "$SRC/$F_PART_LIST")
         _prepare_disk #First collect what we have in our backup
-        init_srcs $f
-        set_src_uuids $f #Then create the filesystems and PVs
+        init_srcs "$f"
+        set_src_uuids "$f" #Then create the filesystems and PVs
 
         if [[ $ENCRYPT ]]; then
             pvcreate "/dev/mapper/$LUKS_LVM_NAME"
@@ -1059,9 +1052,9 @@ Clone() { #{{{
 
     #Check if destination is big enough.
     local cnt
-    [[ $_RMODE == true ]] && SECTORS=$(cat $SRC/$F_SECTORS_USED)
-    [[ -b $DEST ]] && cnt=$(echo $(blockdev --getsize64 $DEST) / 1024 | bc)
-    [[ -d $DEST ]] && cnt=$(df -k --output=avail $DEST | tail -n -1)
+    [[ $_RMODE == true ]] && SECTORS=$(cat "$SRC/$F_SECTORS_USED")
+    [[ -b $DEST ]] && cnt=$(echo $(blockdev --getsize64 "$DEST") / 1024 | bc)
+    [[ -d $DEST ]] && cnt=$(df -k --output=avail "$DEST" | tail -n -1)
     ((cnt - SECTORS <= 0)) && exit_ 10 "Require $((SECTORS / 1024))M but destination is only $((cnt / 1024))M"
 
     if [[ $_RMODE == true ]]; then
@@ -1074,7 +1067,7 @@ Clone() { #{{{
         message -c -t "Installing Grub"
         {
             if [[ $ENCRYPT ]]; then
-                crypt_setup $ENCRYPT || return 1
+                crypt_setup "$ENCRYPT" || return 1
             else
                 grub_setup || return 1
             fi
@@ -1086,7 +1079,7 @@ Clone() { #{{{
 
 Main() { #{{{
     _validate_block_device() { #{{{
-        local t=$(lsblk --nodeps --noheadings -o TYPE $1)
+        local t=$(lsblk --nodeps --noheadings -o TYPE "$1")
         ! [[ $t =~ disk|loop ]] && exit_ 1 "Invalid block device. $1 is not a disk."
     } #}}}
 
@@ -1129,7 +1122,7 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-s')
-            SRC=$(readlink -m $2);
+            SRC=$(readlink -m "$2");
             shift 2; continue
             ;;
         '--destination-image')
@@ -1139,20 +1132,20 @@ Main() { #{{{
             shift 2; continue
             ;;
         '-d')
-            DEST=$(readlink -m $2);
+            DEST=$(readlink -m "$2");
             shift 2; continue
             ;;
         '-n'|'--new-vg-name')
-            VG_SRC_NAME_CLONE=$2;
-            shift 2: continue
+            VG_SRC_NAME_CLONE="$2";
+            shift 2; continue
             ;;
         '-e'|'--encrypt-with-password')
-            ENCRYPT=$2;
+            ENCRYPT="$2";
             PKGS+=(cryptsetup);
             shift 2; continue
             ;;
         '-H'|'--hostname')
-            HOST_NAME=$2;
+            HOST_NAME="$2";
             shift 2; continue
             ;;
         '-u')
@@ -1169,7 +1162,7 @@ Main() { #{{{
             ;;
         '--split')
             SPLIT=true;
-            shift 1: continue
+            shift 1; continue
             ;;
         '-c')
             IS_CHECKSUM=true;
@@ -1276,6 +1269,8 @@ Main() { #{{{
     [[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME && IS_LVM=true
 
     [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
+
+    grep -q $VG_SRC_NAME_CLONE < <(dmsetup deps -o devname ) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
 
     exec > $F_LOG 2>&1
 
