@@ -186,7 +186,7 @@ message() { #{{{
             tput rc
             ;;
         i)
-            status="${clor_no}i${clr_rmso}"
+            status="${clor_info}i${clr_rmso}"
             tput rc
             ;;
         u)
