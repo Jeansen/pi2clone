@@ -1127,7 +1127,7 @@ Main() { #{{{
     #Force root
     [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
 
-    hash pv && INTERACTIVE=true || message -n -t "No progress will be shown. Consider installing package: pv"
+    hash pv && INTERACTIVE=true || message -i -t "No progress will be shown. Consider installing package: pv"
 
     SYS_HAS_EFI=$([[ -d /sys/firmware/efi ]] && echo true || echo false)
 
