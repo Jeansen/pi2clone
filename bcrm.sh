@@ -172,7 +172,7 @@ message() { #{{{
 
     exec 1>&3 #restore stdout
     #prepare
-    while getopts ':nucyt:' option; do
+    while getopts ':inucyt:' option; do
         case "$option" in
         t)
             text=" $OPTARG"
