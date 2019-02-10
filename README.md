@@ -1,7 +1,7 @@
 # Backup, Clone, Restore and More (bcrm)
 
 This project is a result of finding a solution for backing up and restoring my private systems in use. To some extend
-one could say it is a combination of [relax-and-restore[(http://relax-and-recover.org) and
+one could say it is a combination of [relax-and-restore](http://relax-and-recover.org) and
 [borg](https://www.borgbackup.org). Though these are robust, solid and field-proven tools, I was missing the option to
 do live backups without having to use a special rescue image. And I always wanted to do something like this myself :-)
 
