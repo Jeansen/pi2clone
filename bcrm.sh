@@ -1255,6 +1255,12 @@ Main() { #{{{
     [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] &&
         exit_ 1 "Invalid device or directory: $DEST"
 
+    [[ -d $DEST && ! -r $DEST && ! -w $DEST && ! -x $DEST ]] && 
+        exit_ 1 "$DEST is not writable."
+
+    [[ -d $SRC && ! -r $SRC && ! -x $SRC ]] && 
+        exit_ 1 "$SRC is not readable."
+
     for d in "$SRC" "$DEST"; do
         [[ -b $d ]] && _validate_block_device $d
     done
