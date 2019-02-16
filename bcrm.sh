@@ -1107,7 +1107,6 @@ Main() { #{{{
     } #}}}
 
     trap Cleanup INT TERM EXIT
-    echo >$F_LOG
 
     exec 3>&1 4>&2
     tput sc
@@ -1127,6 +1126,7 @@ Main() { #{{{
     #Force root
     [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
 
+    echo >$F_LOG
     hash pv && INTERACTIVE=true || message -i -t "No progress will be shown. Consider installing package: pv"
 
     SYS_HAS_EFI=$([[ -d /sys/firmware/efi ]] && echo true || echo false)
