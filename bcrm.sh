@@ -41,6 +41,7 @@ declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
 
 declare VG_SRC_NAME
 declare VG_SRC_NAME_CLONE
+declare EXIT
 
 declare HAS_GRUB=false
 declare HAS_EFI=false     #If the cloned system is UEFI enabled
@@ -148,7 +149,8 @@ umount_() { #{{{
 
 exit_() { #{{{
     [[ -n $2 ]] && message -n -t "$2"
-    Cleanup $1
+    EXIT=${1:-0}
+    Cleanup
 } #}}}
 
 encrypt() { #{{{
@@ -656,7 +658,7 @@ Cleanup() { #{{{
     exec 1>&3 2>&4
     tput cnorm
     exec 200>&-
-    exit ${1:-0} #Make sure we really exit the script!
+    exit ${EXIT:-255} #Make sure we really exit the script!
 } #}}}
 
 To_file() { #{{{
@@ -1185,7 +1187,8 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-q')
-            exec &>/dev/null
+            exec 3>&-
+            exec 4>&-
             shift 1; continue
             ;;
         '--split')
