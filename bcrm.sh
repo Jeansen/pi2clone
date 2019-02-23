@@ -655,8 +655,11 @@ Cleanup() { #{{{
         [[ $CREATE_LOOP_DEV == true ]] && losetup -d "$DEST"
     } &>/dev/null
 
-    exec 1>&3 2>&4
-    tput cnorm
+    if [[ -t 1 ]]; then
+        exec 1>&3 2>&4
+        tput cnorm
+    fi
+
     exec 200>&-
     exit ${EXIT:-255} #Make sure we really exit the script!
 } #}}}
@@ -1110,8 +1113,10 @@ Main() { #{{{
 
     trap Cleanup INT TERM EXIT
 
-    exec 3>&1 4>&2
-    tput sc
+    if [[ -t 1 ]]; then
+        exec 3>&1 4>&2
+        tput sc
+    fi
 
     option=$(getopt \
         -o 'huqcxps:d:e:n:m:H:' \
