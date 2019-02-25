@@ -300,7 +300,7 @@ validate_m5dsums() { #{{{
 set_dest_uuids() { #{{{
     DPUUIDS=() DUUIDS=() DNAMES=()
     while read -r e; do
-        read -r kdev name fstype uuid puuid type parttype mnt <<<"$e"
+        read -r name kdev fstype uuid puuid type parttype mnt <<<"$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $UEFI == true && $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
@@ -310,10 +310,16 @@ set_dest_uuids() { #{{{
         DPUUIDS+=($PARTUUID)
         DUUIDS+=($UUID)
         DNAMES+=($NAME)
-    done < <(lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -n | uniq | grep -vE '\bdisk|\bUUID=""')
+    done < <(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -n | uniq | grep -vE '\bdisk|\bUUID=""')
 } #}}}
 
 set_src_uuids() { #{{{
+    _count() { #{{{
+        local x=$(swapon --show=size,name --bytes --noheadings | grep $1 | sed -e 's/\s+*.*//')
+        SECTORS=$(($(df -k --output=used $1 | tail -n -1) + $SECTORS))
+        SECTORS=$(($(echo ${x:=0} / 1024 | bc) + $SECTORS))
+    } #}}}
+
     SPUUIDS=() SUUIDS=() SNAMES=()
     local n=0
     local plist
@@ -326,11 +332,11 @@ set_src_uuids() { #{{{
     if [[ -n $1 ]]; then
         plist=$(cat "$1")
     else
-        plist=$(lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]})
+        plist=$(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]})
     fi
 
     while read -r e; do
-        read -r kdev name fstype uuid puuid type parttype mountpoint <<<"$e"
+        read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
 
         [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT ]] && continue
@@ -343,7 +349,7 @@ set_src_uuids() { #{{{
         SPUUIDS+=($PARTUUID)
         SUUIDS+=($UUID)
         SNAMES+=($NAME)
-        [[ -b $SRC ]] && count "$KNAME"
+        [[ -b $SRC ]] && _count "$KNAME"
     done < <(echo "$plist" | sort -n | uniq | grep -v 'disk')
 } #}}}
 
@@ -582,11 +588,6 @@ create_rclocal() { #{{{
     chmod +x "$1/etc/rc.local"
 } #}}}
 
-count() { #{{{
-    local x=$(swapon --show=size,name --bytes --noheadings | grep $1 | sed -e 's/\s+*.*//')
-    SECTORS=$(($(df -k --output=used $KNAME | tail -n -1) + $SECTORS))
-    SECTORS=$(($(echo ${x:=0} / 1024 | bc) + $SECTORS))
-} #}}}
 
 mounts() { #{{{
     for x in "${SRCS[@]}" "${LSRCS[@]}"; do
@@ -636,7 +637,7 @@ usage() { #{{{
     printf "  %-30s %s\n\n" "-p"                        "LVM only: Use all disks found on destination as PVs for VG"
     printf "  %-30s %s\n" "--lvm-expand"                "LVM only: Have the given lvm use the remaining free space."
     printf "  %-30s %s\n" ""                            "An optional percentage can be supplied, e.g. 'root:80'"
-    printf "  %-30s %s\n\n" ""                            "Which would add 80% of the remaining free space in a VG to this LV"
+    printf "  %-30s %s\n\n" ""                          "Which would add 80% of the remaining free space in a VG to this LV"
     printf "  %-30s %s\n" "-u"                          "Convert to UEFI"
     printf "  %-30s %s\n\n" "-m, --resize-threshold"    "Do not resize partitions smaller than <MB> (default 2048)"
     printf "  %-30s %s\n" "-q"                          "Quiet, do not show any output"
@@ -655,7 +656,7 @@ Cleanup() { #{{{
         [[ $CREATE_LOOP_DEV == true ]] && losetup -d "$DEST"
     } &>/dev/null
 
-    if [[ -t 1 ]]; then
+    if [[ -t 3 ]]; then
         exec 1>&3 2>&4
         tput cnorm
     fi
@@ -843,7 +844,8 @@ Clone() { #{{{
                 fi
             fi
         done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role; fi)
-        [[ -n $LVM_EXPAND ]] && lvcreate --yes -l${LVM_EXPAND_BY:-100}%FREE -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
+        [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
+
 
         while read -r e; do
             read -r kname name fstype type <<<"$e"
@@ -986,6 +988,10 @@ Clone() { #{{{
                 }
 
                 mount_ "$ddev"
+
+                local ss=$(df --block-size=1M --output=used "${MNTPNT}/$tdev/" | tail -n -1)
+                local ds=$(df --block-size=1M --output=avail "${MNTPNT}/$ddev" | tail -n -1)
+                ((ds - ss <= 0)) && exit_ 10 "Require ${ss}M but destination is only ${ds}M"
 
                 if [[ $INTERACTIVE == true ]]; then
                     message -u -c -t "Cloning $sdev to $ddev [ scan ]"
