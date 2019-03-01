@@ -54,8 +54,8 @@ declare CREATE_LOOP_DEV=false
 declare SPLIT=false
 
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
-declare SECTORS=0
-declare MIN_RESIZE=2048
+declare SECTORS=0 #in 1K units
+declare MIN_RESIZE=2048 #in 1M units
 declare MNTPNT=/tmp/mnt
 
 
@@ -1341,4 +1341,4 @@ Main() { #{{{
     echo_ "Backup finished at $(date)"
 } #}}}
 
-Main "$@"
+bash -n $(readlink -f $0) && Main "$@"
