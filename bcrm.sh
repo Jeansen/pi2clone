@@ -315,9 +315,11 @@ set_dest_uuids() { #{{{
 
 set_src_uuids() { #{{{
     _count() { #{{{
-        local x=$(swapon --show=size,name --bytes --noheadings | grep $1 | sed -e 's/\s+*.*//')
-        SECTORS=$(($(df -k --output=used $1 | tail -n -1) + $SECTORS))
-        SECTORS=$(($(echo ${x:=0} / 1024 | bc) + $SECTORS))
+        local size=$(swapon --show=size --bytes --noheadings | grep $1 | awk '{print $1}')
+        size=$((size / 1024))
+
+        SECTORS=$(df -k --output=used $1 | tail -n -1)
+        SECTORS=$((${SWAP_SIZE:-$size} + $SECTORS))
     } #}}}
 
     SPUUIDS=() SUUIDS=() SNAMES=()
