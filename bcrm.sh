@@ -41,7 +41,7 @@ declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
 
 declare VG_SRC_NAME
 declare VG_SRC_NAME_CLONE
-declare EXIT
+declare EXIT=0
 
 declare HAS_GRUB=false
 declare HAS_EFI=false     #If the cloned system is UEFI enabled
@@ -662,7 +662,7 @@ Cleanup() { #{{{
     fi
 
     exec 200>&-
-    exit ${EXIT:-255} #Make sure we really exit the script!
+    exit $EXIT #Make sure we really exit the script!
 } #}}}
 
 To_file() { #{{{
