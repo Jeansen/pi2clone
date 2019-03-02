@@ -52,6 +52,7 @@ declare IS_CHECKSUM=false
 declare INTERACTIVE=false
 declare CREATE_LOOP_DEV=false
 declare SPLIT=false
+declare NO_SWAP=false
 
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 declare SECTORS=0 #in 1K units
@@ -222,12 +223,24 @@ message() { #{{{
 } #}}}
 
 expand_disk() { #{{{
-    local ss=$(if [[ -d $1 ]]; then cat $1/$F_SECTORS_SRC; else blockdev --getsz $1; fi)
-    local ds=$(blockdev --getsz $2)
-
-    local expand_factor=$(echo "scale=2; $ds / $ss" | bc)
     local size new_size
+    local swap_part=$SWAP_PART
+    local src_size=$(if [[ -d $1 ]]; then cat $1/$F_SECTORS_SRC; else blockdev --getsz $1; fi)
+    local dest_size=$(blockdev --getsz $2)
+
     local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
+
+    #Substract the swap partition size
+    swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+    src_size=$((src_size - swap_size))
+    [[ SWAP_SIZE > 0 ]] && dest_size=$((dest_size - SWAP_SIZE * 2)) || dest_size=$((dest_size - swap_size))
+
+    local expand_factor=$(echo "scale=4; $dest_size / $src_size" | bc)
+
+    if [[ $NO_SWAP == true ]]; then
+        swap_part=${swap_part////\\/}
+        pdata=$(echo "$pdata" | sed "/$swap_part/d")
+    fi
 
     while read -r e; do
         size=
@@ -239,20 +252,32 @@ expand_disk() { #{{{
         fi
 
         if [[ -n "$size" ]]; then
-            [[ $(($size / 2 / 1024)) -le "$MIN_RESIZE" ]] && continue
-            new_size=$(echo "scale=2; $size * $expand_factor" | bc) &&
+            if [[ $e =~ $swap_part ]]; then
+                if [[ $SWAP_SIZE > 0 ]]; then
+                    size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+
+                    new_size=$(($SWAP_SIZE * 2))
+                    pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
+                fi
+            else
+                [[ $(($size / 2 / 1024)) -le "$MIN_RESIZE" ]] && continue #MIN_RESIZE is in MB
+                new_size=$(echo "scale=4; $size * $expand_factor" | bc)
                 pdata=$(sed "s/$size/${new_size%%.*}/" < <(echo "$pdata"))
+            fi
         fi
-    done < <(if [[ -f "$pdata" ]]; then cat "$pdata"; else echo "$pdata"; fi)
+
+    done < <(echo "$pdata")
 
     #Remove fixed offsets and only apply size values. We assume the extended partition ist last!
     pdata=$(sed 's/start=\s*\w*,//g' < <(echo "$pdata"))
     #When a field is absent or empty the default value of size indicates "as much as asossible";
     #Therefore we remove the size for extended partitions
     pdata=$(sed '/type=5/ s/size=\s*\w*,//' < <(echo "$pdata"))
-    #and the last partition
-    pdata=$(sed '$ s/size=\s*\w*,//g' < <(echo "$pdata"))
-    pdata=$(sed '/last/d' < <(echo "$pdata"))
+    #and the last partition, if it is not swap or swap should be erased.
+    local last_line=$(echo "$pdata" | tail -1 | sed -n -e '$ ,$p')
+    if [[ $NO_SWAP == true && $last_line =~ $swap_part || ! $last_line =~ $swap_part ]]; then
+        pdata=$(sed '$ s/size=\s*\w*,//g' < <(echo "$pdata"))
+    fi
 
     #return
     echo "$pdata"
@@ -341,6 +366,7 @@ set_src_uuids() { #{{{
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
 
+        [[ $NO_SWAP == true && $FSTYPE == swap ]] && continue
         [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT ]] && continue
         [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[$n]="$UUID"
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
@@ -590,7 +616,6 @@ create_rclocal() { #{{{
     chmod +x "$1/etc/rc.local"
 } #}}}
 
-
 mounts() { #{{{
     for x in "${SRCS[@]}" "${LSRCS[@]}"; do
         local sdev=$x
@@ -641,12 +666,14 @@ usage() { #{{{
     printf "  %-30s %s\n" ""                            "An optional percentage can be supplied, e.g. 'root:80'"
     printf "  %-30s %s\n\n" ""                          "Which would add 80% of the remaining free space in a VG to this LV"
     printf "  %-30s %s\n" "-u"                          "Convert to UEFI"
+    printf "  %-30s %s\n" "-w, --swap-size"             "Size in MB. May be zero to remove any swap partition."
     printf "  %-30s %s\n\n" "-m, --resize-threshold"    "Do not resize partitions smaller than <MB> (default 2048)"
     printf "  %-30s %s\n" "-q"                          "Quiet, do not show any output"
     printf "  %-30s %s\n" "-h ,--help"                  "Show this help text"
 
     exit_ 1
 } #}}}
+
 
 ### PUBLIC - To be used in Main() only
 
@@ -679,14 +706,14 @@ To_file() { #{{{
         {
             pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' >$F_PVS_LIST
             vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' >$F_VGS_LIST
-            lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep -v 'snap' | grep 'active public.*' | sed -e 's/active public.*//;s/^\s*//' >$F_LVS_LIST
+            lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role,lv_dm_path | grep -v 'snap' | grep 'active public.*' | sed -e 's/^\s*//; s/\s*$//' >$F_LVS_LIST
             blockdev --getsz "$SRC" >$F_SECTORS_SRC
             sfdisk -d "$SRC" >$F_PART_TABLE
         }
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle.
         #Otherwise resultes from lsblk might still show old values!
-        lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v "$snp" >$F_PART_LIST
+        lsblk -Ppo NAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v "$snp" >$F_PART_LIST
     } #}}}
 
     message -c -t "Creating backup of disk layout"
@@ -815,13 +842,26 @@ Clone() { #{{{
         local size s1 s2
         local dest=$1
 
+        ldata=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; 
+                else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
+                fi)
+        read -r swap_name swap_size <<< $(echo "$ldata" | grep $SWAP_PART | awk '{print $1, $3}')
+        ((SWAP_SIZE > 0)) && swap_size=$((SWAP_SIZE / 1024))
+
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name,vg_name | sed -e 's/^ *//' | grep -Ev '/.*\s+\w+') #TODO optimize, check for better solution
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE"
 
+        if [[ $NO_SWAP == true ]]; then
+            swap_part=${swap_part////\\/}
+            pdata=$(echo "$pdata" | sed "/$swap_part/d")
+        else
+            lvcreate --yes -L${swap_size%%.*} -n "$swap_name" "$VG_SRC_NAME_CLONE"
+        fi
+
         while read -r e; do
             read -r vg_name vg_size vg_free <<<"$e"
-            [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*} - ${vg_free%%.*}))
-            [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_size%%.*}
+            [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*} - ${vg_free%%.*} - ${swap_size%%.*}))
+            [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_free%%.*}
         done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_VGS_LIST"; else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free; fi)
 
         denom_size=$((s1 < s2 ? s2 : s1))
@@ -832,22 +872,25 @@ Clone() { #{{{
         local max_size=100
 
         while read -r e; do
-            read -r lv_name vg_name lv_size vg_size vg_free lv_role <<<"$e"
+            read -r lv_name vg_name lv_size vg_size vg_free lv_role lv_dm_path <<<"$e"
             if [[ $vg_name == "$VG_SRC_NAME" ]]; then
+                [[ $lv_dm_path == $SWAP_PART ]] && continue
                 [[ -n $LVM_EXPAND && $lv_name == "$LVM_EXPAND" ]] && continue
                 [[ $lv_role =~ snapshot ]] && continue
                 size=$(echo "$lv_size * 100 / $denom_size" | bc)
 
-                if ((s1 < s2 || size - max_size == 0)); then
+                if ((s1 < s2)); then
                     lvcreate --yes -L"${lv_size%%.*}" -n "$lv_name" "$VG_SRC_NAME_CLONE"
                 else
                     ((size == 0)) && size=1 && max_size=$((max_size - size))
                     lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
                 fi
             fi
-        done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role; fi)
-        [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
+        done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; 
+                else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
+                fi)
 
+        [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
         while read -r e; do
             read -r kname name fstype type <<<"$e"
@@ -1127,8 +1170,8 @@ Main() { #{{{
     fi
 
     option=$(getopt \
-        -o 'huqcxps:d:e:n:m:H:' \
-        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split,lvm-expand:' \
+        -o 'huqcxps:d:e:n:m:w:H:' \
+        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split,lvm-expand:,swap-size:' \
         -n "$(basename "$0" \
         )" -- "$@")
 
@@ -1219,7 +1262,12 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-m' | '--resize-threshold')
-            MIN_RESIZE="${2:-2048}"
+            MIN_RESIZE="$2"
+            shift 2; continue
+            ;;
+        '-w' | '--swap-size')
+            (( $2 <= 0 )) && NO_SWAP=true
+            SWAP_SIZE=$(($2 * 1024)) #Size in 1K sectors
             shift 2; continue
             ;;
         '--lvm-expand')
@@ -1328,6 +1376,12 @@ Main() { #{{{
     [[ -n $LVM_EXPAND ]] && ! _is_valid_lv "$LVM_EXPAND" "$VG_SRC_NAME" && exit_ 2 "Volumen name ${LVM_EXPAND} does not exists in ${VG_SRC_NAME}!"
 
     grep -q $VG_SRC_NAME_CLONE < <(dmsetup deps -o devname) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
+
+    SWAP_PART=$(if [[ -d $SRC ]]; then
+        cat $SRC/$F_PART_LIST | grep swap | awk '{print $1}' | cut -d '"' -f 2
+    else
+        lsblk -lpo name,fstype "$SRC" | grep swap | awk '{print $1}'
+    fi)
 
     exec >$F_LOG 2>&1
 
