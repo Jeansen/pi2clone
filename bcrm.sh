@@ -81,7 +81,7 @@ setHeader() { #{{{
 
 ### PRIVATE - only used by PUBLIC functions
 
-# By convention methods ending with a '_' overwrite or wrap commands with the same name.
+# By convention methods ending with a '_' overwrite wrap shell functions or commands with the same name.
 
 echo_() { #{{{
     exec 1>&3 #restore stdout
