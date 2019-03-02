@@ -654,22 +654,24 @@ usage() { #{{{
     printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n\n"
     printf "Options:\n\n"
 
-    printf "  %-30s %s\n" "--destination-image"         "Use the given image as a loop device"
-    printf "  %-30s %s\n" "-c"                          "Create/Validate checksums"
-    printf "  %-30s %s\n" "-x"                          "Use compression (compression ration about 1:3, but very slow!)"
-    printf "  %-30s %s\n" "--split"                     "Split backup into chunks of 1G files"
-    printf "  %-30s %s\n\n" "-H, --hostname"            "Set hostname"
-    printf "  %-30s %s\n" "-n, --new-vg-name"           "LVM only: Define new volume group name"
-    printf "  %-30s %s\n" "-e, --encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
-    printf "  %-30s %s\n\n" "-p"                        "LVM only: Use all disks found on destination as PVs for VG"
-    printf "  %-30s %s\n" "--lvm-expand"                "LVM only: Have the given lvm use the remaining free space."
-    printf "  %-30s %s\n" ""                            "An optional percentage can be supplied, e.g. 'root:80'"
-    printf "  %-30s %s\n\n" ""                          "Which would add 80% of the remaining free space in a VG to this LV"
-    printf "  %-30s %s\n" "-u"                          "Convert to UEFI"
-    printf "  %-30s %s\n" "-w, --swap-size"             "Size in MB. May be zero to remove any swap partition."
-    printf "  %-30s %s\n\n" "-m, --resize-threshold"    "Do not resize partitions smaller than <MB> (default 2048)"
-    printf "  %-30s %s\n" "-q"                          "Quiet, do not show any output"
-    printf "  %-30s %s\n" "-h ,--help"                  "Show this help text"
+    printf "  %-3s %-30s %s\n"   "-s," "--source"                "The source device or folder to clone or restore from"
+    printf "  %-3s %-30s %s\n"   "-d," "--destination"           "The destination device or folder to clone or backup to"
+    printf "  %-3s %-30s %s\n"   "  " "--destination-image"     "Use the given image as a loop device"
+    printf "  %-3s %-30s %s\n"   "-c," "--check"                 "Create/Validate checksums"
+    printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ration about 1:3, but very slow!)"
+    printf "  %-3s %-30s %s\n"   "  " "--split"                 "Split backup into chunks of 1G files"
+    printf "  %-3s %-30s %s\n"   "-H," "--hostname"              "Set hostname"
+    printf "  %-3s %-30s %s\n"   "-n," "--new-vg-name"           "LVM only: Define new volume group name"
+    printf "  %-3s %-30s %s\n"   "-e," "--encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
+    printf "  %-3s %-30s %s\n"   "-p," "--use-all-pvs"           "LVM only: Use all disks found on destination as PVs for VG"
+    printf "  %-3s %-30s %s\n"   "  " "--lvm-expand"            "LVM only: Have the given lvm use the remaining free space."
+    printf "  %-3s %-30s %s\n"   "  " ""                        "An optional percentage can be supplied, e.g. 'root:80'"
+    printf "  %-3s %-30s %s\n"   "  " ""                        "Which would add 80% of the remaining free space in a VG to this LV"
+    printf "  %-3s %-30s %s\n"   "-u," "--make-uefi"             "Convert to UEFI"
+    printf "  %-3s %-30s %s\n"   "-w," "--swap-size"             "Size in MB. May be zero to remove any swap partition."
+    printf "  %-3s %-30s %s\n"   "-m," "--resize-threshold"      "Do not resize partitions smaller than <MB> (default 2048)"
+    printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
+    printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
 
     exit_ 1
 } #}}}
@@ -1171,7 +1173,23 @@ Main() { #{{{
 
     option=$(getopt \
         -o 'huqcxps:d:e:n:m:w:H:' \
-        --long 'help,hostname:,encrypt-with-password:,new-vg-name:,resize-threshold:,destination-image:,split,lvm-expand:,swap-size:' \
+        --long '
+            help,
+            hostname:,
+            encrypt-with-password:,
+            new-vg-name:,
+            resize-threshold:,
+            destination-image:,
+            split,
+            lvm-expand:,
+            swap-size:,
+            use-all-pvs,
+            make-uefi,
+            source,
+            destination,
+            compress,
+            quiet,
+            check' \
         -n "$(basename "$0" \
         )" -- "$@")
 
@@ -1207,7 +1225,7 @@ Main() { #{{{
             usage
             shift 1; continue
             ;;
-        '-s')
+        '-s' | 'source')
             SRC=$(readlink -m "$2");
             shift 2; continue
             ;;
@@ -1217,7 +1235,7 @@ Main() { #{{{
             DEST=$(losetup -ln --output name,back-file | grep "$2" | cut -d ' ' -f1);
             shift 2; continue
             ;;
-        '-d')
+        '-d' | 'destination')
             DEST=$(readlink -m "$2")
             shift 2; continue
             ;;
@@ -1234,15 +1252,15 @@ Main() { #{{{
             HOST_NAME="$2"
             shift 2; continue
             ;;
-        '-u')
+        '-u' | 'make-uefi')
             UEFI=true;
             shift 1; continue
             ;;
-        '-p')
+        '-p' | 'use-all-pvs')
             PVALL=true;
             shift 1; continue
             ;;
-        '-q')
+        '-q' | 'quiet')
             exec 3>&-
             exec 4>&-
             shift 1; continue
@@ -1251,12 +1269,12 @@ Main() { #{{{
             SPLIT=true;
             shift 1; continue
             ;;
-        '-c')
+        '-c' | 'check')
             IS_CHECKSUM=true
             PKGS+=(parallel)
             shift 1; continue
             ;;
-        '-x')
+        '-z' | 'compress')
             export XZ_OPT=-4T0
             PKGS+=(xz)
             shift 1; continue
