@@ -55,7 +55,7 @@ declare SPLIT=false
 declare NO_SWAP=false
 
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
-declare SECTORS=0 #in 1K units
+declare SECTORS=0
 declare MIN_RESIZE=2048 #in 1M units
 declare MNTPNT=/tmp/mnt
 
@@ -79,7 +79,9 @@ setHeader() { #{{{
     tput cup 3 0
 } #}}}
 
-### PRIVATE - only used by PUBLIC functions
+#----------------------------------------------------------------------------------------------------------------------
+# PRIVATE - only used by PUBLIC functions
+#----------------------------------------------------------------------------------------------------------------------
 
 # By convention methods ending with a '_' overwrite wrap shell functions or commands with the same name.
 
@@ -154,12 +156,36 @@ exit_() { #{{{
     Cleanup
 } #}}}
 
-encrypt() { #{{{
-    { echo ';' | sfdisk "$DEST" && sfdisk -Vq; } || return 1 #delete all partitions and create one for the whole disk.
-    sleep 3
-    ENCRYPT_PART=$(sfdisk -qlo device "$DEST" | tail -n 1)
-    echo -n "$1" | cryptsetup luksFormat "$ENCRYPT_PART" -
-    echo -n "$1" | cryptsetup open "$ENCRYPT_PART" "$LUKS_LVM_NAME" --type luks -
+#----------------------------------------------------------------------------------------------------------------------
+
+usage() { #{{{
+    local -A usage
+
+    printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n"
+    printf "\nSize values must be postfixed with K,M,G or T to specify units of kilobytes, megabytes, gigabytes and terabytes.\n\n"
+
+    printf "Options:\n\n"
+
+    printf "  %-3s %-30s %s\n"   "-s," "--source"                "The source device or folder to clone or restore from"
+    printf "  %-3s %-30s %s\n"   "-d," "--destination"           "The destination device or folder to clone or backup to"
+    printf "  %-3s %-30s %s\n"   "   " "--destination-image"     "Use the given image as a loop device"
+    printf "  %-3s %-30s %s\n"   "-c," "--check"                 "Create/Validate checksums"
+    printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ration about 1:3, but very slow!)"
+    printf "  %-3s %-30s %s\n"   "   " "--split"                 "Split backup into chunks of 1G files"
+    printf "  %-3s %-30s %s\n"   "-H," "--hostname"              "Set hostname"
+    printf "  %-3s %-30s %s\n"   "-n," "--new-vg-name"           "LVM only: Define new volume group name"
+    printf "  %-3s %-30s %s\n"   "-e," "--encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
+    printf "  %-3s %-30s %s\n"   "-p," "--use-all-pvs"           "LVM only: Use all disks found on destination as PVs for VG"
+    printf "  %-3s %-30s %s\n"   "   " "--lvm-expand"            "LVM only: Have the given lvm use the remaining free space."
+    printf "  %-3s %-30s %s\n"   "   " ""                        "An optional percentage can be supplied, e.g. 'root:80'"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "Which would add 80% of the remaining free space in a VG to this LV"
+    printf "  %-3s %-30s %s\n"   "-u," "--make-uefi"             "Convert to UEFI"
+    printf "  %-3s %-30s %s\n"   "-w," "--swap-size"             "Swap partitionn size. May be zero to remove any swap partition."
+    printf "  %-3s %-30s %s\n"   "-m," "--resize-threshold"      "Do not resize partitions smaller than <size> (default 2048M)"
+    printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
+    printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
+
+    exit_ 1
 } #}}}
 
 message() { #{{{
@@ -212,14 +238,31 @@ message() { #{{{
 
     #execute
     {
-        [[ -n $status ]] && echo -e -n "$status"
-        [[ -n $text ]] && echo -e -n "$text" && tput el
+        [[ -n $status ]] && echo -e -n "[ $status ] "
+        [[ -n $text ]] && 
+            text=$(echo "$text" | sed -e 's/^\s*//; 2,$ s/^/      /') && 
+            echo -e -n "$text" && tput el
         echo
     }
     [[ $update == true ]] && tput rc
     tput civis
     exec 3>&1          #save stdout
     exec >>$F_LOG 2>&1 #again all to the log
+} #}}}
+
+is_partition() { #{{{
+    read -r name parttype type fstype <<<$(lsblk -Ppo NAME,PARTTYPE,TYPE,FSTYPE "$1" | grep "$2")
+    eval "$name" "$parttype" "$type" "$fstype"
+    [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && return 0
+    return 1
+} #}}}
+
+pkg_install() { #{{{
+    chroot "${MNTPNT}/$1" sh -c "
+        apt-get install -y $2 &&
+        grub-install $DEST &&
+        update-grub &&
+        update-initramfs -u -k all" || return 1
 } #}}}
 
 expand_disk() { #{{{
@@ -247,8 +290,7 @@ expand_disk() { #{{{
         new_size=
 
         if [[ $e =~ ^/ ]]; then
-            echo "$e" | grep -qE 'size=\s*([0-9])' &&
-                size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+            echo "$e" | grep -qE 'size=\s*([0-9])' && size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
         fi
 
         if [[ -n "$size" ]]; then
@@ -256,11 +298,11 @@ expand_disk() { #{{{
                 if [[ $SWAP_SIZE > 0 ]]; then
                     size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
 
-                    new_size=$(($SWAP_SIZE * 2))
+                    new_size=$(to_sector ${SWAP_SIZE}K)
                     pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
                 fi
             else
-                [[ $(($size / 2 / 1024)) -le "$MIN_RESIZE" ]] && continue #MIN_RESIZE is in MB
+                [[ $(sector_to_mbyte $size) -le "$MIN_RESIZE" ]] && continue #MIN_RESIZE is in MB
                 new_size=$(echo "scale=4; $size * $expand_factor" | bc)
                 pdata=$(sed "s/$size/${new_size%%.*}/" < <(echo "$pdata"))
             fi
@@ -308,6 +350,84 @@ mbr2gpt() { #{{{
     blockdev --rereadpt "$dest"
 } #}}}
 
+create_rclocal() { #{{{
+    mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
+    printf '%s' '#! /usr/bin/env bash
+    update-grub
+    rm /etc/rc.local
+    mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
+    sleep 10
+    reboot' >"$1/etc/rc.local"
+    chmod +x "$1/etc/rc.local"
+} #}}}
+
+mounts() { #{{{
+    for x in "${SRCS[@]}" "${LSRCS[@]}"; do
+        local sdev=$x
+        local sid=${UUIDS[$sdev]}
+
+        mkdir -p "${MNTPNT}/$sdev"
+
+        mount_ "$sdev"
+
+        f[0]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | tr -s " " | cut -d " " -f1,2'
+        f[1]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | tr -s " " | cut -d " " -f1,2'
+        f[2]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^/" | tr -s " " | cut -d " " -f1,2'
+
+        if [[ -f ${MNTPNT}/$sdev/etc/fstab ]]; then
+            for ((i = 0; i < ${#f[@]}; i++)); do
+                while read -r e; do
+                    read -r name mnt <<<"$e"
+                    if [[ -n ${NAMES[$name]} ]]; then
+                        MOUNTS[$mnt]="$name" && MOUNTS[$name]="$mnt"
+                    elif [[ -n ${PUUIDS2UUIDS[$name]} ]]; then
+                        MOUNTS[$mnt]="${PUUIDS2UUIDS[$name]}" && MOUNTS[${PUUIDS2UUIDS[$name]}]="$mnt"
+                    elif [[ -n ${UUIDS[$name]} ]]; then
+                        MOUNTS[$mnt]="${UUIDS[$name]}" && MOUNTS[${UUIDS[$name]}]="$mnt"
+                    fi
+                done < <(eval "${f[$i]}")
+            done
+        fi
+
+        umount_ "$sdev"
+    done
+} #}}}
+
+encrypt() { #{{{
+    { echo ';' | sfdisk "$DEST" && sfdisk -Vq; } || return 1 #delete all partitions and create one for the whole disk.
+    sleep 3
+    ENCRYPT_PART=$(sfdisk -qlo device "$DEST" | tail -n 1)
+    echo -n "$1" | cryptsetup luksFormat "$ENCRYPT_PART" -
+    echo -n "$1" | cryptsetup open "$ENCRYPT_PART" "$LUKS_LVM_NAME" --type luks -
+} #}}}
+
+#----------------------------------------------------------------------------------------------------------------------
+
+vg_extend() { #{{{
+    local dest=$DEST
+    local src=$SRC
+    PVS=()
+
+    if [[ -d $SRC ]]; then
+        src=$(df -P "$SRC" | tail -1 | awk '{print $1}')
+    fi
+
+    while read -r e; do
+        read -r name type <<<"$e"
+        [[ -n $(lsblk -no mountpoint "$name" 2>/dev/null) ]] && continue
+        echo ';' | flock "$name" sfdisk -q "$name" && sfdisk "$name" -Vq
+        local part=$(lsblk "$name" -lnpo name,type | grep part | awk '{print $1}')
+        pvcreate -f "$part" && vgextend "$1" "$part"
+        PVS+=("$part")
+    done < <(lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
+} #}}}
+
+vg_disks() { #{{{
+    for f in $(pvs --no-headings -o pv_name,lv_dm_path | grep -E "${1}\-\w+" | awk '{print $1}' | uniq); do
+        VG_DISKS+=($(lsblk -pnls $f | grep disk | awk '{print $1}'))
+    done
+} #}}}
+
 create_m5dsums() { #{{{
     # find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
     pushd "$1" || return 1
@@ -321,6 +441,8 @@ validate_m5dsums() { #{{{
     md5sum -c "$2" --quiet || return 1
     popd || return 1
 } #}}}
+
+#----------------------------------------------------------------------------------------------------------------------
 
 set_dest_uuids() { #{{{
     DPUUIDS=() DUUIDS=() DNAMES=()
@@ -341,7 +463,7 @@ set_dest_uuids() { #{{{
 set_src_uuids() { #{{{
     _count() { #{{{
         local size=$(swapon --show=size --bytes --noheadings | grep $1 | awk '{print $1}')
-        size=$((size / 1024))
+        size=$(to_kbyte $size)
 
         SECTORS=$(df -k --output=used $1 | tail -n -1)
         SECTORS=$((${SWAP_SIZE:-$size} + $SECTORS))
@@ -402,37 +524,7 @@ init_srcs() { #{{{
     fi)
 } #}}}
 
-is_partition() { #{{{
-    read -r name parttype type fstype <<<$(lsblk -Ppo NAME,PARTTYPE,TYPE,FSTYPE "$1" | grep "$2")
-    eval "$name" "$parttype" "$type" "$fstype"
-    [[ $PARTTYPE == 0x5 || $TYPE == disk || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && return 0
-    return 1
-} #}}}
-
-vg_extend() { #{{{
-    local dest=$DEST
-    local src=$SRC
-    PVS=()
-
-    if [[ -d $SRC ]]; then
-        src=$(df -P "$SRC" | tail -1 | awk '{print $1}')
-    fi
-
-    while read -r e; do
-        read -r name type <<<"$e"
-        [[ -n $(lsblk -no mountpoint "$name" 2>/dev/null) ]] && continue
-        echo ';' | flock "$name" sfdisk -q "$name" && sfdisk "$name" -Vq
-        local part=$(lsblk "$name" -lnpo name,type | grep part | awk '{print $1}')
-        pvcreate -f "$part" && vgextend "$1" "$part"
-        PVS+=("$part")
-    done < <(lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
-} #}}}
-
-vg_disks() { #{{{
-    for f in $(pvs --no-headings -o pv_name,lv_dm_path | grep -E "${1}\-\w+" | awk '{print $1}' | uniq); do
-        VG_DISKS+=($(lsblk -pnls $f | grep disk | awk '{print $1}'))
-    done
-} #}}}
+#----------------------------------------------------------------------------------------------------------------------
 
 disk_setup() { #{{{
     if [[ $UEFI == true ]]; then
@@ -597,87 +689,80 @@ crypt_setup() { #{{{
     umount -lR "${MNTPNT}/$d"
 } #}}}
 
-pkg_install() { #{{{
-    chroot "${MNTPNT}/$1" sh -c "
-        apt-get install -y $2 &&
-        grub-install $DEST &&
-        update-grub &&
-        update-initramfs -u -k all" || return 1
+#----------------------------------------------------------------------------------------------------------------------
+
+to_byte() { #{{{
+    local p=$1
+    [[ $p =~ ^[0-9]+K ]] && echo $(( ${p%[a-zA-Z]} * 2**10 )) 
+    [[ $p =~ ^[0-9]+M ]] && echo $(( ${p%[a-zA-Z]} * 2**20 )) 
+    [[ $p =~ ^[0-9]+G ]] && echo $(( ${p%[a-zA-Z]} * 2**30 )) 
+    [[ $p =~ ^[0-9]+T ]] && echo $(( ${p%[a-zA-Z]} * 2**40 )) 
+    return 0
 } #}}}
 
-create_rclocal() { #{{{
-    mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
-    printf '%s' '#! /usr/bin/env bash
-    update-grub
-    rm /etc/rc.local
-    mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
-    sleep 10
-    reboot' >"$1/etc/rc.local"
-    chmod +x "$1/etc/rc.local"
+# $1: <bytes> | <number>[K|M|G|T]
+to_kbyte() { #{{{
+    local v=$1
+    validate_size $1 && v=$(to_byte $1)
+    echo $(( v / 2**10 ))
 } #}}}
 
-mounts() { #{{{
-    for x in "${SRCS[@]}" "${LSRCS[@]}"; do
-        local sdev=$x
-        local sid=${UUIDS[$sdev]}
-
-        mkdir -p "${MNTPNT}/$sdev"
-
-        mount_ "$sdev"
-
-        f[0]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | tr -s " " | cut -d " " -f1,2'
-        f[1]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | tr -s " " | cut -d " " -f1,2'
-        f[2]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^/" | tr -s " " | cut -d " " -f1,2'
-
-        if [[ -f ${MNTPNT}/$sdev/etc/fstab ]]; then
-            for ((i = 0; i < ${#f[@]}; i++)); do
-                while read -r e; do
-                    read -r name mnt <<<"$e"
-                    if [[ -n ${NAMES[$name]} ]]; then
-                        MOUNTS[$mnt]="$name" && MOUNTS[$name]="$mnt"
-                    elif [[ -n ${PUUIDS2UUIDS[$name]} ]]; then
-                        MOUNTS[$mnt]="${PUUIDS2UUIDS[$name]}" && MOUNTS[${PUUIDS2UUIDS[$name]}]="$mnt"
-                    elif [[ -n ${UUIDS[$name]} ]]; then
-                        MOUNTS[$mnt]="${UUIDS[$name]}" && MOUNTS[${UUIDS[$name]}]="$mnt"
-                    fi
-                done < <(eval "${f[$i]}")
-            done
-        fi
-
-        umount_ "$sdev"
-    done
+# $1: <bytes> | <number>[K|M|G|T]
+to_mbyte() { #{{{
+    local v=$1
+    validate_size $1 && v=$(to_byte $1)
+    echo $(( v / 2**20 ))
 } #}}}
 
-usage() { #{{{
-    local -A usage
-
-    printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n\n"
-    printf "Options:\n\n"
-
-    printf "  %-3s %-30s %s\n"   "-s," "--source"                "The source device or folder to clone or restore from"
-    printf "  %-3s %-30s %s\n"   "-d," "--destination"           "The destination device or folder to clone or backup to"
-    printf "  %-3s %-30s %s\n"   "  " "--destination-image"     "Use the given image as a loop device"
-    printf "  %-3s %-30s %s\n"   "-c," "--check"                 "Create/Validate checksums"
-    printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ration about 1:3, but very slow!)"
-    printf "  %-3s %-30s %s\n"   "  " "--split"                 "Split backup into chunks of 1G files"
-    printf "  %-3s %-30s %s\n"   "-H," "--hostname"              "Set hostname"
-    printf "  %-3s %-30s %s\n"   "-n," "--new-vg-name"           "LVM only: Define new volume group name"
-    printf "  %-3s %-30s %s\n"   "-e," "--encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
-    printf "  %-3s %-30s %s\n"   "-p," "--use-all-pvs"           "LVM only: Use all disks found on destination as PVs for VG"
-    printf "  %-3s %-30s %s\n"   "  " "--lvm-expand"            "LVM only: Have the given lvm use the remaining free space."
-    printf "  %-3s %-30s %s\n"   "  " ""                        "An optional percentage can be supplied, e.g. 'root:80'"
-    printf "  %-3s %-30s %s\n"   "  " ""                        "Which would add 80% of the remaining free space in a VG to this LV"
-    printf "  %-3s %-30s %s\n"   "-u," "--make-uefi"             "Convert to UEFI"
-    printf "  %-3s %-30s %s\n"   "-w," "--swap-size"             "Size in MB. May be zero to remove any swap partition."
-    printf "  %-3s %-30s %s\n"   "-m," "--resize-threshold"      "Do not resize partitions smaller than <MB> (default 2048)"
-    printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
-    printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
-
-    exit_ 1
+# $1: <bytes> | <number>[K|M|G|T]
+to_gbyte() { #{{{
+    local v=$1
+    validate_size $1 && v=$(to_byte $1)
+    echo $(( v / 2**30 ))
 } #}}}
 
+# $1: <bytes> | <number>[K|M|G|T]
+to_tbyte() { #{{{
+    local v=$1
+    validate_size $1 && v=$(to_byte $1)
+    echo $(( v / 2**40 ))
+} #}}}
 
-### PUBLIC - To be used in Main() only
+# $1: <bytes> | <number>[K|M|G|T]
+validate_size() { #{{{
+    [[ $1 =~ ^[0-9]+(K|M|G|T) ]] && return 0 || return 1
+} #}}}
+
+# $1: <bytes> | <number>[K|M|G|T]
+to_sector() { #{{{
+    local v=$1
+    validate_size $1 && v=$(to_byte $1)
+    echo $(( v / 512 ))
+} #}}}
+
+# $1: <sectos> of 512 Bytes
+sector_to_kbyte() { #{{{
+    echo $(( $1 / 2 * 2**10 ))
+} #}}}
+
+# $1: <sectos> of 512 Bytes
+sector_to_mbyte() { #{{{
+    echo $(( $1 / 2 * 2**20 ))
+} #}}}
+
+# $1: <sectos> of 512 Bytes
+sector_to_gbyte() { #{{{
+    echo $(( $1 / 2 * 2**30 ))
+} #}}}
+
+# $1: <sectos> of 512 Bytes
+sector_to_tbyte() { #{{{
+    echo $(( $1 / 2 * 2**40 ))
+} #}}}
+
+#----------------------------------------------------------------------------------------------------------------------
+# PUBLIC - To be used in Main() only
+#----------------------------------------------------------------------------------------------------------------------
 
 Cleanup() { #{{{
     {
@@ -848,7 +933,7 @@ Clone() { #{{{
                 else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
                 fi)
         read -r swap_name swap_size <<< $(echo "$ldata" | grep $SWAP_PART | awk '{print $1, $3}')
-        ((SWAP_SIZE > 0)) && swap_size=$((SWAP_SIZE / 1024))
+        ((SWAP_SIZE > 0)) && swap_size=$(to_mbyte ${SWAP_SIZE}K)
 
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name,vg_name | sed -e 's/^ *//' | grep -Ev '/.*\s+\w+') #TODO optimize, check for better solution
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE"
@@ -930,9 +1015,9 @@ Clone() { #{{{
         if [[ $ENCRYPT ]]; then
             encrypt "$ENCRYPT"
         else
-            local a="$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)"
+            local ptable="$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)"
 
-            flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$a")
+            flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$ptable")
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
         fi
         sleep 1
@@ -1121,9 +1206,9 @@ Clone() { #{{{
     #Check if destination is big enough.
     local cnt
     [[ $_RMODE == true ]] && SECTORS=$(cat "$SRC/$F_SECTORS_USED")
-    [[ -b $DEST ]] && cnt=$(echo $(blockdev --getsize64 "$DEST") / 1024 | bc)
+    [[ -b $DEST ]] && cnt=$(to_kbyte $(blockdev --getsize64 "$DEST"))
     [[ -d $DEST ]] && cnt=$(df -k --output=avail "$DEST" | tail -n -1)
-    ((cnt - SECTORS <= 0)) && exit_ 10 "Require $((SECTORS / 1024))M but destination is only $((cnt / 1024))M"
+    ((cnt - SECTORS <= 0)) && exit_ 10 "Require $(to_mbyte ${SECTORS}K))M but destination is only $(to_mbyte ${cnt}K))M"
 
     if [[ $_RMODE == true ]]; then
         _from_file || return 1
@@ -1280,12 +1365,14 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-m' | '--resize-threshold')
-            MIN_RESIZE="$2"
+            { validate_size $2 && MIN_RESIZE="$(to_mbyte $2)"; } || exit_ 2 "Invalid image size specified.
+                Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
             shift 2; continue
             ;;
         '-w' | '--swap-size')
-            (( $2 <= 0 )) && NO_SWAP=true
-            SWAP_SIZE=$(($2 * 1024)) #Size in 1K sectors
+            { validate_size $2 && SWAP_SIZE=$(to_kbyte $2); } || exit_ 2 "Invalid image size specified.
+                Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
+            (( $SWAP_SIZE <= 0 )) && NO_SWAP=true
             shift 2; continue
             ;;
         '--lvm-expand')
