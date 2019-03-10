@@ -42,6 +42,7 @@ declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
 declare VG_SRC_NAME
 declare VG_SRC_NAME_CLONE
 declare EXIT=0
+declare SNAP4CLONE='snap4clone'
 
 declare HAS_GRUB=false
 declare HAS_EFI=false     #If the cloned system is UEFI enabled
@@ -770,6 +771,8 @@ Cleanup() { #{{{
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
         [[ $ENCRYPT ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
         [[ $CREATE_LOOP_DEV == true ]] && losetup -d "$DEST"
+        sleep 3 #gite the fs time to settle
+        lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
     } &>/dev/null
 
     if [[ -t 3 ]]; then
@@ -840,7 +843,7 @@ To_file() { #{{{
 
             {
                 if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
-                    local tdev='snap4clone'
+                    local tdev=$SNAP4CLONE
                     lvremove -f "${VG_SRC_NAME}/$tdev"
                     lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name"
                     sleep 3
@@ -1208,7 +1211,7 @@ Clone() { #{{{
     [[ $_RMODE == true ]] && SECTORS=$(cat "$SRC/$F_SECTORS_USED")
     [[ -b $DEST ]] && cnt=$(to_kbyte $(blockdev --getsize64 "$DEST"))
     [[ -d $DEST ]] && cnt=$(df -k --output=avail "$DEST" | tail -n -1)
-    ((cnt - SECTORS <= 0)) && exit_ 10 "Require $(to_mbyte ${SECTORS}K))M but destination is only $(to_mbyte ${cnt}K))M"
+    ((cnt - SECTORS <= 0)) && exit_ 10 "Require $(to_mbyte ${SECTORS}K)M but destination is only $(to_mbyte ${cnt}K)M"
 
     if [[ $_RMODE == true ]]; then
         _from_file || return 1
