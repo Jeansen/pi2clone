@@ -840,6 +840,7 @@ To_file() { #{{{
 
             [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
             local tdev=$sdev
+            local src_size=$(df --block-size=1M --output=used "${MNTPNT}/$tdev/" | tail -n -1 | sed -e 's/^\s*//; s/\s*$//')
 
             {
                 if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
@@ -854,7 +855,7 @@ To_file() { #{{{
             }
 
             cmd="tar --warning=none --directory=${MNTPNT}/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
-            file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${sdev//\//_}.${mount//\//_} "
+            file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${src_size}.${sdev//\//_}.${mount//\//_} "
 
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
@@ -1052,7 +1053,7 @@ Clone() { #{{{
 
         #Now, we are ready to restore files from previous backup images
         for file in ${!files[@]}; do
-            read -r i uuid puuid fs type dev mnt <<<"${file//./ }"
+            read -r i uuid puuid fs type ss dev mnt <<<"${file//./ }"
             local ddev=${DESTS[${SRC2DEST[$uuid]}]}
             [[ -z $ddev ]] && ddev=${DESTS[${PSRC2PDEST[$puuid]}]}
 
@@ -1061,6 +1062,9 @@ Clone() { #{{{
             if [[ -n $ddev ]]; then
                 mount_ "$ddev" -t "$fs"
                 pushd "${MNTPNT}/$ddev" >/dev/null || return 1
+
+                local ds=$(df --block-size=1M --output=avail "${MNTPNT}/$ddev" | tail -n -1)
+                ((ds - ss <= 0)) && exit_ 10 "Require ${ss}M but destination is only ${ds}M"
 
                 local cmd="tar -xf - -C ${MNTPNT}/$ddev"
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
