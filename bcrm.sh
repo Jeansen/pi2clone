@@ -268,9 +268,9 @@ pkg_install() { #{{{
 
 expand_disk() { #{{{
     local size new_size
-    local swap_part=$SWAP_PART
-    local src_size=$(if [[ -d $1 ]]; then cat $1/$F_SECTORS_SRC; else blockdev --getsz $1; fi)
-    local dest_size=$(blockdev --getsz $2)
+    local swap_part="$SWAP_PART"
+    local src_size=$(if [[ -d $1 ]]; then cat "$1/$F_SECTORS_SRC"; else blockdev --getsz "$1"; fi)
+    local dest_size=$(blockdev --getsz "$2")
 
     local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
 
@@ -405,8 +405,8 @@ encrypt() { #{{{
 #----------------------------------------------------------------------------------------------------------------------
 
 vg_extend() { #{{{
-    local dest=$DEST
-    local src=$SRC
+    local dest="$DEST"
+    local src="$SRC"
     PVS=()
 
     if [[ -d $SRC ]]; then
@@ -797,13 +797,13 @@ To_file() { #{{{
             pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' >$F_PVS_LIST
             vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' >$F_VGS_LIST
             lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role,lv_dm_path | grep -v 'snap' | grep 'active public.*' | sed -e 's/^\s*//; s/\s*$//' >$F_LVS_LIST
-            blockdev --getsz "$SRC" >$F_SECTORS_SRC
-            sfdisk -d "$SRC" >$F_PART_TABLE
+            blockdev --getsz "$SRC" >"$F_SECTORS_SRC"
+            sfdisk -d "$SRC" >"$F_PART_TABLE"
         }
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle.
         #Otherwise resultes from lsblk might still show old values!
-        lsblk -Ppo NAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v "$snp" >$F_PART_LIST
+        lsblk -Ppo NAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v "$snp" >"$F_PART_LIST"
     } #}}}
 
     message -c -t "Creating backup of disk layout"
@@ -1018,7 +1018,7 @@ Clone() { #{{{
         if [[ $ENCRYPT ]]; then
             encrypt "$ENCRYPT"
         else
-            local ptable="$(if [[ $_RMODE == true ]]; then cat $SRC/$F_PART_TABLE; else sfdisk -d $SRC; fi)"
+            local ptable="$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_PART_TABLE"; else sfdisk -d "$SRC"; fi)"
 
             flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$ptable")
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
@@ -1067,7 +1067,7 @@ Clone() { #{{{
 
                 if [[ $INTERACTIVE == true ]]; then
                   local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
-                  cmd="cat ${SRC}/${file}* | pv --interval 0.5 --numeric -s $size | $cmd"
+                  cmd="cat \"${SRC}\"/${file}* | pv --interval 0.5 --numeric -s $size | $cmd"
                   [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                   while read -r e; do
                     [[ $e -ge 100 ]] && e=100
@@ -1469,12 +1469,12 @@ Main() { #{{{
         fi
     fi
 
-    VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | uniq)
+    VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | uniq)
 
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
             grep -q ${SRC##*/} < <(dmsetup deps -o devname | uniq | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
-        done < <(if [[ -d $SRC ]]; then cat $SRC/$F_PVS_LIST; else pvs --noheadings -o pv_name,vg_name; fi)
+        done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name; fi)
     fi
 
     [[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME && IS_LVM=true
@@ -1486,7 +1486,7 @@ Main() { #{{{
     grep -q $VG_SRC_NAME_CLONE < <(dmsetup deps -o devname) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
 
     SWAP_PART=$(if [[ -d $SRC ]]; then
-        cat $SRC/$F_PART_LIST | grep swap | awk '{print $1}' | cut -d '"' -f 2
+        cat "$SRC/$F_PART_LIST" | grep swap | awk '{print $1}' | cut -d '"' -f 2
     else
         lsblk -lpo name,fstype "$SRC" | grep swap | awk '{print $1}'
     fi)
