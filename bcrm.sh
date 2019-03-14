@@ -268,21 +268,23 @@ pkg_install() { #{{{
 
 expand_disk() { #{{{
     local size new_size
-    local swap_part="$SWAP_PART"
+    local swap_size=0
     local src_size=$(if [[ -d $1 ]]; then cat "$1/$F_SECTORS_SRC"; else blockdev --getsz "$1"; fi)
     local dest_size=$(blockdev --getsz "$2")
 
     local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
 
-    #Substract the swap partition size
-    swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
-    src_size=$((src_size - swap_size))
+    if [[ -n $SWAP_PART ]]; then
+        #Substract the swap partition size
+        swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+        src_size=$((src_size - swap_size))
+    fi
     [[ SWAP_SIZE > 0 ]] && dest_size=$((dest_size - SWAP_SIZE * 2)) || dest_size=$((dest_size - swap_size))
 
     local expand_factor=$(echo "scale=4; $dest_size / $src_size" | bc)
 
-    if [[ $NO_SWAP == true ]]; then
-        swap_part=${swap_part////\\/}
+    if [[ $NO_SWAP == true && -n $SWAP_PART ]]; then
+        local swap_part=${swap_part////\\/}
         pdata=$(echo "$pdata" | sed "/$swap_part/d")
     fi
 
@@ -489,7 +491,7 @@ set_src_uuids() { #{{{
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
 
-        [[ $NO_SWAP == true && $FSTYPE == swap ]] && continue
+        [[ $FSTYPE == swap ]] && continue
         [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT ]] && continue
         [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[$n]="$UUID"
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
@@ -840,7 +842,6 @@ To_file() { #{{{
 
             [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
             local tdev=$sdev
-            local src_size=$(df --block-size=1M --output=used "${MNTPNT}/$tdev/" | tail -n -1 | sed -e 's/^\s*//; s/\s*$//')
 
             {
                 if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
@@ -854,6 +855,7 @@ To_file() { #{{{
                 fi
             }
 
+            local src_size=$(df --block-size=1M --output=used "${MNTPNT}/$tdev/" | tail -n -1 | sed -e 's/^\s*//; s/\s*$//')
             cmd="tar --warning=none --directory=${MNTPNT}/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
             file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${src_size}.${sdev//\//_}.${mount//\//_} "
 
@@ -932,11 +934,15 @@ Clone() { #{{{
     _lvm_setup() { #{{{
         local size s1 s2
         local dest=$1
+        local swap_size=0
 
         ldata=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; 
                 else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
                 fi)
-        read -r swap_name swap_size <<< $(echo "$ldata" | grep $SWAP_PART | awk '{print $1, $3}')
+
+        if [[ -n $SWAP_PART ]]; then
+          read -r swap_name swap_size <<< $(echo "$ldata" | grep $SWAP_PART | awk '{print $1, $3}')
+        fi
         ((SWAP_SIZE > 0)) && swap_size=$(to_mbyte ${SWAP_SIZE}K)
 
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name,vg_name | sed -e 's/^ *//' | grep -Ev '/.*\s+\w+') #TODO optimize, check for better solution
