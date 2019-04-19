@@ -159,6 +159,10 @@ exit_() { #{{{
 
 #----------------------------------------------------------------------------------------------------------------------
 
+l() { #{{{
+    printf "===> $1"
+} #}}}
+
 usage() { #{{{
     local -A usage
 
@@ -787,6 +791,9 @@ Cleanup() { #{{{
 } #}}}
 
 To_file() { #{{{
+    lm=(
+        "Saving disk layout"
+        )
     if [ -n "$(ls -A "$DEST")" ]; then return 1; fi
 
     pushd "$DEST" >/dev/null || return 1
@@ -810,7 +817,7 @@ To_file() { #{{{
 
     message -c -t "Creating backup of disk layout"
     {
-        _save_disk_layout
+        l ${lm[0]} && _save_disk_layout
         init_srcs
         set_src_uuids
         mounts
