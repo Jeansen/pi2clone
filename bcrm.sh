@@ -324,9 +324,13 @@ expand_disk() { #{{{
     pdata=$(sed '/type=5/ s/size=\s*\w*,//' < <(echo "$pdata"))
     #and the last partition, if it is not swap or swap should be erased.
     local last_line=$(echo "$pdata" | tail -1 | sed -n -e '$ ,$p')
-    if [[ $NO_SWAP == true && $last_line =~ $swap_part || ! $last_line =~ $swap_part ]]; then
+    if [[ $NO_SWAP == true && $last_line =~ $swap_part || ! $last_line =~ $SWAP_PART ]]; then
         pdata=$(sed '$ s/size=\s*\w*,//g' < <(echo "$pdata"))
     fi
+
+    #Finally remove some headers
+    pdata=$(sed '/last-lba:/d' < <(echo "$pdata"))
+
 
     #return
     echo "$pdata"
@@ -424,7 +428,7 @@ vg_extend() { #{{{
         [[ -n $(lsblk -no mountpoint "$name" 2>/dev/null) ]] && continue
         echo ';' | flock "$name" sfdisk -q "$name" && sfdisk "$name" -Vq
         local part=$(lsblk "$name" -lnpo name,type | grep part | awk '{print $1}')
-        pvcreate -f "$part" && vgextend "$1" "$part"
+        pvcreate -ff "$part" && vgextend "$1" "$part"
         PVS+=("$part")
     done < <(lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
 } #}}}
@@ -456,6 +460,7 @@ set_dest_uuids() { #{{{
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mnt <<<"$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        [[ $FSTYPE == swap ]] && continue
         [[ $UEFI == true && $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
         [[ -n $UUID ]] && DESTS[$UUID]="$NAME"
@@ -543,7 +548,7 @@ disk_setup() { #{{{
     while read -r e; do
         read -r name parttype <<<"$e"
         eval "$name"
-        [[ -n ${LMBRS[$n]} ]] && pvcreate -f "$NAME" && continue
+        [[ -n ${LMBRS[$n]} ]] && pvcreate -ff "$NAME" && continue
         if [[ -n ${SFS[$n]} && ${SFS[$n]} == swap ]]; then
             mkswap -f "$NAME"
         elif [[ -n ${SFS[$n]} ]]; then
@@ -954,6 +959,7 @@ Clone() { #{{{
 
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name,vg_name | sed -e 's/^ *//' | grep -Ev '/.*\s+\w+') #TODO optimize, check for better solution
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE"
+        
 
         if [[ $NO_SWAP == true ]]; then
             swap_part=${swap_part////\\/}
@@ -1196,7 +1202,7 @@ Clone() { #{{{
         set_src_uuids "$f" #Then create the filesystems and PVs
 
         if [[ $ENCRYPT ]]; then
-            pvcreate "/dev/mapper/$LUKS_LVM_NAME"
+            pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME"
             sleep 3
             _lvm_setup "/dev/mapper/$LUKS_LVM_NAME"
             sleep 3
