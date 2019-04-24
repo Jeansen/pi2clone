@@ -1474,7 +1474,7 @@ Main() { #{{{
         }
     done
 
-    [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages ${packages[@]}."
+    [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: $(echo ${packages[@]})"
     eval "$abort"
 
     [[ -z $SRC || -z $DEST ]] &&
