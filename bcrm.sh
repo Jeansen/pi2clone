@@ -60,7 +60,6 @@ declare SECTORS=0
 declare MIN_RESIZE=2048 #in 1M units
 declare MNTPNT=/tmp/mnt
 
-
 ### DEBUG ONLY
 
 printarr() { #{{{
@@ -244,8 +243,8 @@ message() { #{{{
     #execute
     {
         [[ -n $status ]] && echo -e -n "[ $status ] "
-        [[ -n $text ]] && 
-            text=$(echo "$text" | sed -e 's/^\s*//; 2,$ s/^/      /') && 
+        [[ -n $text ]] &&
+            text=$(echo "$text" | sed -e 's/^\s*//; 2,$ s/^/      /') &&
             echo -e -n "$text" && tput el
         echo
     }
@@ -330,7 +329,6 @@ expand_disk() { #{{{
 
     #Finally remove some headers
     pdata=$(sed '/last-lba:/d' < <(echo "$pdata"))
-
 
     #return
     echo "$pdata"
@@ -533,7 +531,7 @@ init_srcs() { #{{{
 
 #----------------------------------------------------------------------------------------------------------------------
 disk_setup() { #{{{
-    declare parts=() pvs_parts=() 
+    declare parts=() pvs_parts=()
 
     if [[ $UEFI == true && $n -eq 0 ]]; then
         parts[$n]=vfat
@@ -552,7 +550,7 @@ disk_setup() { #{{{
         fi
 
         while read -r e; do
-            read -r name  fstype uuid type <<<"$e"
+            read -r name fstype uuid type <<<"$e"
             eval "$name" "$fstype" "$uuid" "$type"
 
             [[ $NO_SWAP == true && $FSTYPE == swap ]] && continue
@@ -562,7 +560,7 @@ disk_setup() { #{{{
                 n=$((n + 1))
             elif [[ $TYPE == part && $FSTYPE == LVM2_member ]]; then
                 pvs_parts[$n]=$FSTYPE
-                n=$((n + 1)) 
+                n=$((n + 1))
             fi
         done < <(echo "$plist" | sort -n | uniq | grep -vE '\bdisk|\bUUID=""')
     } #}}}
@@ -573,15 +571,15 @@ disk_setup() { #{{{
         local plist=$(lsblk -Ppo NAME,FSTYPE,UUID,TYPE "$DEST")
 
         while read -r e; do
-            read -r name  fstype uuid type <<<"$e"
+            read -r name fstype uuid type <<<"$e"
             eval "$name" "$fstype" "$uuid" "$type"
 
             if [[ $TYPE == part ]]; then
-                if [[ -n ${parts[$n]} && ${parts[$n]} == swap ]]; then 
+                if [[ -n ${parts[$n]} && ${parts[$n]} == swap ]]; then
                     mkswap -f "$NAME"
                 elif [[ -n ${parts[$n]} ]]; then
                     mkfs -t "${parts[$n]}" "$NAME"
-                elif [[ -n ${pvs_parts[$n]} ]]; then 
+                elif [[ -n ${pvs_parts[$n]} ]]; then
                     pvcreate -ff "$NAME"
                 fi
                 n=$((n + 1))
@@ -625,10 +623,9 @@ boot_setup() { #{{{
         done
     done
 
-
     #Make sure swap is set correctly.
     uuid fstype
-    read -r fstype uuid <<<$(lsblk -plo fstype,uuid $DEST | grep '^swap' )
+    read -r fstype uuid <<<$(lsblk -plo fstype,uuid $DEST | grep '^swap')
     sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "${MNTPNT}/$d/${path[1]}"
 } #}}}
 
@@ -747,10 +744,10 @@ crypt_setup() { #{{{
 
 to_byte() { #{{{
     local p=$1
-    [[ $p =~ ^[0-9]+K ]] && echo $(( ${p%[a-zA-Z]} * 2**10 )) 
-    [[ $p =~ ^[0-9]+M ]] && echo $(( ${p%[a-zA-Z]} * 2**20 )) 
-    [[ $p =~ ^[0-9]+G ]] && echo $(( ${p%[a-zA-Z]} * 2**30 )) 
-    [[ $p =~ ^[0-9]+T ]] && echo $(( ${p%[a-zA-Z]} * 2**40 )) 
+    [[ $p =~ ^[0-9]+K ]] && echo $((${p%[a-zA-Z]} * 2 ** 10))
+    [[ $p =~ ^[0-9]+M ]] && echo $((${p%[a-zA-Z]} * 2 ** 20))
+    [[ $p =~ ^[0-9]+G ]] && echo $((${p%[a-zA-Z]} * 2 ** 30))
+    [[ $p =~ ^[0-9]+T ]] && echo $((${p%[a-zA-Z]} * 2 ** 40))
     return 0
 } #}}}
 
@@ -758,28 +755,28 @@ to_byte() { #{{{
 to_kbyte() { #{{{
     local v=$1
     validate_size $1 && v=$(to_byte $1)
-    echo $(( v / 2**10 ))
+    echo $((v / 2 ** 10))
 } #}}}
 
 # $1: <bytes> | <number>[K|M|G|T]
 to_mbyte() { #{{{
     local v=$1
     validate_size $1 && v=$(to_byte $1)
-    echo $(( v / 2**20 ))
+    echo $((v / 2 ** 20))
 } #}}}
 
 # $1: <bytes> | <number>[K|M|G|T]
 to_gbyte() { #{{{
     local v=$1
     validate_size $1 && v=$(to_byte $1)
-    echo $(( v / 2**30 ))
+    echo $((v / 2 ** 30))
 } #}}}
 
 # $1: <bytes> | <number>[K|M|G|T]
 to_tbyte() { #{{{
     local v=$1
     validate_size $1 && v=$(to_byte $1)
-    echo $(( v / 2**40 ))
+    echo $((v / 2 ** 40))
 } #}}}
 
 # $1: <bytes> | <number>[K|M|G|T]
@@ -791,27 +788,27 @@ validate_size() { #{{{
 to_sector() { #{{{
     local v=$1
     validate_size $1 && v=$(to_byte $1)
-    echo $(( v / 512 ))
+    echo $((v / 512))
 } #}}}
 
 # $1: <sectos> of 512 Bytes
 sector_to_kbyte() { #{{{
-    echo $(( $1 / 2 * 2**10 ))
+    echo $(($1 / 2 * 2 ** 10))
 } #}}}
 
 # $1: <sectos> of 512 Bytes
 sector_to_mbyte() { #{{{
-    echo $(( $1 / 2 * 2**20 ))
+    echo $(($1 / 2 * 2 ** 20))
 } #}}}
 
 # $1: <sectos> of 512 Bytes
 sector_to_gbyte() { #{{{
-    echo $(( $1 / 2 * 2**30 ))
+    echo $(($1 / 2 * 2 ** 30))
 } #}}}
 
 # $1: <sectos> of 512 Bytes
 sector_to_tbyte() { #{{{
-    echo $(( $1 / 2 * 2**40 ))
+    echo $(($1 / 2 * 2 ** 40))
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -838,9 +835,10 @@ Cleanup() { #{{{
 } #}}}
 
 To_file() { #{{{
+    #TODO
     lm=(
         "Saving disk layout"
-        )
+    )
     if [ -n "$(ls -A "$DEST")" ]; then return 1; fi
 
     pushd "$DEST" >/dev/null || return 1
@@ -991,12 +989,12 @@ Clone() { #{{{
         local swap_size=0
         declare -A src_lfs
 
-        ldata=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; 
+        ldata=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST";
                 else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
                 fi)
 
         if [[ -n $SWAP_PART ]]; then
-          read -r swap_name swap_size <<< $(echo "$ldata" | grep $SWAP_PART | awk '{print $1, $3}')
+            read -r swap_name swap_size <<<$(echo "$ldata" | grep $SWAP_PART | awk '{print $1, $3}')
         fi
         ((SWAP_SIZE > 0)) && swap_size=$(to_mbyte ${SWAP_SIZE}K)
 
@@ -1038,7 +1036,7 @@ Clone() { #{{{
                     lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
                 fi
             fi
-        done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; 
+        done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST";
                 else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
                 fi)
 
@@ -1131,20 +1129,20 @@ Clone() { #{{{
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
                 if [[ $INTERACTIVE == true ]]; then
-                  local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
-                  cmd="cat \"${SRC}\"/${file}* | pv --interval 0.5 --numeric -s $size | $cmd"
-                  [[ $fs == vfat ]] && cmd="fakeroot $cmd"
-                  while read -r e; do
-                    [[ $e -ge 100 ]] && e=100
-                    message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
-                    #Note that with pv stderr holds the current percentage value!
-                  done < <((eval "$cmd") 2>&1)
-                  message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
+                    local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
+                    cmd="cat \"${SRC}\"/${file}* | pv --interval 0.5 --numeric -s $size | $cmd"
+                    [[ $fs == vfat ]] && cmd="fakeroot $cmd"
+                    while read -r e; do
+                        [[ $e -ge 100 ]] && e=100
+                        message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
+                        #Note that with pv stderr holds the current percentage value!
+                    done < <((eval "$cmd") 2>&1)
+                    message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
                 else
-                  message -c -t "Restoring $file"
-                  cmd="cat ${SRC}/${file}* | $cmd"
-                  [[ $fs == vfat ]] && cmd="fakeroot $cmd"
-                  eval "$cmd"
+                    message -c -t "Restoring $file"
+                    cmd="cat ${SRC}/${file}* | $cmd"
+                    [[ $fs == vfat ]] && cmd="fakeroot $cmd"
+                    eval "$cmd"
                 fi
 
                 popd >/dev/null || return 1
@@ -1440,7 +1438,7 @@ Main() { #{{{
         '-w' | '--swap-size')
             { validate_size $2 && SWAP_SIZE=$(to_kbyte $2); } || exit_ 2 "Invalid image size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
-            (( $SWAP_SIZE <= 0 )) && NO_SWAP=true
+            (($SWAP_SIZE <= 0)) && NO_SWAP=true
             shift 2; continue
             ;;
         '--lvm-expand')
@@ -1450,7 +1448,7 @@ Main() { #{{{
 
             ;;
         '--')
-			      shift; break
+			shift; break
             ;;
         *)
             usage
@@ -1492,10 +1490,10 @@ Main() { #{{{
     [[ -b $SRC && ! -b $DEST && ! -d $DEST ]] &&
         exit_ 1 "Invalid device or directory: $DEST"
 
-    [[ -d $DEST && ! -r $DEST && ! -w $DEST && ! -x $DEST ]] && 
+    [[ -d $DEST && ! -r $DEST && ! -w $DEST && ! -x $DEST ]] &&
         exit_ 1 "$DEST is not writable."
 
-    [[ -d $SRC && ! -r $SRC && ! -x $SRC ]] && 
+    [[ -d $SRC && ! -r $SRC && ! -x $SRC ]] &&
         exit_ 1 "$SRC is not readable."
 
     for d in "$SRC" "$DEST"; do
