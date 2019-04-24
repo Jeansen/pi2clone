@@ -510,7 +510,7 @@ set_src_uuids() { #{{{
 
 init_srcs() { #{{{
     while read -r e; do
-        read -r kdev name fstype uuid puuid type parttype mountpoint <<<"$e"
+        read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
@@ -525,13 +525,20 @@ init_srcs() { #{{{
         [[ -n $PARTUUID ]] && NAMES[$PARTUUID]=$NAME
         [[ -n $UUID && -n $PARTUUID ]] && PUUIDS2UUIDS[$PARTUUID]="$UUID"
     done < <( if [[ -n $1 ]]; then cat "$1";
-              else lsblk -Ppo KNAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | sort -n | uniq | grep -v 'disk';
+              else lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | sort -n | uniq | grep -v 'disk';
     fi)
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
 disk_setup() { #{{{
     declare parts=() pvs_parts=()
+    local plist
+
+    if [[ -n $1 ]]; then
+        plist=$(cat "$1")
+    else
+        plist=$(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC")
+    fi
 
     if [[ $UEFI == true && $n -eq 0 ]]; then
         parts[$n]=vfat
@@ -541,17 +548,10 @@ disk_setup() { #{{{
     #Collect all source paritions and their file systems
     _scan_src_parts() { #{{{
         local n=0
-        local plist
-
-        if [[ -n $1 ]]; then
-            plist=$(cat "$1")
-        else
-            plist=$(lsblk -Ppo NAME,FSTYPE,UUID,TYPE "$SRC")
-        fi
 
         while read -r e; do
-            read -r name fstype uuid type <<<"$e"
-            eval "$name" "$fstype" "$uuid" "$type"
+            read -r name kname fstype uuid partuuid type parttype mountpoint <<<"$e"
+            eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype" "$mountpoint"
 
             [[ $NO_SWAP == true && $FSTYPE == swap ]] && continue
 
@@ -857,7 +857,7 @@ To_file() { #{{{
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle.
         #Otherwise resultes from lsblk might still show old values!
-        lsblk -Ppo NAME,NAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v "$snp" >"$F_PART_LIST"
+        lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v "$snp" >"$F_PART_LIST"
     } #}}}
 
     message -c -t "Creating backup of disk layout"
@@ -1043,10 +1043,10 @@ Clone() { #{{{
         [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
         while read -r e; do
-            read -r kname name fstype type <<<"$e"
-            eval "$kname" "$name" "$fstype" "$type"
+            read -r name kname fstype uuid partuuid type parttype mountpoint <<<"$e"
+            eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype" "$mountpoint"
             [[ $TYPE == 'lvm' ]] && src_lfs[${NAME##*-}]=$FSTYPE
-        done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PART_LIST"; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$SRC" ${VG_DISKS[@]}; fi)
+        done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PART_LIST"; else lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]}; fi)
 
         while read -r e; do
             read -r kname name fstype type <<<"$e"
@@ -1247,7 +1247,7 @@ Clone() { #{{{
             _lvm_setup "/dev/mapper/$LUKS_LVM_NAME"
             sleep 3
         else
-            disk_setup
+            disk_setup "$f"
             if [[ ${#LMBRS[@]} -gt 0 ]]; then
                 _lvm_setup "$DEST"
                 sleep 3
