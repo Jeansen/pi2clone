@@ -33,11 +33,11 @@ export LVM_SUPPRESS_FD_WARNINGS=true
 
 declare -A MNTJRNL
 declare -A FILESYSTEMS MOUNTS NAMES PARTUUIDS UUIDS TYPES PUUIDS2UUIDS
-declare -A SRC_LFS DESTS SRC2DEST PSRC2PDEST NSRC2NDEST
+declare -A DESTS SRC2DEST PSRC2PDEST NSRC2NDEST
 
 declare SPUUIDS=() SUUIDS=()
 declare DPUUIDS=() DUUIDS=()
-declare SFS=() LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
+declare LMBRS=() SRCS=() LDESTS=() LSRCS=() PVS=() VG_DISKS=()
 
 declare VG_SRC_NAME
 declare VG_SRC_NAME_CLONE
@@ -433,6 +433,7 @@ vg_extend() { #{{{
     done < <(lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
 } #}}}
 
+# $1: <vg-name>
 vg_disks() { #{{{
     for f in $(pvs --no-headings -o pv_name,lv_dm_path | grep -E "${1}\-\w+" | awk '{print $1}' | uniq); do
         VG_DISKS+=($(lsblk -pnls $f | grep disk | awk '{print $1}'))
@@ -485,11 +486,6 @@ set_src_uuids() { #{{{
     local n=0
     local plist
 
-    if [[ $UEFI == true && $n -eq 0 ]]; then
-        SFS[$n]=vfat
-        n=$((n + 1))
-    fi
-
     if [[ -n $1 ]]; then
         plist=$(cat "$1")
     else
@@ -502,9 +498,8 @@ set_src_uuids() { #{{{
 
         [[ $FSTYPE == swap ]] && continue
         [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT ]] && continue
-        [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[$n]="$UUID"
+        [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && LMBRS[$n]="$UUID" #TODO I think that is wrong!
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
-        [[ $TYPE == part && $FSTYPE != LVM2_member ]] && SFS[$n]="$FSTYPE" && n=$((n + 1))
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
         [[ $FSTYPE == LVM2_member ]] && LMBRS[$n]="$UUID" && n=$((n + 1)) && continue
@@ -537,25 +532,65 @@ init_srcs() { #{{{
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
-
 disk_setup() { #{{{
-    if [[ $UEFI == true ]]; then
-        for v in ${SFS[@]}; do local sfs+=($v); done
-        SFS=(${SFS[@]})
+    declare parts=() pvs_parts=() 
+
+    if [[ $UEFI == true && $n -eq 0 ]]; then
+        parts[$n]=vfat
+        n=$((n + 1))
     fi
 
-    local n=0
-    while read -r e; do
-        read -r name parttype <<<"$e"
-        eval "$name"
-        [[ -n ${LMBRS[$n]} ]] && pvcreate -ff "$NAME" && continue
-        if [[ -n ${SFS[$n]} && ${SFS[$n]} == swap ]]; then
-            mkswap -f "$NAME"
-        elif [[ -n ${SFS[$n]} ]]; then
-            mkfs -t "${SFS[$n]}" "$NAME"
+    #Collect all source paritions and their file systems
+    _scan_src_parts() { #{{{
+        local n=0
+        local plist
+
+        if [[ -n $1 ]]; then
+            plist=$(cat "$1")
+        else
+            plist=$(lsblk -Ppo NAME,FSTYPE,UUID,TYPE "$SRC")
         fi
-        n=$((n + 1))
-    done < <(lsblk -Ppo NAME,PARTTYPE "$DEST" | grep -E '[0-9$]' | sort -n | grep -v 'PARTTYPE="0x5"')
+
+        while read -r e; do
+            read -r name  fstype uuid type <<<"$e"
+            eval "$name" "$fstype" "$uuid" "$type"
+
+            [[ $NO_SWAP == true && $FSTYPE == swap ]] && continue
+
+            if [[ $TYPE == part && $FSTYPE != LVM2_member && $FSTYPE != crypto_LUKS ]]; then
+                parts[$n]=$FSTYPE
+                n=$((n + 1))
+            elif [[ $TYPE == part && $FSTYPE == LVM2_member ]]; then
+                pvs_parts[$n]=$FSTYPE
+                n=$((n + 1)) 
+            fi
+        done < <(echo "$plist" | sort -n | uniq | grep -vE '\bdisk|\bUUID=""')
+    } #}}}
+
+    #Create file systems (including swap) or pvs volumes.
+    _create_dests() { #{{{
+        local n=0
+        local plist=$(lsblk -Ppo NAME,FSTYPE,UUID,TYPE "$DEST")
+
+        while read -r e; do
+            read -r name  fstype uuid type <<<"$e"
+            eval "$name" "$fstype" "$uuid" "$type"
+
+            if [[ $TYPE == part ]]; then
+                if [[ -n ${parts[$n]} && ${parts[$n]} == swap ]]; then 
+                    mkswap -f "$NAME"
+                elif [[ -n ${parts[$n]} ]]; then
+                    mkfs -t "${parts[$n]}" "$NAME"
+                elif [[ -n ${pvs_parts[$n]} ]]; then 
+                    pvcreate -ff "$NAME"
+                fi
+                n=$((n + 1))
+            fi
+        done < <(echo "$plist" | sort -n | uniq | grep -vE '\bdisk|PARTTYPE="0x5"')
+    } #}}}
+
+    _scan_src_parts
+    _create_dests
 
     sleep 3
 } #}}}
@@ -579,15 +614,22 @@ boot_setup() { #{{{
                 "${MNTPNT}/$d/${path[2]}" "${MNTPNT}/$d/${path[3]}" \
                 2>/dev/null
 
-            #resume file might be wrong, so we just set it explicitely
+            #Resume file might be wrong, so we just set it explicitely
             if [[ -e ${MNTPNT}/$d/${path[4]} ]]; then
                 local uuid fstype
                 read -r uuid fstype <<<$(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
                 uuid=${uuid//\"/} #get rid of ""
                 eval sed -i -E '/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i' "${MNTPNT}/$d/${path[4]}"
             fi
+
         done
     done
+
+
+    #Make sure swap is set correctly.
+    uuid fstype
+    read -r fstype uuid <<<$(lsblk -plo fstype,uuid $DEST | grep '^swap' )
+    sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "${MNTPNT}/$d/${path[1]}"
 } #}}}
 
 grub_setup() { #{{{
@@ -947,6 +989,7 @@ Clone() { #{{{
         local size s1 s2
         local dest=$1
         local swap_size=0
+        declare -A src_lfs
 
         ldata=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST"; 
                 else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
@@ -959,7 +1002,6 @@ Clone() { #{{{
 
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name,vg_name | sed -e 's/^ *//' | grep -Ev '/.*\s+\w+') #TODO optimize, check for better solution
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE"
-        
 
         if [[ $NO_SWAP == true ]]; then
             swap_part=${swap_part////\\/}
@@ -1005,13 +1047,13 @@ Clone() { #{{{
         while read -r e; do
             read -r kname name fstype type <<<"$e"
             eval "$kname" "$name" "$fstype" "$type"
-            [[ $TYPE == 'lvm' ]] && SRC_LFS[${NAME##*-}]=$FSTYPE
+            [[ $TYPE == 'lvm' ]] && src_lfs[${NAME##*-}]=$FSTYPE
         done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PART_LIST"; else lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$SRC" ${VG_DISKS[@]}; fi)
 
         while read -r e; do
             read -r kname name fstype type <<<"$e"
             eval "$kname" "$name" "$fstype" "$type"
-            { [[ "${SRC_LFS[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${SRC_LFS[${NAME##*-}]}" "$NAME"
+            { [[ "${src_lfs[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${src_lfs[${NAME##*-}]}" "$NAME"
         done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | uniq | grep ${VG_SRC_NAME_CLONE/-/--}); : 'The
         device mapper doubles hyphens in a LV/VG names exactly so it can distinguish between hyphens _inside_ an LV or
         VG name and a hyphen used as separator _between_ them.'
@@ -1528,4 +1570,4 @@ Main() { #{{{
     echo_ "Backup finished at $(date)"
 } #}}}
 
-bash -n $(readlink -f $0) && Main "$@"
+bash -n $(readlink -f $0) && Main "$@" #self check and run
