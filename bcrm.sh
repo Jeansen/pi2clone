@@ -605,28 +605,28 @@ boot_setup() { #{{{
         "/etc/initramfs-tools/conf.d/resume"
     )
 
+    d="$2"
+
     for k in "${!sd[@]}"; do
-        for d in "${DESTS[@]}"; do
-            sed -i "s|$k|${sd[$k]}|" \
-                "${MNTPNT}/$d/${path[0]}" "${MNTPNT}/$d/${path[1]}" \
-                "${MNTPNT}/$d/${path[2]}" "${MNTPNT}/$d/${path[3]}" \
-                2>/dev/null
+        sed -i "s|$k|${sd[$k]}|" \
+            "$d/${path[0]}" "$d/${path[1]}" \
+            "$d/${path[2]}" "$d/${path[3]}" \
+            2>/dev/null
 
-            #Resume file might be wrong, so we just set it explicitely
-            if [[ -e ${MNTPNT}/$d/${path[4]} ]]; then
-                local uuid fstype
-                read -r uuid fstype <<<$(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
-                uuid=${uuid//\"/} #get rid of ""
-                eval sed -i -E '/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i' "${MNTPNT}/$d/${path[4]}"
-            fi
-
-        done
+        #Resume file might be wrong, so we just set it explicitely
+        if [[ -e $d/${path[4]} ]]; then
+            local uuid fstype
+            read -r uuid fstype <<<$(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
+            uuid=${uuid//\"/} #get rid of ""
+            eval sed -i -E '/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i' "$d/${path[4]}"
+        fi
+        if [[ -e $d/${path[1]} ]]; then
+            #Make sure swap is set correctly.
+            uuid fstype
+            read -r fstype uuid <<<$(lsblk -plo fstype,uuid $DEST ${PVS[@]} | grep '^swap')
+            sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "$d/${path[1]}"
+        fi
     done
-
-    #Make sure swap is set correctly.
-    uuid fstype
-    read -r fstype uuid <<<$(lsblk -plo fstype,uuid $DEST | grep '^swap')
-    sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "${MNTPNT}/$d/${path[1]}"
 } #}}}
 
 grub_setup() { #{{{
@@ -1090,12 +1090,12 @@ Clone() { #{{{
     } #}}}
 
     _finish() { #{{{
-        [[ -f "${MNTPNT}/$ddev/etc/hostname" && -n $HOST_NAME ]] && echo "$HOST_NAME" >"${MNTPNT}/$ddev/etc/hostname"
-        [[ -f ${MNTPNT}/$ddev/grub/grub.cfg || -f ${MNTPNT}/$ddev/grub.cfg || -f ${MNTPNT}/$ddev/boot/grub/grub.cfg ]] && HAS_GRUB=true
-        [[ -d ${MNTPNT}/$ddev/EFI ]] && HAS_EFI=true
-        [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST"
-        [[ ${#PSRC2PDEST[@]} -gt 0 ]] && boot_setup "PSRC2PDEST"
-        [[ ${#NSRC2NDEST[@]} -gt 0 ]] && boot_setup "NSRC2NDEST"
+        [[ -f "$1/etc/hostname" && -n $HOST_NAME ]] && echo "$HOST_NAME" >"$1/etc/hostname"
+        [[ -f $1/grub/grub.cfg || -f $1/grub.cfg || -f $1/boot/grub/grub.cfg ]] && HAS_GRUB=true
+        [[ -d $1/EFI ]] && HAS_EFI=true
+        [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST" "$1"
+        [[ ${#PSRC2PDEST[@]} -gt 0 ]] && boot_setup "PSRC2PDEST" "$1"
+        [[ ${#NSRC2NDEST[@]} -gt 0 ]] && boot_setup "NSRC2NDEST" "$1"
 
         umount_ "$sdev"
         umount_ "$ddev"
@@ -1146,7 +1146,7 @@ Clone() { #{{{
                 fi
 
                 popd >/dev/null || return 1
-                _finish 2>/dev/null
+                _finish "${MNTPNT}/$ddev" 2>/dev/null
             fi
             message -y
         done
