@@ -20,10 +20,6 @@ export XZ_OPT=-4T0
 
 # CONSTANTS
 #----------------------------------------------------------------------------------------------------------------------
-declare SNAP4CLONE='snap4clone'
-declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
-declare MNTPNT=/tmp/mnt
-
 declare F_PART_LIST='part_list'
 declare F_VGS_LIST='vgs_list'
 declare F_LVS_LIST='lvs_list'
@@ -37,6 +33,9 @@ declare F_LOG='/tmp/bcrm.log'
 declare SCRIPTNAME=$(basename "$0")
 declare PIDFILE="/var/run/$SCRIPTNAME"
 declare CLONE_DATE=$(date '+%d%m%y')
+declare SNAP4CLONE='snap4clone'
+declare MNTPNT=/tmp/mnt
+declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 
 # GLOBALS
 #----------------------------------------------------------------------------------------------------------------------
@@ -437,18 +436,16 @@ mounts() { #{{{
 # $1: <password>
 # $2: <dest-dev>
 # $3: <luks lvm name>
-# $4: <encrypted-partition>
 encrypt() { #{{{
     local passwd="$1"
     local dest="$2"
     local name="$3"
-    local encrypt_part="$4"
 
     { echo ';' | sfdisk "$dest" && sfdisk -Vq; } || return 1 #delete all partitions and create one for the whole disk.
     sleep 3
-    encrypt_part=$(sfdisk -qlo device "$dest" | tail -n 1)
-    echo -n "$passwd" | cryptsetup luksFormat "$encrypt_part" -
-    echo -n "$passwd" | cryptsetup open "$encrypt_part" "$name" --type luks -
+    ENCRYPT_PART=$(sfdisk -qlo device "$dest" | tail -n 1)
+    echo -n "$passwd" | cryptsetup luksFormat "$ENCRYPT_PART" -
+    echo -n "$passwd" | cryptsetup open "$ENCRYPT_PART" "$name" --type luks -
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -1198,7 +1195,7 @@ Clone() { #{{{
         sleep 3
 
         if [[ $ENCRYPT_PWD ]]; then
-            encrypt "$ENCRYPT_PWD" "$DEST" "$LUKS_LVM_NAME" "$ENCRYPT_PART"
+            encrypt "$ENCRYPT_PWD" "$DEST" "$LUKS_LVM_NAME"
         else
             local ptable="$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_PART_TABLE"; else sfdisk -d "$SRC"; fi)"
 
