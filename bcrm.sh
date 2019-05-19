@@ -16,7 +16,7 @@
 # along with thisrogram.  If not, see <http://www.gnu.org/licenses/>.
 
 export LVM_SUPPRESS_FD_WARNINGS=true
-export XZ_OPT=-4T0
+export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Main()
 
 # CONSTANTS
 #----------------------------------------------------------------------------------------------------------------------
@@ -1550,6 +1550,7 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-z' | 'compress')
+            export XZ_OPT=-4T0
             PKGS+=(xz)
             shift 1; continue
             ;;
