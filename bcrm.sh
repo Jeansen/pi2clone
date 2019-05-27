@@ -202,7 +202,6 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "   " "--destination-image"     "Use the given image as a loop device"
     printf "  %-3s %-30s %s\n"   "   " ""                        "An optional type and size can be supplied in the form of <path>:<type>:<size>"
     printf "  %-3s %-30s %s\n"   "   " ""                        "For instance: '/path/to/file.img:raw:20G'"
-    printf "  %-3s %-30s %s\n"   "   " ""                        "Then the file will be created for you"
     printf "  %-3s %-30s %s\n"   "-c," "--check"                 "Create/Validate checksums"
     printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ratio is about 1:3, but very slow!)"
     printf "  %-3s %-30s %s\n"   "   " "--split"                 "Split backup into chunks of 1G files"
