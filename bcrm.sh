@@ -1715,9 +1715,10 @@ Main() { #{{{
     #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
     for d in "$SRC" "$DEST"; do
         if [[ -d $d ]]; then
-            #get disk dev, e.g. /dev/sda. Not sure what to when type is vboxsf ... Ignoring errors for the moment.
-            d=$(lsblk -lnpso NAME,TYPE $(mount | grep -E "$d\s" | awk '{print $1}') 2>/dev/null | grep 'disk' | awk '{print $1}')
-            [[ $d == $SRC || $d == $DEST ]] && exit_ 1 "Source and destination cannot be the same!"
+            local disk=()
+            disk+=($(df --block-size=1M $d | tail -n 1 | awk '{print $1}'))
+            disk+=($(lsblk -psnlo name,type $disk 2> /dev/null | grep disk | awk '{print $1}'))
+            [[ ${disk[-1]} == $SRC || ${disk[-1]} == $DEST ]] && exit_ 1 "Source and destination cannot be the same!"
         fi
     done
 
