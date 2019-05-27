@@ -32,6 +32,7 @@ declare F_LOG='/tmp/bcrm.log'
 
 declare SCRIPTNAME=$(basename "$0")
 declare PIDFILE="/var/run/$SCRIPTNAME"
+declare NBD_DEV=/dev/nbd0
 declare CLONE_DATE=$(date '+%d%m%y')
 declare SNAP4CLONE='snap4clone'
 declare MNTPNT=/tmp/mnt
@@ -52,6 +53,9 @@ declare LMBRS=() SRCS=() LSRCS=() PVS=() VG_DISKS=()
 #----------------------------------------------------------------------------------------------------------------------
 declare PKGS=() #Will be filled with a list of packages that will be needed, depending on given arguments
 
+declare DEST_IMG=""
+declare IMG_TYPE=""
+declare IMG_SIZE=""
 declare SRC=""
 declare DEST=""
 declare VG_SRC_NAME_CLONE=""
@@ -196,8 +200,11 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "-s," "--source"                "The source device or folder to clone or restore from"
     printf "  %-3s %-30s %s\n"   "-d," "--destination"           "The destination device or folder to clone or backup to"
     printf "  %-3s %-30s %s\n"   "   " "--destination-image"     "Use the given image as a loop device"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "An optional type and size can be supplied in the form of <path>:<type>:<size>"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "For instance: '/path/to/file.img:raw:20G'"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "Then the file will be created for you"
     printf "  %-3s %-30s %s\n"   "-c," "--check"                 "Create/Validate checksums"
-    printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ration about 1:3, but very slow!)"
+    printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ratio is about 1:3, but very slow!)"
     printf "  %-3s %-30s %s\n"   "   " "--split"                 "Split backup into chunks of 1G files"
     printf "  %-3s %-30s %s\n"   "-H," "--hostname"              "Set hostname"
     printf "  %-3s %-30s %s\n"   "-n," "--new-vg-name"           "LVM only: Define new volume group name"
@@ -638,7 +645,13 @@ disk_setup() { #{{{
     if [[ -n $file ]]; then
         plist=$(cat "$file")
     else
-        plist=$(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$src")
+        plist=$(
+            lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$src" |
+            tail -n +2 |
+            grep -vE '\bUUID=""' |
+            sort -n |
+            uniq
+        ) #only partitions
     fi
 
     if [[ $uefi == true && $n -eq 0 ]]; then
@@ -651,8 +664,8 @@ disk_setup() { #{{{
         local n=0
 
         while read -r e; do
-            read -r name kname fstype uuid partuuid type parttype mountpoint <<<"$e"
-            eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype" "$mountpoint"
+            read -r name kname fstype uuid partuuid type parttype  <<<"$e"
+            eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype"
 
             [[ $NO_SWAP == true && $FSTYPE == swap ]] && continue
 
@@ -663,29 +676,35 @@ disk_setup() { #{{{
                 pvs_parts[$n]=$FSTYPE
                 n=$((n + 1))
             fi
-        done < <(echo "$plist" | sort -n | uniq | grep -vE '\bdisk|\bUUID=""')
+        done < <(echo "$plist")
+
     } #}}}
 
     #Create file systems (including swap) or pvs volumes.
     _create_dests() { #{{{
         local n=0
-        local plist=$(lsblk -Ppo NAME,FSTYPE,UUID,TYPE "$dest")
+        local plist=$(
+            lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$dest" |
+            tail -n +2 |
+            grep -vE 'PARTTYPE="0x5"' |
+            sort -n |
+            uniq
+        ) #only partitions
 
         while read -r e; do
             read -r name fstype uuid type <<<"$e"
-            eval "$name" "$fstype" "$uuid" "$type"
+            eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype"
 
-            if [[ $TYPE == part ]]; then
-                if [[ -n ${parts[$n]} && ${parts[$n]} == swap ]]; then
-                    mkswap -f "$NAME"
-                elif [[ -n ${parts[$n]} ]]; then
-                    mkfs -t "${parts[$n]}" "$NAME"
-                elif [[ -n ${pvs_parts[$n]} ]]; then
-                    pvcreate -ff "$NAME"
-                fi
-                n=$((n + 1))
+            if [[ -n ${parts[$n]} && ${parts[$n]} == swap ]]; then
+                mkswap -f "$NAME"
+            elif [[ -n ${parts[$n]} ]]; then
+                mkfs -t "${parts[$n]}" "$NAME"
+            elif [[ -n ${pvs_parts[$n]} ]]; then
+                pvcreate -ff "$NAME"
             fi
-        done < <(echo "$plist" | sort -n | uniq | grep -vE '\bdisk|PARTTYPE="0x5"')
+            n=$((n + 1))
+        done < <(echo "$plist")
+        blockdev --rereadpt "$DEST"
     } #}}}
 
     _scan_src_parts
@@ -859,7 +878,39 @@ crypt_setup() { #{{{
     umount -lR "$mp"
 } #}}}
 
+
+# $1: <full path>
+# $2: <type>
+# $3: <size>
+create_image() { #{{{
+    local img="$1"
+    local type="$2"
+    local size="$3"
+
+    [[ $type =~ ^raw|qcow2|vmdk|vdi$ ]] || return 1
+    qemu-img create -f "$type" "$img" "$size" || return 2
+} #}}}
+
 #----------------------------------------------------------------------------------------------------------------------
+
+# $1: <bytes>
+to_readable_size() { #{{{
+    local size=$1
+    local dimension=B
+
+    for d in K M G T P; do
+        if (( $(echo "scale=2; $size / 2 ^ 10 >= 1" | bc -l) )); then
+            size=$(echo "scale=2; $size / 2 ^ 10" | bc)
+            dimension=$d
+        else
+            echo "${size}${dimension}"
+            return 0
+        fi
+    done
+
+    echo "${size}${dimension}"
+    return 0
+} #}}}
 
 # $1: <number+K|M|G|T>
 to_byte() { #{{{
@@ -940,7 +991,7 @@ Cleanup() { #{{{
         umount_
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
         [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
-        [[ $CREATE_LOOP_DEV == true ]] && losetup -d "$DEST"
+        [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $NBD_DEV
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
     } &>/dev/null
 
@@ -1170,8 +1221,9 @@ Clone() { #{{{
         while read -r e; do
             read -r kname name fstype type <<<"$e"
             eval "$kname" "$name" "$fstype" "$type"
+            [[ -z ${src_lfs[${NAME##*-}]} ]] && exit_ 1 "Unexpected Error" #Yes, I know... but has to do for the moment!
             { [[ "${src_lfs[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${src_lfs[${NAME##*-}]}" "$NAME"
-        done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | uniq | grep ${VG_SRC_NAME_CLONE/-/--}); : 'The
+        done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | uniq | grep ${VG_SRC_NAME_CLONE//-/--}); : 'The
         device mapper doubles hyphens in a LV/VG names exactly so it can distinguish between hyphens _inside_ an LV or
         VG name and a hyphen used as separator _between_ them.'
     } #}}}
@@ -1377,7 +1429,6 @@ Clone() { #{{{
         #Now collect what we have created
         set_dest_uuids "DPUUIDS" "DUUIDS" "DNAMES" "DESTS"
 
-
         if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#SNAMES[@]} != "${#DNAMES[@]}" ]]; then
             echo >&2 "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
             return 1
@@ -1505,9 +1556,20 @@ Main() { #{{{
             shift 2; continue
             ;;
         '--destination-image')
-            losetup -Pf "$2"
+            read -r DEST_IMG IMG_TYPE IMG_SIZE <<<${2//:/ }
+
+            [[ -n $DEST_IMG && -n $IMG_TYPE && -z $IMG_SIZE ]] && exit_ 1 "Missing size attribute"
+            [[ -n $DEST_IMG && -z $IMG_TYPE && -n $IMG_SIZE ]] && exit_ 1 "Missing type attribute"
+
+            if [[ -n $DEST_IMG && -n $IMG_TYPE && -n $IMG_SIZE ]]; then
+                validate_size $IMG_SIZE || exit_ 2 "Invalid size attribute in $1 $2"
+                [[ $IMG_TYPE =~ raw|vdi|vmdk|qcow2 ]] || exit_ 2 "Invalid image type in $1 $2"
+                PKGS+=(qemu-img)
+            else
+                [[ ! -e "$DEST_IMG" ]] && exit_ 1 "Specified image file does not exists."
+            fi
+
             CREATE_LOOP_DEV=true
-            DEST=$(losetup -ln --output name,back-file | grep "$2" | cut -d ' ' -f1);
             shift 2; continue
             ;;
         '-d' | 'destination')
@@ -1588,6 +1650,9 @@ Main() { #{{{
             lvm)
                 packages+=(lvm2)
                 ;;
+            qemu-img)
+                packages+=(qemu-utils)
+                ;;
             *)
                 packages+=($c)
                 ;;
@@ -1599,8 +1664,20 @@ Main() { #{{{
     [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: $(echo ${packages[@]})"
     eval "$abort"
 
-    [[ -z $SRC || -z $DEST ]] &&
+    [[ -z $SRC || -z $DEST_IMG && -z $DEST ]] &&
         usage
+
+    [[ -n $DEST && -n $DEST_IMG && -n $IMG_TYPE && -n $IMG_SIZE ]] && exit_ 1 "Invalid combination."
+
+    if [[ -n $DEST_IMG && $IMG_TYPE && -n $IMG_SIZE ]]; then
+        create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE"
+        [[ $? -eq 1 ]] && exit_ 1 "Image creation failed."
+        [[ $? -eq 2 ]] && exit_ 1 "Image type $IMG_TYPE not supported"
+    fi
+    if [[ -f $DEST_IMG ]]; then
+        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f $IMG_TYPE -c /dev/nbd0 "$DEST_IMG"
+        DEST=$NBD_DEV
+    fi
 
     [[ -d $SRC && ! -b $DEST ]] &&
         exit_ 1 "$DEST is not a valid block device."
@@ -1627,9 +1704,11 @@ Main() { #{{{
     [[ $SRC == $DEST ]] &&
         exit_ 1 "Source and destination cannot be the same!"
 
-    [[ $UEFI == true && $SYS_HAS_EFI == false ]] && exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
+    [[ $UEFI == true && $SYS_HAS_EFI == false ]] &&
+        exit_ 1 "Cannot convert to UEFI because system booted in legacy mode. Check your UEFI firmware settings!"
 
-    [[ -n $(lsblk -no mountpoint $DEST 2>/dev/null) ]] && exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
+    [[ -n $(lsblk --noheadings -o mountpoint $DEST 2>/dev/null) ]] &&
+        exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
 
     [[ $PVALL == true && -n $ENCRYPT_PWD ]] && exit_ 1 "Encryption only supported for simple LVM setups with a single PV!"
 
