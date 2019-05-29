@@ -32,7 +32,8 @@ declare F_LOG='/tmp/bcrm.log'
 
 declare SCRIPTNAME=$(basename "$0")
 declare PIDFILE="/var/run/$SCRIPTNAME"
-declare NBD_DEV=/dev/nbd0
+declare SRC_NBD=/dev/nbd0
+declare DEST_NBD=/dev/nbd1
 declare CLONE_DATE=$(date '+%d%m%y')
 declare SNAP4CLONE='snap4clone'
 declare MNTPNT=/tmp/mnt
@@ -199,6 +200,8 @@ usage() { #{{{
 
     printf "  %-3s %-30s %s\n"   "-s," "--source"                "The source device or folder to clone or restore from"
     printf "  %-3s %-30s %s\n"   "-d," "--destination"           "The destination device or folder to clone or backup to"
+    printf "  %-3s %-30s %s\n"   "   " "--source-image"          "Use the given image as source"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "You must specify an image type, for example: '/path/to/file.img:raw'"
     printf "  %-3s %-30s %s\n"   "   " "--destination-image"     "Use the given image as a loop device"
     printf "  %-3s %-30s %s\n"   "   " ""                        "An optional type and size can be supplied in the form of <path>:<type>:<size>"
     printf "  %-3s %-30s %s\n"   "   " ""                        "For instance: '/path/to/file.img:raw:20G'"
@@ -381,10 +384,10 @@ mbr2gpt() { #{{{
         flock "$dest" sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors - overlap))/")
     fi
 
-    blockdev --rereadpt "$dest"
+    udevadm settle && blockdev --rereadpt $dest
     flock $dest sgdisk -z "$dest"
     flock $dest sgdisk -g "$dest"
-    blockdev --rereadpt "$dest"
+    udevadm settle && blockdev --rereadpt $dest
 
     local pdata=$(sfdisk -d "$dest")
     local fstsctr=$(echo "$pdata" | grep -o -P 'size=\s*(\d*)' | awk '{print $2}' | head -n 1)
@@ -392,7 +395,7 @@ mbr2gpt() { #{{{
     pdata=$(echo "$pdata" | grep 'size=' | sed -e 's/^[^,]*,//; s/uuid=[a-Z0-9-]*,\{,1\}//')
     pdata=$(echo -e "size=1024000, type=${efisysid}\n${pdata}")
     flock "$dest" sfdisk "$dest" < <(echo "$pdata")
-    blockdev --rereadpt "$dest"
+    udevadm settle && blockdev --rereadpt $dest
 } #}}}
 
 # $1: <mount point>
@@ -522,6 +525,8 @@ set_dest_uuids() { #{{{
     declare -n duuids="$2"
     declare -n dnames="$3"
     declare -n dests="$4"
+
+    udevadm settle && blockdev --rereadpt $DEST
 
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
@@ -703,7 +708,7 @@ disk_setup() { #{{{
             fi
             n=$((n + 1))
         done < <(echo "$plist")
-        blockdev --rereadpt "$DEST"
+        udevadm settle && blockdev --rereadpt $DEST
     } #}}}
 
     _scan_src_parts
@@ -886,8 +891,7 @@ create_image() { #{{{
     local type="$2"
     local size="$3"
 
-    [[ $type =~ ^raw|qcow2|vmdk|vdi$ ]] || return 1
-    qemu-img create -f "$type" "$img" "$size" || return 2
+    qemu-img create -f "$type" "$img" "$size" || return 1
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -990,7 +994,8 @@ Cleanup() { #{{{
         umount_
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
         [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
-        [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $NBD_DEV
+        [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
+        [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $SRC_NBD
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
     } &>/dev/null
 
@@ -1254,7 +1259,7 @@ Clone() { #{{{
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
         fi
         sleep 1
-        blockdev --rereadpt "$DEST"
+        udevadm settle && blockdev --rereadpt $DEST
 
         [[ $UEFI == true ]] && mbr2gpt $DEST
     } #}}}
@@ -1505,6 +1510,7 @@ Main() { #{{{
             new-vg-name:,
             resize-threshold:,
             destination-image:,
+            source-image:,
             split,
             lvm-expand:,
             swap-size:,
@@ -1554,20 +1560,29 @@ Main() { #{{{
             SRC=$(readlink -m "$2");
             shift 2; continue
             ;;
+        '--source-image')
+            read -r SRC_IMG IMG_TYPE <<<${2//:/ }
+
+            [[ -n $SRC_IMG && -z $IMG_TYPE ]] && exit_ 1 "Missing type attribute"
+            [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $1 $2"
+            [[ ! -e "$SRC_IMG" ]] && exit_ 1 "Specified image file does not exists."
+
+            PKGS+=(qemu-img)
+            CREATE_LOOP_DEV=true
+            shift 2; continue
+            ;;
         '--destination-image')
             read -r DEST_IMG IMG_TYPE IMG_SIZE <<<${2//:/ }
 
-            [[ -n $DEST_IMG && -n $IMG_TYPE && -z $IMG_SIZE ]] && exit_ 1 "Missing size attribute"
-            [[ -n $DEST_IMG && -z $IMG_TYPE && -n $IMG_SIZE ]] && exit_ 1 "Missing type attribute"
+            [[ -n $DEST_IMG && -z $IMG_TYPE ]] && exit_ 1 "Missing type attribute"
+            [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $1 $2"
+            [[ ! -e "$DEST_IMG" && -z $IMG_SIZE ]] && exit_ 1 "Specified image file does not exists."
 
-            if [[ -n $DEST_IMG && -n $IMG_TYPE && -n $IMG_SIZE ]]; then
+            if [[ -n $DEST_IMG && -n $IMG_SIZE ]]; then
                 validate_size $IMG_SIZE || exit_ 2 "Invalid size attribute in $1 $2"
-                [[ $IMG_TYPE =~ raw|vdi|vmdk|qcow2 ]] || exit_ 2 "Invalid image type in $1 $2"
-                PKGS+=(qemu-img)
-            else
-                [[ ! -e "$DEST_IMG" ]] && exit_ 1 "Specified image file does not exists."
             fi
 
+            PKGS+=(qemu-img)
             CREATE_LOOP_DEV=true
             shift 2; continue
             ;;
@@ -1663,20 +1678,22 @@ Main() { #{{{
     [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: $(echo ${packages[@]})"
     eval "$abort"
 
-    [[ -z $SRC || -z $DEST_IMG && -z $DEST ]] &&
-        usage
+
+    if [[ -n $SRC_IMG ]]; then
+        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f $IMG_TYPE -c $SRC_NBD "$SRC_IMG"
+        SRC=$SRC_NBD
+    fi
 
     [[ -n $DEST && -n $DEST_IMG && -n $IMG_TYPE && -n $IMG_SIZE ]] && exit_ 1 "Invalid combination."
 
-    if [[ -n $DEST_IMG && $IMG_TYPE && -n $IMG_SIZE ]]; then
-        create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE"
-        [[ $? -eq 1 ]] && exit_ 1 "Image creation failed."
-        [[ $? -eq 2 ]] && exit_ 1 "Image type $IMG_TYPE not supported"
+    if [[ -n $DEST_IMG ]]; then
+        create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."
+        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f $IMG_TYPE -c $DEST_NBD "$DEST_IMG"
+        DEST=$DEST_NBD
     fi
-    if [[ -f $DEST_IMG ]]; then
-        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f $IMG_TYPE -c /dev/nbd0 "$DEST_IMG"
-        DEST=$NBD_DEV
-    fi
+
+    [[ -z $SRC || -z $DEST ]] &&
+        usage
 
     [[ -d $SRC && ! -b $DEST ]] &&
         exit_ 1 "$DEST is not a valid block device."
