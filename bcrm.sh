@@ -1789,6 +1789,10 @@ Main() { #{{{
 
     exec >$F_LOG 2>&1
 
+    #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
+    [[ ! -e /run/resolvconf/resolv.conf ]] && mkdir /run/resolvconf && cp /run/NetworkManager/resolv.conf /run/resolvconf/
+    [[ ! -e /run/NetworkManager/resolv.conf ]] && mkdir /run/NetworkManager && cp /run/resolvconf/resolv.conf /run/NetworkManager/
+
     #main
     echo_ "Backup started at $(date)"
     if [[ -b $SRC && -b $DEST ]]; then
