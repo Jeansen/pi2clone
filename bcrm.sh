@@ -193,18 +193,15 @@ logmsg() { #{{{
 usage() { #{{{
     local -A usage
 
-    printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n"
-    printf "\nSize values must be postfixed with K,M,G or T to specify units of kilobytes, megabytes, gigabytes and terabytes.\n\n"
-
-    printf "Options:\n\n"
+    printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n\n"
 
     printf "  %-3s %-30s %s\n"   "-s," "--source"                "The source device or folder to clone or restore from"
     printf "  %-3s %-30s %s\n"   "-d," "--destination"           "The destination device or folder to clone or backup to"
-    printf "  %-3s %-30s %s\n"   "   " "--source-image"          "Use the given image as source"
-    printf "  %-3s %-30s %s\n"   "   " ""                        "You must specify an image type, for example: '/path/to/file.img:raw'"
-    printf "  %-3s %-30s %s\n"   "   " "--destination-image"     "Use the given image as a loop device"
-    printf "  %-3s %-30s %s\n"   "   " ""                        "An optional type and size can be supplied in the form of <path>:<type>:<size>"
+    printf "  %-3s %-30s %s\n"   "   " "--source-image"          "Use the given image as source in the form of <path>:<type>"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "For example: '/path/to/file.vdi:vdi'. See below for supported types."
+    printf "  %-3s %-30s %s\n"   "   " "--destination-image"     "Use the given image as destination in the form of <path>:<type>[:<virtual-size>]"
     printf "  %-3s %-30s %s\n"   "   " ""                        "For instance: '/path/to/file.img:raw:20G'"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "If you omit the file, it must exists. Otherwise it will be created"
     printf "  %-3s %-30s %s\n"   "-c," "--check"                 "Create/Validate checksums"
     printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ratio is about 1:3, but very slow!)"
     printf "  %-3s %-30s %s\n"   "   " "--split"                 "Split backup into chunks of 1G files"
@@ -218,10 +215,18 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "   " ""                        "An optional percentage can be supplied, e.g. 'root:80'"
     printf "  %-3s %-30s %s\n"   "   " ""                        "Which would add 80% of the remaining free space in a VG to this LV"
     printf "  %-3s %-30s %s\n"   "-u," "--make-uefi"             "Convert to UEFI"
-    printf "  %-3s %-30s %s\n"   "-w," "--swap-size"             "Swap partitionn size. May be zero to remove any swap partition."
+    printf "  %-3s %-30s %s\n"   "-w," "--swap-size"             "Swap partition size. May be zero to remove any swap partition."
     printf "  %-3s %-30s %s\n"   "-m," "--resize-threshold"      "Do not resize partitions smaller than <size> (default 2048M)"
     printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
     printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
+
+    printf "\nSize values must be postfixed with K,M,G or T to specify units of kilobytes, megabytes, gigabytes or   terabytes.\n"
+    printf "\nWhen using virtual images you always have to provide the image type. Currently the following image types are supported:\n\n"
+    printf "  %-7s %s\n"   "raw" "Plain binary"
+    printf "  %-7s %s\n"   "vdi" "Virtual Box"
+    printf "  %-7s %s\n"   "qcow2" "QEMU/KVM"
+    printf "  %-7s %s\n"   "vmdk" "VMware"
+    printf "  %-7s %s\n\n\n"   "vhdx" "Hyper-V"
 
     exit_ 1
 } #}}}
