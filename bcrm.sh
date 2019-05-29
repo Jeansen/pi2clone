@@ -209,6 +209,8 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ratio is about 1:3, but very slow!)"
     printf "  %-3s %-30s %s\n"   "   " "--split"                 "Split backup into chunks of 1G files"
     printf "  %-3s %-30s %s\n"   "-H," "--hostname"              "Set hostname"
+    printf "  %-3s %-30s %s\n"   "   " "--remove-pkgs"           "Remove the given list of whitespace-separatedpackages as a final step."
+    printf "  %-3s %-30s %s\n"   "   " ""                        "The whole list must be enclosed in \"\""
     printf "  %-3s %-30s %s\n"   "-n," "--new-vg-name"           "LVM only: Define new volume group name"
     printf "  %-3s %-30s %s\n"   "-e," "--encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
     printf "  %-3s %-30s %s\n"   "-p," "--use-all-pvs"           "LVM only: Use all disks found on destination as PVs for VG"
@@ -302,6 +304,12 @@ pkg_install() { #{{{
         grub-install $2 &&
         update-grub &&
         update-initramfs -u -k all" || return 1
+} #}}}
+
+# $1: <mount point>
+# $2: ["<list of packages to install>"]
+pkg_remove() { #{{{
+    chroot "$1" sh -c "apt-get remove -y $2" || return 1
 } #}}}
 
 # $1: <src-dev>
@@ -801,6 +809,7 @@ grub_setup() { #{{{
         local apt_pkgs="binutils"
     fi
 
+    pkg_remove "$mp" "$REMOVE_PKGS" || return 1
     pkg_install "$mp" "$dest" || return 1
 
     create_rclocal "$mp"
@@ -877,6 +886,7 @@ crypt_setup() { #{{{
         sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=y/' "$mp/etc/default/grub" ||
         echo "GRUB_ENABLE_CRYPTODISK=y" >>"$mp/etc/default/grub"
 
+    pkg_remove "$mp" "$REMOVE_PKGS" || return 1
     pkg_install "$mp" "$dest" "lvm2 cryptsetup keyutils binutils grub2-common grub-pc-bin" || return 1
     create_rclocal "$mp"
     umount -lR "$mp"
@@ -1506,6 +1516,7 @@ Main() { #{{{
         --long '
             help,
             hostname:,
+            remove-pkgs:,
             encrypt-with-password:,
             new-vg-name:,
             resize-threshold:,
@@ -1645,7 +1656,10 @@ Main() { #{{{
             read -r LVM_EXPAND LVM_EXPAND_BY <<<${2/:/ }
             [[ "$LVM_EXPAND_BY" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $1 $2"
             shift 2; continue
-
+            ;;
+        '--remove-pkgs')
+            REMOVE_PKGS=$2
+            shift 2; continue
             ;;
         '--')
 			shift; break
