@@ -392,10 +392,10 @@ mbr2gpt() { #{{{
         flock "$dest" sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors - overlap))/")
     fi
 
-    udevadm settle && blockdev --rereadpt $dest
+    partprobe $dest && udevadm settle
     flock $dest sgdisk -z "$dest"
     flock $dest sgdisk -g "$dest"
-    udevadm settle && blockdev --rereadpt $dest
+    partprobe $dest && udevadm settle
 
     local pdata=$(sfdisk -d "$dest")
     local fstsctr=$(echo "$pdata" | grep -o -P 'size=\s*(\d*)' | awk '{print $2}' | head -n 1)
@@ -534,7 +534,7 @@ set_dest_uuids() { #{{{
     declare -n dnames="$3"
     declare -n dests="$4"
 
-    udevadm settle && blockdev --rereadpt $DEST
+    partprobe $DEST && udevadm settle
 
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
@@ -716,7 +716,7 @@ disk_setup() { #{{{
             fi
             n=$((n + 1))
         done < <(echo "$plist")
-        udevadm settle && blockdev --rereadpt $DEST
+        partprobe $DEST && udevadm settle
     } #}}}
 
     _scan_src_parts
@@ -1268,8 +1268,7 @@ Clone() { #{{{
             flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$ptable")
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
         fi
-        sleep 1
-        udevadm settle && blockdev --rereadpt $DEST
+        partprobe $DEST && udevadm settle
 
         [[ $UEFI == true ]] && mbr2gpt $DEST
     } #}}}
