@@ -397,10 +397,10 @@ mbr2gpt() { #{{{
         flock "$dest" sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors - overlap))/")
     fi
 
-    partprobe $dest && udevadm settle
+    blockdev --rereadpt $dest && udevadm settle
     flock $dest sgdisk -z "$dest"
     flock $dest sgdisk -g "$dest"
-    partprobe $dest && udevadm settle
+    blockdev --rereadpt $dest && udevadm settle
 
     local pdata=$(sfdisk -d "$dest")
     local fstsctr=$(echo "$pdata" | grep -o -P 'size=\s*(\d*)' | awk '{print $2}' | head -n 1)
@@ -408,7 +408,7 @@ mbr2gpt() { #{{{
     pdata=$(echo "$pdata" | grep 'size=' | sed -e 's/^[^,]*,//; s/uuid=[a-Z0-9-]*,\{,1\}//')
     pdata=$(echo -e "size=1024000, type=${efisysid}\n${pdata}")
     flock "$dest" sfdisk "$dest" < <(echo "$pdata")
-    udevadm settle && blockdev --rereadpt $dest
+    blockdev --rereadpt $dest && udevadm settle
 } #}}}
 
 # $1: <mount point>
@@ -539,7 +539,7 @@ set_dest_uuids() { #{{{
     declare -n dnames="$3"
     declare -n dests="$4"
 
-    partprobe $DEST && udevadm settle
+    blockdev --rereadpt $DEST && udevadm settle
 
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
@@ -721,7 +721,7 @@ disk_setup() { #{{{
             fi
             n=$((n + 1))
         done < <(echo "$plist")
-        partprobe $DEST && udevadm settle
+        blockdev --rereadpt $DEST && udevadm settle
     } #}}}
 
     _scan_src_parts
@@ -1273,7 +1273,7 @@ Clone() { #{{{
             flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SRC" "$DEST" "$ptable")
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
         fi
-        partprobe $DEST && udevadm settle
+        blockdev --rereadpt $DEST && udevadm settle
 
         [[ $UEFI == true ]] && mbr2gpt $DEST
     } #}}}
@@ -1780,11 +1780,13 @@ Main() { #{{{
 
     [[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME "VG_DISKS" && IS_LVM=true
 
-    [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
+    if [[ $IS_LVM == true ]]; then
+        [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
 
-    [[ -n $LVM_EXPAND ]] && ! _is_valid_lv "$LVM_EXPAND" "$VG_SRC_NAME" && exit_ 2 "Volumen name ${LVM_EXPAND} does not exists in ${VG_SRC_NAME}!"
+        [[ -n $LVM_EXPAND ]] && ! _is_valid_lv "$LVM_EXPAND" "$VG_SRC_NAME" && exit_ 2 "Volumen name ${LVM_EXPAND} does not exists in ${VG_SRC_NAME}!"
 
-    grep -q $VG_SRC_NAME_CLONE < <(dmsetup deps -o devname) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
+        grep -q "^$VG_SRC_NAME_CLONE\$" < <(dmsetup deps -o devname) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
+    fi
 
     SWAP_PART=$(if [[ -d $SRC ]]; then
         cat "$SRC/$F_PART_LIST" | grep swap | awk '{print $1}' | cut -d '"' -f 2
