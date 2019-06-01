@@ -761,7 +761,7 @@ boot_setup() { #{{{
             fi
             if [[ -e ${MNTPNT}/$d/${path[1]} ]]; then
                 #Make sure swap is set correctly.
-                uuid fstype
+                local uuid fstype
                 read -r fstype uuid <<<$(lsblk -plo fstype,uuid $DEST ${PVS[@]} | grep '^swap')
                 sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "${MNTPNT}/$d/${path[1]}"
             fi
