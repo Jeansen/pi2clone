@@ -539,7 +539,12 @@ set_dest_uuids() { #{{{
     declare -n dnames="$3"
     declare -n dests="$4"
 
+
+    [[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
     blockdev --rereadpt $DEST && udevadm settle
+    [[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
+
+    udevadm settle
 
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
@@ -553,7 +558,7 @@ set_dest_uuids() { #{{{
         dpuuids+=($PARTUUID)
         duuids+=($UUID)
         dnames+=($NAME)
-    done < <(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -n | uniq | grep -vE '\bdisk|\bUUID=""')
+    done < <(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | uniq | grep -vE '\bdisk|\bUUID=""')
 } #}}}
 
 # $1: <Ref. SPUUIDS>
@@ -602,7 +607,7 @@ set_src_uuids() { #{{{
         suuids+=($UUID)
         snames+=($NAME)
         [[ -b $SRC ]] && _count "$KNAME"
-    done < <(echo "$plist" | sort -n | uniq | grep -v 'disk')
+    done < <(echo "$plist" | uniq | grep -v 'disk')
 } #}}}
 
 # $1: <Ref. UUIDS>
@@ -641,7 +646,7 @@ init_srcs() { #{{{
         [[ -n $PARTUUID ]] && names[$PARTUUID]=$NAME
         [[ -n $UUID && -n $PARTUUID ]] && puuids2uuids[$PARTUUID]="$UUID"
     done < <( if [[ -n $file ]]; then cat "$file";
-              else lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | sort -n | uniq | grep -v 'disk';
+              else lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | uniq | grep -v 'disk';
     fi)
 } #}}}
 
@@ -666,7 +671,6 @@ disk_setup() { #{{{
             lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$src" |
             tail -n +2 |
             grep -vE '\bUUID=""' |
-            sort -n |
             uniq
         ) #only partitions
     fi
@@ -704,7 +708,6 @@ disk_setup() { #{{{
             lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$dest" |
             tail -n +2 |
             grep -vE 'PARTTYPE="0x5"' |
-            sort -n |
             uniq
         ) #only partitions
 
