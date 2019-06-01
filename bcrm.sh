@@ -333,7 +333,7 @@ expand_disk() { #{{{
         swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
         src_size=$((src_size - swap_size))
     fi
-    [[ SWAP_SIZE > 0 ]] && dest_size=$((dest_size - SWAP_SIZE * 2)) || dest_size=$((dest_size - swap_size))
+    [[ SWAP_SIZE > 0 ]] && dest_size=$((dest_size * 2 - SWAP_SIZE )) || dest_size=$((dest_size - swap_size))
 
     local expand_factor=$(echo "scale=4; $dest_size / $src_size" | bc)
 
