@@ -499,7 +499,7 @@ vg_disks() { #{{{
     local name=$1
     declare -n disks=$2
 
-    for f in $(pvs --no-headings -o pv_name,lv_dm_path | grep -E "${name}\-\w+" | awk '{print $1}' | uniq); do
+    for f in $(pvs --no-headings -o pv_name,lv_dm_path | grep -E "${name}\-\w+" | awk '{print $1}' | sort -u); do
         disks+=($(lsblk -pnls $f | grep disk | awk '{print $1}'))
     done
 } #}}}
@@ -556,7 +556,7 @@ set_dest_uuids() { #{{{
         dpuuids+=($PARTUUID)
         duuids+=($UUID)
         dnames+=($NAME)
-    done < <(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | uniq | grep -vE '\bdisk|\bUUID=""')
+    done < <(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -ru | grep -vE '\bdisk|\bUUID=""')
 } #}}}
 
 # $1: <Ref. SPUUIDS>
@@ -605,7 +605,7 @@ set_src_uuids() { #{{{
         suuids+=($UUID)
         snames+=($NAME)
         [[ -b $SRC ]] && _count "$KNAME"
-    done < <(echo "$plist" | uniq | grep -v 'disk')
+    done < <(echo "$plist" | sort -ru | grep -v 'disk')
 } #}}}
 
 # $1: <Ref. UUIDS>
@@ -644,7 +644,7 @@ init_srcs() { #{{{
         [[ -n $PARTUUID ]] && names[$PARTUUID]=$NAME
         [[ -n $UUID && -n $PARTUUID ]] && puuids2uuids[$PARTUUID]="$UUID"
     done < <( if [[ -n $file ]]; then cat "$file";
-              else lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | uniq | grep -v 'disk';
+              else lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" ${VG_DISKS[@]} | sort -ru | grep -v 'disk';
     fi)
 } #}}}
 
@@ -669,7 +669,7 @@ disk_setup() { #{{{
             lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$src" |
             tail -n +2 |
             grep -vE '\bUUID=""' |
-            uniq
+            sort -ru
         ) #only partitions
     fi
 
@@ -706,7 +706,7 @@ disk_setup() { #{{{
             lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$dest" |
             tail -n +2 |
             grep -vE 'PARTTYPE="0x5"' |
-            uniq
+            sort -ru
         ) #only partitions
 
         while read -r e; do
@@ -1037,8 +1037,8 @@ To_file() { #{{{
         [[ -z $snp ]] && snp="NOSNAPSHOT"
 
         {
-            pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' >$F_PVS_LIST
-            vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | uniq | sed -e 's/active$//;s/^\s*//' >$F_VGS_LIST
+            pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | sort -u | sed -e 's/active$//;s/^\s*//' >$F_PVS_LIST
+            vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | sort -u | sed -e 's/active$//;s/^\s*//' >$F_VGS_LIST
             lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role,lv_dm_path | grep -v 'snap' | grep 'active public.*' | sed -e 's/^\s*//; s/\s*$//' >$F_LVS_LIST
             blockdev --getsz "$SRC" >"$F_SECTORS_SRC"
             sfdisk -d "$SRC" >"$F_PART_TABLE"
@@ -1046,7 +1046,7 @@ To_file() { #{{{
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle.
         #Otherwise resultes from lsblk might still show old values!
-        lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | uniq | grep -v "$snp" >"$F_PART_LIST"
+        lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$SRC" | sort -ru | grep -v "$snp" >"$F_PART_LIST"
     } #}}}
 
     message -c -t "Creating backup of disk layout"
@@ -1079,7 +1079,7 @@ To_file() { #{{{
             local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
 
             local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
-            local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | awk '{print $2}')
+            local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -ru | awk '{print $2}')
 
             [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
             local tdev=$sdev
@@ -1103,7 +1103,7 @@ To_file() { #{{{
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
             if [[ $INTERACTIVE == true ]]; then
-                message -u -c -t "Creating backup for $sdev in $ddev [ scan ]"
+                message -u -c -t "Creating backup for $sdev [ scan ]"
                 local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s ${MNTPNT}/$tdev | awk '{print $1}')
                 if [[ $SPLIT == true ]]; then
                     cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
@@ -1113,11 +1113,11 @@ To_file() { #{{{
 
                 while read -r e; do
                     [[ $e -ge 100 ]] && e=100 #Just a precaution
-                    message -u -c -t "Creating backup for $sdev in $ddev [ $(printf '%02d%%' $e) ]"
+                    message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
                 done < <(eval "$cmd" 2>&1) #Note that with pv stderr holds the current percentage value!
-                message -u -c -t "Creating backup for $sdev in $ddev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
+                message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
             else
-                message -c -t "Creating backup for $sdev in $ddev"
+                message -c -t "Creating backup for $sdev"
                 {
                     if [[ $SPLIT == true ]]; then
                         cmd="$cmd -Scpf - . | split -b 1G - $file"
@@ -1242,7 +1242,7 @@ Clone() { #{{{
             eval "$kname" "$name" "$fstype" "$type"
             [[ -z ${src_lfs[${NAME##*-}]} ]] && exit_ 1 "Unexpected Error" #Yes, I know... but has to do for the moment!
             { [[ "${src_lfs[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${src_lfs[${NAME##*-}]}" "$NAME"
-        done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | uniq | grep ${VG_SRC_NAME_CLONE//-/--}); : 'The
+        done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | sort -ru | grep ${VG_SRC_NAME_CLONE//-/--}); : 'The
         device mapper doubles hyphens in a LV/VG names exactly so it can distinguish between hyphens _inside_ an LV or
         VG name and a hyphen used as separator _between_ them.'
     } #}}}
@@ -1359,7 +1359,7 @@ Clone() { #{{{
                 local ddev=${DESTS[${SRC2DEST[$sid]}]}
                 local tdev=$sdev
                 local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
-                local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | uniq | awk '{print $2}')
+                local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -u | awk '{print $2}')
 
                 [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
                 mkdir -p "${MNTPNT}/$ddev" "${MNTPNT}/$sdev"
@@ -1506,7 +1506,7 @@ Main() { #{{{
         local vg_name="$2"
 
         if [[ $_RMODE == true ]]; then
-            grep -qw "$lv_name" < <(cat "$SRC/$F_LVS_LIST" | awk '{print $1}' | uniq)
+            grep -qw "$lv_name" < <(cat "$SRC/$F_LVS_LIST" | awk '{print $1}' | sort -u)
         else
             lvs --noheadings -o lv_name,vg_name | grep -w "$vg_name" | grep -qw "$1"
         fi
@@ -1773,11 +1773,11 @@ Main() { #{{{
         fi
     fi
 
-    VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | uniq)
+    VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | sort -u)
 
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
-            grep -q ${SRC##*/} < <(dmsetup deps -o devname | uniq | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
+            grep -q ${SRC##*/} < <(dmsetup deps -o devname | sort -u | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
         done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name; fi)
     fi
 
