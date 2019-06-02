@@ -1257,6 +1257,11 @@ Clone() { #{{{
             vgreduce --removemissing "$vgname"
             vgremove -f "$vgname"
             pvremove -f "${DEST}*"
+
+            while read -r e; do
+                echo "pvremove -f $e"
+                pvremove $e || exit_ 1 "Cannot remove PV $e"
+            done < <(pvs --noheadings -o pv_name,vg_name | grep -E '(/\w*)+(\s+)$')
         fi
 
         dd oflag=direct if=/dev/zero of="$DEST" bs=512 count=100000
