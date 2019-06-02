@@ -108,7 +108,6 @@ is_partition() { #{{{
     return 1
 } #}}}
 
-
 # By convention methods ending with a '_' wrap shell functions or commands with the same name.
 
 echo_() { #{{{
@@ -222,11 +221,11 @@ usage() { #{{{
 
     printf "\nSize values must be postfixed with K,M,G or T to specify units of kilobytes, megabytes, gigabytes or   terabytes.\n"
     printf "\nWhen using virtual images you always have to provide the image type. Currently the following image types are supported:\n\n"
-    printf "  %-7s %s\n"   "raw" "Plain binary"
-    printf "  %-7s %s\n"   "vdi" "Virtual Box"
-    printf "  %-7s %s\n"   "qcow2" "QEMU/KVM"
-    printf "  %-7s %s\n"   "vmdk" "VMware"
-    printf "  %-7s %s\n\n\n"   "vhdx" "Hyper-V"
+    printf "  %-7s %s\n"       "raw"    "Plain binary"
+    printf "  %-7s %s\n"       "vdi"    "Virtual Box"
+    printf "  %-7s %s\n"       "qcow2"  "QEMU/KVM"
+    printf "  %-7s %s\n"       "vmdk"   "VMware"
+    printf "  %-7s %s\n\n\n"   "vhdx"   "Hyper-V"
 
     exit_ 1
 } #}}}
@@ -333,7 +332,7 @@ expand_disk() { #{{{
         swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
         src_size=$((src_size - swap_size))
     fi
-    [[ SWAP_SIZE > 0 ]] && dest_size=$((dest_size * 2 - SWAP_SIZE )) || dest_size=$((dest_size - swap_size))
+    [[ SWAP_SIZE > 0 ]] && dest_size=$((dest_size * 2 - SWAP_SIZE)) || dest_size=$((dest_size - swap_size))
 
     local expand_factor=$(echo "scale=4; $dest_size / $src_size" | bc)
 
@@ -539,7 +538,6 @@ set_dest_uuids() { #{{{
     declare -n dnames="$3"
     declare -n dests="$4"
 
-
     [[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
     blockdev --rereadpt $DEST && udevadm settle
     [[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
@@ -685,7 +683,7 @@ disk_setup() { #{{{
         local n=0
 
         while read -r e; do
-            read -r name kname fstype uuid partuuid type parttype  <<<"$e"
+            read -r name kname fstype uuid partuuid type parttype <<<"$e"
             eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype"
 
             [[ $NO_SWAP == true && $FSTYPE == swap ]] && continue
@@ -900,7 +898,6 @@ crypt_setup() { #{{{
     umount -lR "$mp"
 } #}}}
 
-
 # $1: <full path>
 # $2: <type>
 # $3: <size>
@@ -920,7 +917,7 @@ to_readable_size() { #{{{
     local dimension=B
 
     for d in K M G T P; do
-        if (( $(echo "scale=2; $size / 2 ^ 10 >= 1" | bc -l) )); then
+        if (($(echo "scale=2; $size / 2 ^ 10 >= 1" | bc -l))); then
             size=$(echo "scale=2; $size / 2 ^ 10" | bc)
             dimension=$d
         else
@@ -1438,7 +1435,6 @@ Clone() { #{{{
         init_srcs "UUIDS" "SRCS" "LSRCS" "PARTUUIDS" "PUUIDS2UUIDS" "TYPES" "NAMES" "FILESYSTEMS" "$f"
         set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS" "$f"
 
-
         if [[ $ENCRYPT_PWD ]]; then
             pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME"
             sleep 3
@@ -1704,7 +1700,6 @@ Main() { #{{{
     [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: $(echo ${packages[@]})"
     eval "$abort"
 
-
     if [[ -n $SRC_IMG ]]; then
         modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f $IMG_TYPE -c $SRC_NBD "$SRC_IMG"
         SRC=$SRC_NBD
@@ -1759,7 +1754,7 @@ Main() { #{{{
         if [[ -d $d ]]; then
             local disk=()
             disk+=($(df --block-size=1M $d | tail -n 1 | awk '{print $1}'))
-            disk+=($(lsblk -psnlo name,type $disk 2> /dev/null | grep disk | awk '{print $1}'))
+            disk+=($(lsblk -psnlo name,type $disk 2>/dev/null | grep disk | awk '{print $1}'))
             [[ ${disk[-1]} == $SRC || ${disk[-1]} == $DEST ]] && exit_ 1 "Source and destination cannot be the same!"
         fi
     done
