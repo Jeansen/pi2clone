@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with thisrogram.  If not, see <http://www.gnu.org/licenses/>.
 
+export LC_ALL=en_US.UTF-8
 export LVM_SUPPRESS_FD_WARNINGS=true
 export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Main()
 
