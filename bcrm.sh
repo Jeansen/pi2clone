@@ -557,14 +557,14 @@ set_dest_uuids() { #{{{
         dpuuids+=($PARTUUID)
         duuids+=($UUID)
         dnames+=($NAME)
-    done < <(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -ru | grep -vE '\bdisk|\bUUID=""')
+    done < <(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -ru | grep -vE '\bdisk|\bUUID="".*\bPARTUUID=""')
 } #}}}
 
 # $1: <Ref. SPUUIDS>
 # $2: <Ref. SUUIDS>
 # $3: <Ref. SNAMES>
 # $4: <Ref. LMBRS>
-# $5: <Ref. SECTORS>
+# $5: <Ref. SECTORS_USED>
 # $6: <File with lsblk dump>
 set_src_uuids() { #{{{
     declare -n spuuids="$1"
@@ -574,12 +574,14 @@ set_src_uuids() { #{{{
     declare -n sectors="$5"
     declare file="$6"
 
-    _count() { #{{{
-        local size=$(swapon --show=size --bytes --noheadings | grep $file | awk '{print $1}')
-        size=$(to_kbyte $size)
-
-        sectors=$(df -k --output=used $file | tail -n -1)
-        sectors=$((${SWAP_SIZE:-$size} + $SECTORS))
+    _count() { #{{{    
+        echo "--- $SWAP_SIZE ---"
+        if [[ $SWAP_SIZE -eq 0 ]]; then
+            local size=$(swapon --show=size,name --bytes --noheadings | grep $1 | awk '{print $1}') #no swap = 0
+            size=$(to_kbyte ${size:-0})
+            echo "----> $size"
+        fi
+        sectors=$(( $size + $sectors + $(df -k --output=used $1 | tail -n -1) ))
     } #}}}
 
     local n=0
@@ -595,6 +597,7 @@ set_src_uuids() { #{{{
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
 
+        [[ -b $SRC ]] && _count "$KNAME"
         [[ $FSTYPE == swap ]] && continue
         [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT_PWD ]] && continue
         [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && lmbrs[$n]="$UUID" #TODO I think that is wrong!
@@ -605,8 +608,9 @@ set_src_uuids() { #{{{
         spuuids+=($PARTUUID)
         suuids+=($UUID)
         snames+=($NAME)
-        [[ -b $SRC ]] && _count "$KNAME"
     done < <(echo "$plist" | sort -ru | grep -v 'disk')
+
+    [[ $SWAP_SIZE > 0 ]] && sectors=$((sectors + SWAP_SIZE))
 } #}}}
 
 # $1: <Ref. UUIDS>
@@ -664,12 +668,14 @@ disk_setup() { #{{{
 
     local plist
     if [[ -n $file ]]; then
-        plist=$(cat "$file")
+        plist=$(cat "$file" | 
+            grep -vE 'PARTTYPE="0x5"' |
+            grep -vE 'TYPE="disk"' |
+            sort -ru)
     else
         plist=$(
             lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$src" |
-            tail -n +2 |
-            grep -vE '\bUUID=""' |
+            grep -vE 'PARTTYPE="0x5"' |
             sort -ru
         ) #only partitions
     fi
@@ -705,8 +711,8 @@ disk_setup() { #{{{
         local n=0
         local plist=$(
             lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$dest" |
-            tail -n +2 |
             grep -vE 'PARTTYPE="0x5"' |
+            grep -vE 'TYPE="disk"' |
             sort -ru
         ) #only partitions
 
@@ -1054,7 +1060,7 @@ To_file() { #{{{
     {
         logmsg ${lm[0]} && _save_disk_layout
         init_srcs "UUIDS" "SRCS" "LSRCS" "PARTUUIDS" "PUUIDS2UUIDS" "TYPES" "NAMES" "FILESYSTEMS"
-        set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS"
+        set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS_USED"
         mounts
     }
     message -y
@@ -1141,7 +1147,7 @@ To_file() { #{{{
     done
 
     popd >/dev/null || return 1
-    echo $SECTORS >"$DEST/$F_SECTORS_USED"
+    echo $SECTORS_USED >"$DEST/$F_SECTORS_USED"
     if [[ $IS_CHECKSUM == true ]]; then
         message -c -t "Creating checksums"
         {
@@ -1341,7 +1347,7 @@ Clone() { #{{{
                 fi
 
                 popd >/dev/null || return 1
-                _finish 2>/dev/null
+                _finish ${MNTPNT}/$ddev 2>/dev/null
             fi
             message -y
         done
@@ -1412,7 +1418,7 @@ Clone() { #{{{
                     umount_ "/dev/${VG_SRC_NAME}/$tdev"
                     [[ $dev == LSRCS ]] && lvremove -q -f "${VG_SRC_NAME}/$tdev"
 
-                    _finish #TODO missing parameters?
+                    _finish ${MNTPNT}/$ddev 2>/dev/null
                 }
                 message -y
             done
@@ -1434,7 +1440,7 @@ Clone() { #{{{
         local f=$([[ $_RMODE == true ]] && echo "$SRC/$F_PART_LIST")
         _prepare_disk #First collect what we have in our backup
         init_srcs "UUIDS" "SRCS" "LSRCS" "PARTUUIDS" "PUUIDS2UUIDS" "TYPES" "NAMES" "FILESYSTEMS" "$f"
-        set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS" "$f"
+        set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS_USED" "$f"
 
         if [[ $ENCRYPT_PWD ]]; then
             pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME"
@@ -1468,10 +1474,10 @@ Clone() { #{{{
 
     #Check if destination is big enough.
     local cnt
-    [[ $_RMODE == true ]] && SECTORS=$(cat "$SRC/$F_SECTORS_USED")
+    [[ $_RMODE == true ]] && SECTORS_USED=$(cat "$SRC/$F_SECTORS_USED")
     [[ -b $DEST ]] && cnt=$(to_kbyte $(blockdev --getsize64 "$DEST"))
     [[ -d $DEST ]] && cnt=$(df -k --output=avail "$DEST" | tail -n -1)
-    ((cnt - SECTORS <= 0)) && exit_ 10 "Require $(to_mbyte ${SECTORS}K)M but destination is only $(to_mbyte ${cnt}K)M"
+    ((cnt - SECTORS_USED <= 0)) && exit_ 10 "Require $(to_mbyte ${SECTORS}K)M but destination is only $(to_mbyte ${cnt}K)M"
 
     if [[ $_RMODE == true ]]; then
         _from_file || return 1
