@@ -31,6 +31,7 @@ declare F_PART_TABLE='part_table'
 declare F_CHESUM='check.md5'
 declare F_LOG='/tmp/bcrm.log'
 
+declare SCHROOT_HOME=/tmp/dbs
 declare SCRIPTNAME=$(basename "$0")
 declare PIDFILE="/var/run/$SCRIPTNAME"
 declare SRC_NBD=/dev/nbd0
@@ -71,6 +72,7 @@ declare CREATE_LOOP_DEV=false
 declare PVALL=false
 declare SPLIT=false
 declare IS_CHECKSUM=false
+declare SCHROOT=false
 
 declare MIN_RESIZE=2048 #In 1M units
 declare SWAP_SIZE=0
@@ -166,6 +168,10 @@ umount_() { #{{{
     done
     shift $((OPTIND - 1))
 
+    for f in sys dev dev/pts proc run; do
+        umount -l "$SCHROOT_HOME/$f"
+    done
+
     if [[ $# -eq 0 ]]; then
         for m in "${MNTJRNL[@]}"; do $cmd -l "$m"; done
         return 0
@@ -217,6 +223,7 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "-u," "--make-uefi"             "Convert to UEFI"
     printf "  %-3s %-30s %s\n"   "-w," "--swap-size"             "Swap partition size. May be zero to remove any swap partition."
     printf "  %-3s %-30s %s\n"   "-m," "--resize-threshold"      "Do not resize partitions smaller than <size> (default 2048M)"
+    printf "  %-3s %-30s %s\n"   "   " "--schroot"               "Run in a secure chroot environment with a fixed and tested tool chain"
     printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
     printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
 
@@ -575,11 +582,9 @@ set_src_uuids() { #{{{
     declare file="$6"
 
     _count() { #{{{    
-        echo "--- $SWAP_SIZE ---"
         if [[ $SWAP_SIZE -eq 0 ]]; then
             local size=$(swapon --show=size,name --bytes --noheadings | grep $1 | awk '{print $1}') #no swap = 0
             size=$(to_kbyte ${size:-0})
-            echo "----> $size"
         fi
         sectors=$(( $size + $sectors + $(df -k --output=used $1 | tail -n -1) ))
     } #}}}
@@ -1014,6 +1019,7 @@ sector_to_tbyte() { #{{{
 Cleanup() { #{{{
     {
         umount_
+        rm -rf "$SCHROOT_HOME" #TODO add option to overwrite
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
         [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
@@ -1501,7 +1507,8 @@ Clone() { #{{{
 } #}}}
 
 Main() { #{{{
-    local args=$# #getop changes the $# value. To be sure we save the original arguments count.
+    local args_count=$# #getop changes the $# value. To be sure we save the original arguments count.
+    local args=$@ #Backup original arguments.
 
     _validate_block_device() { #{{{
         local t=$(lsblk --nodeps --noheadings -o TYPE "$1")
@@ -1546,6 +1553,7 @@ Main() { #{{{
             destination,
             compress,
             quiet,
+            schroot,
             check' \
         -n "$(basename "$0" \
         )" -- "$@")
@@ -1554,7 +1562,7 @@ Main() { #{{{
 
     eval set -- "$option"
 
-    [[ $1 == -h || $1 == --help || $args -eq 0 ]] && usage #Don't have to be root to get the usage info
+    [[ $1 == -h || $1 == --help || $args_count -eq 0 ]] && usage #Don't have to be root to get the usage info
 
     #Force root
     [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
@@ -1582,7 +1590,7 @@ Main() { #{{{
             usage
             shift 1; continue
             ;;
-        '-s' | 'source')
+        '-s' | '--source')
             SRC=$(readlink -m "$2");
             shift 2; continue
             ;;
@@ -1612,7 +1620,7 @@ Main() { #{{{
             CREATE_LOOP_DEV=true
             shift 2; continue
             ;;
-        '-d' | 'destination')
+        '-d' | '--destination')
             DEST=$(readlink -m "$2")
             shift 2; continue
             ;;
@@ -1633,11 +1641,11 @@ Main() { #{{{
             UEFI=true;
             shift 1; continue
             ;;
-        '-p' | 'use-all-pvs')
+        '-p' | '--use-all-pvs')
             PVALL=true;
             shift 1; continue
             ;;
-        '-q' | 'quiet')
+        '-q' | '--quiet')
             exec 3>&-
             exec 4>&-
             shift 1; continue
@@ -1646,12 +1654,12 @@ Main() { #{{{
             SPLIT=true;
             shift 1; continue
             ;;
-        '-c' | 'check')
+        '-c' | '--check')
             IS_CHECKSUM=true
             PKGS+=(parallel)
             shift 1; continue
             ;;
-        '-z' | 'compress')
+        '-z' | '--compress')
             export XZ_OPT=-4T0
             PKGS+=(xz)
             shift 1; continue
@@ -1675,6 +1683,11 @@ Main() { #{{{
         '--remove-pkgs')
             REMOVE_PKGS=$2
             shift 2; continue
+            ;;
+        '--schroot')
+            PKGS+=(schroot debootstrap)
+            SCHROOT=true;
+            shift 1; continue
             ;;
         '--')
 			shift; break
@@ -1703,6 +1716,8 @@ Main() { #{{{
             abort='exit_ 1'
         }
     done
+
+    exec >$F_LOG 2>&1
 
     [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: $(echo ${packages[@]})"
     eval "$abort"
@@ -1804,11 +1819,37 @@ Main() { #{{{
         lsblk -lpo name,fstype "$SRC" | grep swap | awk '{print $1}'
     fi)
 
-    exec >$F_LOG 2>&1
 
     #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
     [[ ! -e /run/resolvconf/resolv.conf ]] && mkdir /run/resolvconf && cp /run/NetworkManager/resolv.conf /run/resolvconf/
     [[ ! -e /run/NetworkManager/resolv.conf ]] && mkdir /run/NetworkManager && cp /run/resolvconf/resolv.conf /run/NetworkManager/
+
+    if [[ $SCHROOT == true ]]; then
+        # debootstrap --make-tarball=bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils stretch ./dbs2
+        # debootstrap --unpack-tarball=$(dirname $(readlink -f $0))/bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils,rsync stretch /tmp/dbs
+
+        echo_ "Creating chroot environment. This might take a while ..."
+        { mkdir -p $SCHROOT_HOME && tar xf $(dirname $(readlink -f $0))/bcrm.tar.xz -C $_; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
+
+        for f in sys dev dev/pts proc run; do
+            mount --bind "/$f" "$SCHROOT_HOME/$f"
+        done
+
+        echo -n "$( < <(echo -n "
+            [bcrm]
+            type=plain
+            directory=${SCHROOT_HOME}
+            profile=desktop
+            preserve-environment=true
+        "  ))" |  sed -e '/./,$!d; s/^\s*//' > /etc/schroot/chroot.d/bcrm
+
+        cp -r $(dirname $(readlink -f $0)) $SCHROOT_HOME
+        echo_ "Now executing chroot in $SCHROOT_HOME"
+        rm $PIDFILE && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/}
+
+        Cleanup
+    fi
+
 
     #main
     echo_ "Backup started at $(date)"
