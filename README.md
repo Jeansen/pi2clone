@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/Jeansen/bcrm.svg?branch=master)](https://travis-ci.org/Jeansen/bcrm)
+
 # Backup, Clone, Restore and More (bcrm)
 
 This project is a result of finding a solution for backing up and restoring my private systems in use. To some extend

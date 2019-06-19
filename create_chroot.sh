@@ -12,6 +12,7 @@ Main() {
 
     debootstrap --include=git,lvm2,bc,pv,parallel,qemu-utils,rsync stretch "$target"
     chroot "$target" bash -c debconf-set-selections < <(echo "$debconf_locales")
+    #https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=697765
     chroot "$target" bash -c "DEBIAN_FRONTEND=noninteractive apt-get -y install locales"
 
     XZ_OPT=-4T0 tar -Jcf bcrm.tar.xz -C "$target" .
