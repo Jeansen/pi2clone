@@ -1,9 +1,8 @@
 language: minimal
 
-if: branch = master
+if: tag IS present
 
-before_deploy:
-  - tar -zvcf ${TRAVIS_BUILD_DIR}/../bcrm.tar.gz ${TRAVIS_BUILD_DIR}
+before_deploy: tar --exclude="./.*" -zcf ${TRAVIS_BUILD_DIR}/../bcrm_${TRAVIS_TAG}.tar.gz -C ${TRAVIS_BUILD_DIR} .
 
 deploy:
   provider: releases
@@ -11,9 +10,10 @@ deploy:
     secure: MrSo1yTrrhyZXjGq1telV45qx0yTep13TZ3s/pfpziIt+ydUyU97Ewza7rVFkewJsZ/Pz2NPGbi1rUiljV5KlBaMEjABrxBSvWNPFwTkwiaftlAXCQDL1K6Ew22pwJca+L0EFCjTcMDeZznZoo1j5y0VDmSYfZzwQKnimKqsi7sCxzIaU3cecF9wZilSUhMr5rr4xY+qKNYYOovHFoq+6IYmc5Sp14CSmXqnioJTumcFZ9lyu3XZzuaFQ9UPUt51YQZwaKp5ioaekL/MLpqmrWUDNLVx9RiHqPwh+PGXlS8Hd3kygzSH+pfR9O7uYoxk4Wi2Cm2q4jRmRe/PKSo/P9VJjp6A1D86ByzqsT7OK7Mg/Y+EMOWsZaoIdfFVNVsSgZvRuMSnrPIUKTK15dkbk6YMVsE+9PDLNbRFFxJ1nn58D+g9wQfJn64jv8XSbYos3b3UVExTSYQHyyu4G8Tt8WAlNPMYb7zTGs++leNX8qjirW0EELr+edtlTgSyyvwpUBbJilIG1y5KFhfSRD24/x5J4narbpnmySXLgdJ0XmX+XDpEzsjGBhlriLNgzuHHoOI/XhYskLri9RDNHnxUeo6UtEBRwzUnxpAs4grlZU4s9kgdUqPsW4rZDmmYbDb0YWXbgpDBAf+Gtpzp64NA179HTdSTzhgpSZHvu1IleCM=
   file_glob: true
   file:
-    - ../bcrm.tar.gz
+    - ../bcrm_${TRAVIS_TAG}.tar.gz
   skip_cleanup: true
   overwrite: true
   on:
     repo: Jeansen/bcrm
     tag: true
+    branch: $TRAVIS_TAG
