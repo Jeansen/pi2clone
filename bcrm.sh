@@ -21,6 +21,7 @@ export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Ma
 
 # CONSTANTS
 #----------------------------------------------------------------------------------------------------------------------
+declare F_SCHROOT='bcrm.tar.xz'
 declare F_PART_LIST='part_list'
 declare F_VGS_LIST='vgs_list'
 declare F_LVS_LIST='lvs_list'
@@ -33,6 +34,7 @@ declare F_LOG='/tmp/bcrm.log'
 
 declare SCHROOT_HOME=/tmp/dbs
 declare SCRIPTNAME=$(basename "$0")
+declare SCRIPTPATH=$(dirname "$0")
 declare PIDFILE="/var/run/$SCRIPTNAME"
 declare SRC_NBD=/dev/nbd0
 declare DEST_NBD=/dev/nbd1
@@ -1529,6 +1531,8 @@ Main() { #{{{
     _run_schroot() { #{{{
         # debootstrap --make-tarball=bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils stretch ./dbs2
         # debootstrap --unpack-tarball=$(dirname $(readlink -f $0))/bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils,rsync stretch /tmp/dbs
+
+        [[ -s $SCRIPTPATH/$F_SCHROOT ]] || exit_ 2 "Cannot run schroot because the archive containing it - $F_SCHROOT - is missing."
 
         echo_ "Creating chroot environment. This might take a while ..."
         { mkdir -p $SCHROOT_HOME && tar xf $(dirname $(readlink -f $0))/bcrm.tar.xz -C $_; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
