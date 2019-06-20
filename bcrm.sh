@@ -1526,6 +1526,30 @@ Main() { #{{{
         fi
     } #}}}
 
+    _run_schroot() { #{{{
+        # debootstrap --make-tarball=bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils stretch ./dbs2
+        # debootstrap --unpack-tarball=$(dirname $(readlink -f $0))/bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils,rsync stretch /tmp/dbs
+
+        echo_ "Creating chroot environment. This might take a while ..."
+        { mkdir -p $SCHROOT_HOME && tar xf $(dirname $(readlink -f $0))/bcrm.tar.xz -C $_; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
+
+        for f in sys dev dev/pts proc run; do
+            mount --bind "/$f" "$SCHROOT_HOME/$f"
+        done
+
+        echo -n "$( < <(echo -n "
+            [bcrm]
+            type=plain
+            directory=${SCHROOT_HOME}
+            profile=desktop
+            preserve-environment=true
+        "  ))" |  sed -e '/./,$!d; s/^\s*//' > /etc/schroot/chroot.d/bcrm
+
+        cp -r $(dirname $(readlink -f $0)) $SCHROOT_HOME
+        echo_ "Now executing chroot in $SCHROOT_HOME"
+        rm $PIDFILE && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/}
+    } #}}}
+
     trap Cleanup INT TERM EXIT
 
     if [[ -t 1 ]]; then
@@ -1825,31 +1849,9 @@ Main() { #{{{
     [[ ! -e /run/NetworkManager/resolv.conf ]] && mkdir /run/NetworkManager && cp /run/resolvconf/resolv.conf /run/NetworkManager/
 
     if [[ $SCHROOT == true ]]; then
-        # debootstrap --make-tarball=bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils stretch ./dbs2
-        # debootstrap --unpack-tarball=$(dirname $(readlink -f $0))/bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils,rsync stretch /tmp/dbs
-
-        echo_ "Creating chroot environment. This might take a while ..."
-        { mkdir -p $SCHROOT_HOME && tar xf $(dirname $(readlink -f $0))/bcrm.tar.xz -C $_; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
-
-        for f in sys dev dev/pts proc run; do
-            mount --bind "/$f" "$SCHROOT_HOME/$f"
-        done
-
-        echo -n "$( < <(echo -n "
-            [bcrm]
-            type=plain
-            directory=${SCHROOT_HOME}
-            profile=desktop
-            preserve-environment=true
-        "  ))" |  sed -e '/./,$!d; s/^\s*//' > /etc/schroot/chroot.d/bcrm
-
-        cp -r $(dirname $(readlink -f $0)) $SCHROOT_HOME
-        echo_ "Now executing chroot in $SCHROOT_HOME"
-        rm $PIDFILE && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/}
-
+        _run_schroot
         Cleanup
     fi
-
 
     #main
     echo_ "Backup started at $(date)"
