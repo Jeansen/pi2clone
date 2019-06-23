@@ -40,7 +40,7 @@ declare SRC_NBD=/dev/nbd0
 declare DEST_NBD=/dev/nbd1
 declare CLONE_DATE=$(date '+%d%m%y')
 declare SNAP4CLONE='snap4clone'
-declare MNTPNT=/tmp/mnt
+declare MNTPNT=/mnt/bcrm #Do not use /tmp! It will be excluded on backups!
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 
 # GLOBALS
@@ -130,13 +130,16 @@ mount_() { #{{{
     local path="${MNTPNT}/$src"
     shift
 
-    while getopts ':p:t:' option; do
+    while getopts ':p:t:b' option; do
         case "$option" in
         t)
             cmd+=" -t $OPTARG"
             ;;
         p)
             path="$OPTARG"
+            ;;
+        b)
+            cmd+=" --bind"
             ;;
         :)
             printf "missing argument for -%s\n" "$OPTARG" >&2
@@ -154,7 +157,7 @@ mount_() { #{{{
 
 umount_() { #{{{
     local OPTIND
-    local cmd="umount"
+    local cmd="umount -l"
     while getopts ':R' option; do
         case "$option" in
         R)
@@ -169,10 +172,6 @@ umount_() { #{{{
         esac
     done
     shift $((OPTIND - 1))
-
-    for f in sys dev dev/pts proc run; do
-        umount -l "$SCHROOT_HOME/$f"
-    done
 
     if [[ $# -eq 0 ]]; then
         for m in "${MNTJRNL[@]}"; do $cmd -l "$m"; done
@@ -1112,14 +1111,14 @@ To_file() { #{{{
             }
 
             local src_size=$(df --block-size=1M --output=used "${MNTPNT}/$tdev/" | tail -n -1 | sed -e 's/^\s*//; s/\s*$//')
-            cmd="tar --warning=none --directory=${MNTPNT}/$tdev --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
+            cmd="tar --warning=none --directory=${MNTPNT}/$tdev --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
             file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${src_size}.${sdev//\//_}.${mount//\//_} "
 
             [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
             if [[ $INTERACTIVE == true ]]; then
                 message -u -c -t "Creating backup for $sdev [ scan ]"
-                local size=$(du --bytes --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s ${MNTPNT}/$tdev | awk '{print $1}')
+                local size=$(du --bytes --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s ${MNTPNT}/$tdev | awk '{print $1}')
                 if [[ $SPLIT == true ]]; then
                     cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
                 else
@@ -1535,11 +1534,19 @@ Main() { #{{{
         [[ -s $SCRIPTPATH/$F_SCHROOT ]] || exit_ 2 "Cannot run schroot because the archive containing it - $F_SCHROOT - is missing."
 
         echo_ "Creating chroot environment. This might take a while ..."
-        { mkdir -p $SCHROOT_HOME && tar xf $(dirname $(readlink -f $0))/bcrm.tar.xz -C $_; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
+        { mkdir -p $SCHROOT_HOME && tar xf ${SCRIPTPATH}/$F_SCHROOT -C $_; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
 
         for f in sys dev dev/pts proc run; do
-            mount --bind "/$f" "$SCHROOT_HOME/$f"
+            mount_ "/$f" -p "$SCHROOT_HOME/$f" -b
         done
+
+        if [[ -d "$SRC" && -b $DEST ]]; then 
+            { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -p "$SCHROOT_HOME/$SRC" -b; } || 
+                exit_ 1 "Failed preparing chroot for restoring from backup."
+        elif [[ -b "$SRC" && -d $DEST ]]; then
+            { mkdir -p "$SCHROOT_HOME/$DEST" && mount_ "$DEST" -p "$SCHROOT_HOME/$DEST" -b; } ||
+                exit_ 1 "Failed preparing chroot for backup creation."
+        fi
 
         echo -n "$( < <(echo -n "
             [bcrm]
@@ -1552,6 +1559,10 @@ Main() { #{{{
         cp -r $(dirname $(readlink -f $0)) $SCHROOT_HOME
         echo_ "Now executing chroot in $SCHROOT_HOME"
         rm $PIDFILE && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/}
+        for f in sys dev dev/pts proc run; do
+            umount_ "/$f"
+        done
+        umount_ "$SCHROOT_HOME/$DEST"
     } #}}}
 
     trap Cleanup INT TERM EXIT
@@ -1847,15 +1858,16 @@ Main() { #{{{
         lsblk -lpo name,fstype "$SRC" | grep swap | awk '{print $1}'
     fi)
 
-
     #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
     [[ ! -e /run/resolvconf/resolv.conf ]] && mkdir /run/resolvconf && cp /run/NetworkManager/resolv.conf /run/resolvconf/
     [[ ! -e /run/NetworkManager/resolv.conf ]] && mkdir /run/NetworkManager && cp /run/resolvconf/resolv.conf /run/NetworkManager/
 
     if [[ $SCHROOT == true ]]; then
+        [[ -b "$SRC" && -d $DEST && -n "$(ls -A "$DEST")" ]] && exit_ 1 "Destination not empty!"
         _run_schroot
         Cleanup
     fi
+
 
     #main
     echo_ "Backup started at $(date)"
@@ -1864,7 +1876,7 @@ Main() { #{{{
     elif [[ -d "$SRC" && -b $DEST ]]; then
         Clone -r || exit_ 1
     elif [[ -b "$SRC" && -d $DEST ]]; then
-        To_file || exit_ 6 "Destination not empty!"
+        To_file || exit_ 1 
     fi
     echo_ "Backup finished at $(date)"
 } #}}}
