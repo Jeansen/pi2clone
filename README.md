@@ -1,4 +1,7 @@
+![](https://rawgit.com/Jeansen/assets/master/project-status.svg)
+[![](https://rawgit.com/Jeansen/assets/master/license.svg)](LICENSE)
 [![Build Status](https://travis-ci.org/Jeansen/bcrm.svg?branch=master)](https://travis-ci.org/Jeansen/bcrm)
+
 
 # Backup, Clone, Restore and More (bcrm)
 
