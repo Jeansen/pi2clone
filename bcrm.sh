@@ -372,13 +372,13 @@ expand_disk() { #{{{
         fi
 
         if [[ -n "$size" ]]; then
-            if [[ $e =~ $SWAP_PART ]]; then
+            if [[ -n $SWAP_PART && $e =~ $SWAP_PART ]]; then
                 if [[ $SWAP_SIZE > 0 ]]; then
                     size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
                     new_size=$(to_sector ${SWAP_SIZE}K)
                     pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
                 fi
-            elif [[ $e =~ $BOOT_PART ]]; then
+            elif [[ -n $BOOT_PART && $e =~ $BOOT_PART ]]; then
                 if [[ $BOOT_SIZE > 0 ]]; then
                     size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
                     new_size=$(to_sector ${BOOT_SIZE}K)
@@ -1882,10 +1882,11 @@ Main() { #{{{
         lsblk -lpo name,fstype "$SRC" | grep swap | awk '{print $1}'
     fi)
 
+    #Botable is the first partition or the one marked as bootable
     BOOT_PART=$(if [[ -d $SRC ]]; then
-        cat "$SRC/$F_PART_TABLE" | grep bootable | awk '{print $1}'
+        cat "$SRC/$F_PART_TABLE" | grep 'bootable\|^/' | head -n 1 | awk '{print $1}'
     else
-       sfdisk --dump "$SRC" | grep bootable | awk '{print $1}'
+       sfdisk --dump "$SRC" | grep 'bootable\|^/' | head -n 1 | awk '{print $1}'
     fi)
 
     #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
