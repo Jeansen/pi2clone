@@ -340,13 +340,20 @@ expand_disk() { #{{{
         #Substract the swap partition size
         swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
         src_size=$((src_size - swap_size))
+        echo $swap_size >> /tmp/s
     fi
-    [[ SWAP_SIZE > 0 ]] && dest_size=$((dest_size * 2 - SWAP_SIZE)) || dest_size=$((dest_size - swap_size))
+
+    if [[ $SWAP_SIZE > 0 ]]; then
+        local swp=$(to_sector ${SWAP_SIZE}K)
+        dest_size=$((dest_size - swp))
+    else
+        dest_size=$((dest_size - swap_size))
+    fi
 
     local expand_factor=$(echo "scale=4; $dest_size / $src_size" | bc)
 
     if [[ $NO_SWAP == true && -n $SWAP_PART ]]; then
-        local swap_part=${swap_part////\\/}
+        local swap_part=${SWAP_PART////\\/} #Escape for sed interpolation
         pdata=$(echo "$pdata" | sed "/$swap_part/d")
     fi
 
@@ -359,7 +366,7 @@ expand_disk() { #{{{
         fi
 
         if [[ -n "$size" ]]; then
-            if [[ $e =~ $swap_part ]]; then
+            if [[ $e =~ $SWAP_PART ]]; then
                 if [[ $SWAP_SIZE > 0 ]]; then
                     size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
 
@@ -582,7 +589,7 @@ set_src_uuids() { #{{{
     declare -n sectors="$5"
     declare file="$6"
 
-    _count() { #{{{    
+    _count() { #{{{
         if [[ $SWAP_SIZE -eq 0 ]]; then
             local size=$(swapon --show=size,name --bytes --noheadings | grep $1 | awk '{print $1}') #no swap = 0
             size=$(to_kbyte ${size:-0})
@@ -674,7 +681,7 @@ disk_setup() { #{{{
 
     local plist
     if [[ -n $file ]]; then
-        plist=$(cat "$file" | 
+        plist=$(cat "$file" |
             grep -vE 'PARTTYPE="0x5"' |
             grep -vE 'TYPE="disk"' |
             sort -ru)
@@ -1540,8 +1547,8 @@ Main() { #{{{
             mount_ "/$f" -p "$SCHROOT_HOME/$f" -b
         done
 
-        if [[ -d "$SRC" && -b $DEST ]]; then 
-            { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -p "$SCHROOT_HOME/$SRC" -b; } || 
+        if [[ -d "$SRC" && -b $DEST ]]; then
+            { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -p "$SCHROOT_HOME/$SRC" -b; } ||
                 exit_ 1 "Failed preparing chroot for restoring from backup."
         elif [[ -b "$SRC" && -d $DEST ]]; then
             { mkdir -p "$SCHROOT_HOME/$DEST" && mount_ "$DEST" -p "$SCHROOT_HOME/$DEST" -b; } ||
@@ -1876,7 +1883,7 @@ Main() { #{{{
     elif [[ -d "$SRC" && -b $DEST ]]; then
         Clone -r || exit_ 1
     elif [[ -b "$SRC" && -d $DEST ]]; then
-        To_file || exit_ 1 
+        To_file || exit_ 1
     fi
     echo_ "Backup finished at $(date)"
 } #}}}
