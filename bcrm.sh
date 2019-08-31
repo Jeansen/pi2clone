@@ -78,6 +78,7 @@ declare SCHROOT=false
 
 declare MIN_RESIZE=2048 #In 1M units
 declare SWAP_SIZE=0
+declare BOOT_SIZE=0
 declare LVM_EXPAND_BY=0 #How much % of free space to use from a VG, e.g. when a dest disk is larger than a src disk.
 
 # CHECKS FILLED IN MAIN
@@ -333,14 +334,13 @@ expand_disk() { #{{{
     local swap_size=0
     local src_size=$(if [[ -d $1 ]]; then cat "$1/$F_SECTORS_SRC"; else blockdev --getsz "$1"; fi)
     local dest_size=$(blockdev --getsz "$2")
-
     local pdata=$(if [[ -f "$3" ]]; then cat "$3"; else echo "$3"; fi)
+    local boot_size=$(echo "$pdata" | grep "$BOOT_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
 
     if [[ -n $SWAP_PART ]]; then
         #Substract the swap partition size
         swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
         src_size=$((src_size - swap_size))
-        echo $swap_size >> /tmp/s
     fi
 
     if [[ $SWAP_SIZE > 0 ]]; then
@@ -348,6 +348,12 @@ expand_disk() { #{{{
         dest_size=$((dest_size - swp))
     else
         dest_size=$((dest_size - swap_size))
+    fi
+
+    if [[ $BOOT_SIZE > 0 ]]; then
+        local bs=$(to_sector ${BOOT_SIZE}K)
+        src_size=$((src_size - boot_size))
+        dest_size=$((dest_size - bs))
     fi
 
     local expand_factor=$(echo "scale=4; $dest_size / $src_size" | bc)
@@ -369,8 +375,13 @@ expand_disk() { #{{{
             if [[ $e =~ $SWAP_PART ]]; then
                 if [[ $SWAP_SIZE > 0 ]]; then
                     size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
-
                     new_size=$(to_sector ${SWAP_SIZE}K)
+                    pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
+                fi
+            elif [[ $e =~ $BOOT_PART ]]; then
+                if [[ $BOOT_SIZE > 0 ]]; then
+                    size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+                    new_size=$(to_sector ${BOOT_SIZE}K)
                     pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
                 fi
             else
@@ -1580,7 +1591,7 @@ Main() { #{{{
     fi
 
     option=$(getopt \
-        -o 'huqcxps:d:e:n:m:w:H:' \
+        -o 'huqcxps:d:e:n:m:w:b:H:' \
         --long '
             help,
             hostname:,
@@ -1600,6 +1611,7 @@ Main() { #{{{
             compress,
             quiet,
             schroot,
+            boot-size:,
             check' \
         -n "$(basename "$0" \
         )" -- "$@")
@@ -1711,14 +1723,19 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-m' | '--resize-threshold')
-            { validate_size $2 && MIN_RESIZE="$(to_mbyte $2)"; } || exit_ 2 "Invalid image size specified.
+            { validate_size $2 && MIN_RESIZE="$(to_mbyte $2)"; } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
             shift 2; continue
             ;;
         '-w' | '--swap-size')
-            { validate_size $2 && SWAP_SIZE=$(to_kbyte $2); } || exit_ 2 "Invalid image size specified.
+            { validate_size $2 && SWAP_SIZE=$(to_kbyte $2); } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
             (($SWAP_SIZE <= 0)) && NO_SWAP=true
+            shift 2; continue
+            ;;
+        '-b' | '--boot-size')
+            { validate_size $2 && BOOT_SIZE=$(to_kbyte $2); } || exit_ 2 "Invalid size specified.
+                Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
             shift 2; continue
             ;;
         '--lvm-expand')
@@ -1863,6 +1880,12 @@ Main() { #{{{
         cat "$SRC/$F_PART_LIST" | grep swap | awk '{print $1}' | cut -d '"' -f 2
     else
         lsblk -lpo name,fstype "$SRC" | grep swap | awk '{print $1}'
+    fi)
+
+    BOOT_PART=$(if [[ -d $SRC ]]; then
+        cat "$SRC/$F_PART_TABLE" | grep bootable | awk '{print $1}'
+    else
+       sfdisk --dump "$SRC" | grep bootable | awk '{print $1}'
     fi)
 
     #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
