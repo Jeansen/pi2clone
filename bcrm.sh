@@ -1886,7 +1886,7 @@ Main() { #{{{
     BOOT_PART=$(if [[ -d $SRC ]]; then
         cat "$SRC/$F_PART_TABLE" | grep 'bootable\|^/' | head -n 1 | awk '{print $1}'
     else
-       sfdisk --dump "$SRC" | grep 'bootable\|^/' | head -n 1 | awk '{print $1}'
+        sfdisk --dump "$SRC" | grep 'bootable\|^/' | head -n 1 | awk '{print $1}'
     fi)
 
     #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
