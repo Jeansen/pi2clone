@@ -1844,6 +1844,8 @@ Main() { #{{{
         fi
     done
 
+
+
     #Check that all expected files exists when restoring
     if [[ -d $SRC ]]; then
         [[ -s $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
@@ -1856,6 +1858,10 @@ Main() { #{{{
             -s $SRC/$F_LVS_LIST &&
             -s $SRC/$F_PVS_LIST ]] || exit_ 2 "Cannot restore dump, one or more meta files for LVM are missing or empty."
         fi
+
+        for f in $(cat "$SRC" | grep -v -i swap |  grep -o 'MOUNTPOINT=".\+"' | cut -d '=' -f 2 | tr -d '"' | tr -s "/" "_"); do 
+            grep "$f\$" <(ls "$SRC") || exit_ 2 "$SRC folder missing files."
+        done
     fi
 
     VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | sort -u)
