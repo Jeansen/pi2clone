@@ -203,6 +203,8 @@ usage() { #{{{
 
     printf "\nUsage: $(basename $0) -s <source> -d <destination> [options]\n\n"
 
+    printf "\nOPTIONS"
+    printf "\n-------\n\n"
     printf "  %-3s %-30s %s\n"   "-s," "--source"                "The source device or folder to clone or restore from"
     printf "  %-3s %-30s %s\n"   "-d," "--destination"           "The destination device or folder to clone or backup to"
     printf "  %-3s %-30s %s\n"   "   " "--source-image"          "Use the given image as source in the form of <path>:<type>"
@@ -229,7 +231,21 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
     printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
 
-    printf "\nSize values must be postfixed with K,M,G or T to specify units of kilobytes, megabytes, gigabytes or   terabytes.\n"
+
+    printf "\n\nADVANCED OPTIONS"
+    printf "\n----------------\n\n"
+    printf "  %-3s %-30s %s\n"   "-b," "--boot-size"             "Boot partition size. For instance: 200M or 4G."
+    printf "  %-3s %-30s %s\n"   "   " ""                        "Be careful, the  script only checks for the bootable flag,"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "Only use with a dedicated /boot partition"
+
+    printf "\n\nADDITIONAL NOTES"
+    printf "\n----------------\n"
+    printf "\nSize values must be postfixed with a size indcator, e.g: 200M or 4G. The following indicators are valid:\n\n"
+    printf "  %-3s %s\n"       "K"    "[kilobytes]"
+    printf "  %-3s %s\n"       "M"    "[megabytes]"
+    printf "  %-3s %s\n"       "G"    "[gigabytes]"
+    printf "  %-3s %s\n"       "T"    "[terabytes]"
+
     printf "\nWhen using virtual images you always have to provide the image type. Currently the following image types are supported:\n\n"
     printf "  %-7s %s\n"       "raw"    "Plain binary"
     printf "  %-7s %s\n"       "vdi"    "Virtual Box"
