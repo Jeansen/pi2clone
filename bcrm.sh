@@ -271,7 +271,7 @@ message() { #{{{
     clor_cancel=$(tput bold; tput setaf 3)
     clr_yes=$(tput setaf 2)
     clor_no=$(tput setaf 1)
-    clor_info=$(tput setaf 4)
+    clor_info=$(tput setaf 6)
     clr_rmso=$(tput sgr0)
 
     exec 1>&3 #restore stdout
