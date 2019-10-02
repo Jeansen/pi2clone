@@ -33,6 +33,7 @@ declare F_CHESUM='check.md5'
 declare F_LOG='/tmp/bcrm.log'
 
 declare SCHROOT_HOME=/tmp/dbs
+declare BACKUP_FOLDER=/tmp/bcrm/backup
 declare SCRIPTNAME=$(basename "$0")
 declare SCRIPTPATH=$(dirname "$0")
 declare PIDFILE="/var/run/$SCRIPTNAME"
@@ -45,8 +46,10 @@ declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 
 # GLOBALS
 #----------------------------------------------------------------------------------------------------------------------
-declare -A MNTJRNL MOUNTS
+declare -A CHG_SYS_FILES    #Container for system files that needed to be changed during execution
+                            #Key = original file path, Value = MD5sum
 
+declare -A MNTJRNL MOUNTS
 declare -A FILESYSTEMS NAMES PARTUUIDS UUIDS TYPES PUUIDS2UUIDS DESTS
 declare -A SRC2DEST PSRC2PDEST NSRC2NDEST
 
@@ -1067,6 +1070,17 @@ Cleanup() { #{{{
         tput cnorm
     fi
 
+    #Check if system files have been changed for execution and restore
+    local failed=()
+    for f in "${!CHG_SYS_FILES[@]}"; do
+        if [[ ${CHG_SYS_FILES["$f"]} == $(md5sum "${BACKUP_FOLDER}/${f}" | awk '{print $1}') ]]; then
+            cp "${BACKUP_FOLDER}/${f}" "$f"
+        else
+            failed+=("$f")
+        fi
+        [[ ${#failed[@]} -gt 0 ]] && message -n -t "Backups of original file(s) ${f[*]} changed. Will not restore. Check ${BACKUP_FOLDER}."
+    done
+
     exec 200>&-
     exit $EXIT #Make sure we really exit the script!
 } #}}}
@@ -1599,6 +1613,16 @@ Main() { #{{{
         umount_ "$SCHROOT_HOME/$DEST"
     } #}}}
 
+    _prepare_locale() { #{{{
+        mkdir -p $BACKUP_FOLDER
+        local cf="/etc/locale.gen"
+        CHG_SYS_FILES["$cf"]=$(md5sum "$cf" | awk '{print $1}')
+
+        mkdir -p "${BACKUP_FOLDER}/${cf%/*}" && cp "$cf" "${BACKUP_FOLDER}/${cf}"
+        echo "en_US.UTF-8 UTF-8" > "$cf"
+        locale-gen || return 1
+    } #}}}
+
     trap Cleanup INT TERM EXIT
 
     if [[ -t 1 ]]; then
@@ -1875,7 +1899,7 @@ Main() { #{{{
             -s $SRC/$F_PVS_LIST ]] || exit_ 2 "Cannot restore dump, one or more meta files for LVM are missing or empty."
         fi
 
-        for f in $(cat "$SRC" | grep -v -i swap |  grep -o 'MOUNTPOINT=".\+"' | cut -d '=' -f 2 | tr -d '"' | tr -s "/" "_"); do 
+        for f in $(cat "$SRC" | grep -v -i swap |  grep -o 'MOUNTPOINT=".\+"' | cut -d '=' -f 2 | tr -d '"' | tr -s "/" "_"); do
             grep "$f\$" <(ls "$SRC") || exit_ 2 "$SRC folder missing files."
         done
     fi
@@ -1921,6 +1945,7 @@ Main() { #{{{
         Cleanup
     fi
 
+    _prepare_locale || exit_ 1 "Could not prepare locale!"
 
     #main
     echo_ "Backup started at $(date)"
