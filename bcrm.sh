@@ -362,14 +362,14 @@ expand_disk() { #{{{
         src_size=$((src_size - swap_size))
     fi
 
-    if [[ $SWAP_SIZE > 0 ]]; then
+    if [[ $SWAP_SIZE -gt 0 ]]; then
         local swp=$(to_sector ${SWAP_SIZE}K)
         dest_size=$((dest_size - swp))
     else
         dest_size=$((dest_size - swap_size))
     fi
 
-    if [[ $BOOT_SIZE > 0 ]]; then
+    if [[ $BOOT_SIZE -gt 0 ]]; then
         local bs=$(to_sector ${BOOT_SIZE}K)
         src_size=$((src_size - boot_size))
         dest_size=$((dest_size - bs))
@@ -391,18 +391,14 @@ expand_disk() { #{{{
         fi
 
         if [[ -n "$size" ]]; then
-            if [[ -n $SWAP_PART && $e =~ $SWAP_PART ]]; then
-                if [[ $SWAP_SIZE > 0 ]]; then
-                    size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
-                    new_size=$(to_sector ${SWAP_SIZE}K)
-                    pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
-                fi
-            elif [[ -n $BOOT_PART && $e =~ $BOOT_PART ]]; then
-                if [[ $BOOT_SIZE > 0 ]]; then
-                    size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
-                    new_size=$(to_sector ${BOOT_SIZE}K)
-                    pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
-                fi
+            if [[ -n $SWAP_PART && $e =~ $SWAP_PART && $SWAP_SIZE -gt 0 ]]; then
+                new_size=$(to_sector ${SWAP_SIZE}K)
+                size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+                pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
+            elif [[ -n $BOOT_PART && $e =~ $BOOT_PART && $BOOT_SIZE -gt 0 ]]; then
+                new_size=$(to_sector ${BOOT_SIZE}K)
+                size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+                pdata=$(sed "s/$size/${new_size}/" < <(echo "$pdata"))
             else
                 [[ $(sector_to_mbyte $size) -le "$MIN_RESIZE" ]] && continue #MIN_RESIZE is in MB
                 new_size=$(echo "scale=4; $size * $expand_factor" | bc)
@@ -437,7 +433,7 @@ mbr2gpt() { #{{{
     local overlap=$(echo q | gdisk "$dest" | grep -P '\d*\s*blocks!' | awk '{print $1}')
     local pdata=$(sfdisk -d "$dest")
 
-    if [[ $overlap > 0 ]]; then
+    if [[ $overlap -gt 0 ]]; then
         local sectors=$(echo "$pdata" | tail -n 1 | grep -o -P 'size=\s*(\d*)' | awk '{print $2}')
         flock "$dest" sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors - overlap))/")
     fi
@@ -653,7 +649,7 @@ set_src_uuids() { #{{{
         snames+=($NAME)
     done < <(echo "$plist" | sort -ru | grep -v 'disk')
 
-    [[ $SWAP_SIZE > 0 ]] && sectors=$((sectors + SWAP_SIZE))
+    [[ $SWAP_SIZE -gt 0 ]] && sectors=$((sectors + SWAP_SIZE))
 } #}}}
 
 # $1: <Ref. UUIDS>
@@ -1082,7 +1078,7 @@ Cleanup() { #{{{
     done
 
     exec 200>&-
-    exit $EXIT #Make sure we really exit the script!
+    exit "$EXIT" #Make sure we really exit the script!
 } #}}}
 
 To_file() { #{{{
@@ -1113,7 +1109,7 @@ To_file() { #{{{
 
     message -c -t "Creating backup of disk layout"
     {
-        logmsg ${lm[0]} && _save_disk_layout
+        logmsg "${lm[0]}" && _save_disk_layout
         init_srcs "UUIDS" "SRCS" "LSRCS" "PARTUUIDS" "PUUIDS2UUIDS" "TYPES" "NAMES" "FILESYSTEMS"
         set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS_USED"
         mounts
@@ -1202,7 +1198,7 @@ To_file() { #{{{
     done
 
     popd >/dev/null || return 1
-    echo $SECTORS_USED >"$DEST/$F_SECTORS_USED"
+    echo "$SECTORS_USED" >"$DEST/$F_SECTORS_USED"
     if [[ $IS_CHECKSUM == true ]]; then
         message -c -t "Creating checksums"
         {
@@ -1473,7 +1469,7 @@ Clone() { #{{{
                     umount_ "/dev/${VG_SRC_NAME}/$tdev"
                     [[ $dev == LSRCS ]] && lvremove -q -f "${VG_SRC_NAME}/$tdev"
 
-                    _finish ${MNTPNT}/$ddev 2>/dev/null
+                    _finish "${MNTPNT}/$ddev" 2>/dev/null
                 }
                 message -y
             done
@@ -1582,7 +1578,7 @@ Main() { #{{{
         [[ -s $SCRIPTPATH/$F_SCHROOT ]] || exit_ 2 "Cannot run schroot because the archive containing it - $F_SCHROOT - is missing."
 
         echo_ "Creating chroot environment. This might take a while ..."
-        { mkdir -p $SCHROOT_HOME && tar xf ${SCRIPTPATH}/$F_SCHROOT -C $_; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
+        { mkdir -p "$SCHROOT_HOME" && tar xf "${SCRIPTPATH}/$F_SCHROOT" -C "$_"; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
 
         for f in sys dev dev/pts proc run; do
             mount_ "/$f" -p "$SCHROOT_HOME/$f" -b
@@ -1604,9 +1600,9 @@ Main() { #{{{
             preserve-environment=true
         "  ))" |  sed -e '/./,$!d; s/^\s*//' > /etc/schroot/chroot.d/bcrm
 
-        cp -r $(dirname $(readlink -f $0)) $SCHROOT_HOME
+        cp -r $(dirname $(readlink -f $0)) "$SCHROOT_HOME"
         echo_ "Now executing chroot in $SCHROOT_HOME"
-        rm $PIDFILE && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/}
+        rm "$PIDFILE" && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/}
         for f in sys dev dev/pts proc run; do
             umount_ "/$f"
         done
@@ -1631,7 +1627,7 @@ Main() { #{{{
     fi
 
     option=$(getopt \
-        -o 'huqcxps:d:e:n:m:w:b:H:' \
+        -o 'huqczps:d:e:n:m:w:b:H:' \
         --long '
             help,
             hostname:,
@@ -1665,8 +1661,8 @@ Main() { #{{{
     #Force root
     [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
 
-    echo >$F_LOG
-    hash pv && INTERACTIVE=true || message -i -t "No progress will be shown. Consider installing package: pv"
+    echo > "$F_LOG"
+    { hash pv && INTERACTIVE=true; } || message -i -t "No progress will be shown. Consider installing package: pv"
 
     SYS_HAS_EFI=$([[ -d /sys/firmware/efi ]] && echo true || echo false)
 
@@ -1711,7 +1707,7 @@ Main() { #{{{
             [[ ! -e "$DEST_IMG" && -z $IMG_SIZE ]] && exit_ 1 "Specified image file does not exists."
 
             if [[ -n $DEST_IMG && -n $IMG_SIZE ]]; then
-                validate_size $IMG_SIZE || exit_ 2 "Invalid size attribute in $1 $2"
+                validate_size "$IMG_SIZE" || exit_ 2 "Invalid size attribute in $1 $2"
             fi
 
             PKGS+=(qemu-img)
@@ -1763,23 +1759,23 @@ Main() { #{{{
             shift 1; continue
             ;;
         '-m' | '--resize-threshold')
-            { validate_size $2 && MIN_RESIZE="$(to_mbyte $2)"; } || exit_ 2 "Invalid size specified.
+            { validate_size "$2" && MIN_RESIZE=$(to_mbyte "$2"); } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
             shift 2; continue
             ;;
         '-w' | '--swap-size')
-            { validate_size $2 && SWAP_SIZE=$(to_kbyte $2); } || exit_ 2 "Invalid size specified.
+            { validate_size "$2" && SWAP_SIZE=$(to_kbyte "$2"); } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
-            (($SWAP_SIZE <= 0)) && NO_SWAP=true
+            (("$SWAP_SIZE" <= 0)) && NO_SWAP=true
             shift 2; continue
             ;;
         '-b' | '--boot-size')
-            { validate_size $2 && BOOT_SIZE=$(to_kbyte $2); } || exit_ 2 "Invalid size specified.
+            { validate_size "$2" && BOOT_SIZE=$(to_kbyte "$2"); } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
             shift 2; continue
             ;;
         '--lvm-expand')
-            read -r LVM_EXPAND LVM_EXPAND_BY <<<${2/:/ }
+            read -r LVM_EXPAND LVM_EXPAND_BY <<<"${2/:/ }"
             [[ "$LVM_EXPAND_BY" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $1 $2"
             shift 2; continue
             ;;
@@ -1804,7 +1800,7 @@ Main() { #{{{
     local packages=()
     #Inform about ALL missing but necessary tools.
     for c in ${PKGS[@]}; do
-        hash $c 2>/dev/null || {
+        hash "$c" 2>/dev/null || {
             case "$c" in
             lvm)
                 packages+=(lvm2)
@@ -1813,7 +1809,7 @@ Main() { #{{{
                 packages+=(qemu-utils)
                 ;;
             *)
-                packages+=($c)
+                packages+=("$c")
                 ;;
             esac
             abort='exit_ 1'
@@ -1822,11 +1818,11 @@ Main() { #{{{
 
     exec >$F_LOG 2>&1
 
-    [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: $(echo ${packages[@]})"
+    [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: ${packages[*]}"
     eval "$abort"
 
     if [[ -n $SRC_IMG ]]; then
-        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f $IMG_TYPE -c $SRC_NBD "$SRC_IMG"
+        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG"
         SRC=$SRC_NBD
     fi
 
@@ -1834,7 +1830,7 @@ Main() { #{{{
 
     if [[ -n $DEST_IMG ]]; then
         create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."
-        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f $IMG_TYPE -c $DEST_NBD "$DEST_IMG"
+        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG"
         DEST=$DEST_NBD
     fi
 
@@ -1863,7 +1859,7 @@ Main() { #{{{
         [[ -b $d ]] && _validate_block_device $d
     done
 
-    [[ $SRC == $DEST ]] &&
+    [[ $SRC == "$DEST" ]] &&
         exit_ 1 "Source and destination cannot be the same!"
 
     [[ $UEFI == true && $SYS_HAS_EFI == false ]] &&
@@ -1912,7 +1908,7 @@ Main() { #{{{
         done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name; fi)
     fi
 
-    [[ -n $VG_SRC_NAME ]] && vg_disks $VG_SRC_NAME "VG_DISKS" && IS_LVM=true
+    [[ -n $VG_SRC_NAME ]] && vg_disks "$VG_SRC_NAME" "VG_DISKS" && IS_LVM=true
 
     if [[ $IS_LVM == true ]]; then
         [[ -z $VG_SRC_NAME_CLONE ]] && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
