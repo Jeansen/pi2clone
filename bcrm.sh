@@ -1095,9 +1095,9 @@ To_file() { #{{{
         [[ -z $snp ]] && snp="NOSNAPSHOT"
 
         {
-            pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | sort -u | sed -e 's/active$//;s/^\s*//' >$F_PVS_LIST
-            vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | sort -u | sed -e 's/active$//;s/^\s*//' >$F_VGS_LIST
-            lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role,lv_dm_path | grep -v 'snap' | grep 'active public.*' | sed -e 's/^\s*//; s/\s*$//' >$F_LVS_LIST
+            pvs --noheadings -o pv_name,vg_name,lv_active | grep 'active$' | sort -u | sed -e 's/active$//;s/^\s*//' | grep "$VG_SRC_NAME\b" >$F_PVS_LIST
+            vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active | grep 'active$' | sort -u | sed -e 's/active$//;s/^\s*//' | grep "$VG_SRC_NAME\b" >$F_VGS_LIST
+            lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role,lv_dm_path | grep -v 'snap' | grep 'active public.*' | sed -e 's/^\s*//; s/\s*$//' | grep "$VG_SRC_NAME\b"  >$F_LVS_LIST
             blockdev --getsz "$SRC" >"$F_SECTORS_SRC"
             sfdisk -d "$SRC" >"$F_PART_TABLE"
         }
@@ -1236,8 +1236,8 @@ Clone() { #{{{
         local swap_size=0
         declare -A src_lfs
 
-        ldata=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST";
-                else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
+        local ldata=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST";
+                else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path | grep "$VG_SRC_NAME\b";
                 fi)
 
         if [[ -n $SWAP_PART ]]; then
@@ -1259,7 +1259,7 @@ Clone() { #{{{
             read -r vg_name vg_size vg_free <<<"$e"
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*} - ${vg_free%%.*} - ${swap_size%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_free%%.*}
-        done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_VGS_LIST"; else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free; fi)
+        done < <(vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free)
 
         denom_size=$((s1 < s2 ? s2 : s1))
 
@@ -1284,7 +1284,7 @@ Clone() { #{{{
                 fi
             fi
         done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST";
-                else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path;
+                else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path | grep "$VG_SRC_NAME\b";
                 fi)
 
         [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
@@ -1881,7 +1881,6 @@ Main() { #{{{
     done
 
 
-
     #Check that all expected files exists when restoring
     if [[ -d $SRC ]]; then
         [[ -s $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
@@ -1900,7 +1899,7 @@ Main() { #{{{
         done
     fi
 
-    VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | sort -u)
+    VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | sort -u | uniq)
 
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
