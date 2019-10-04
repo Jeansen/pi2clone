@@ -1776,7 +1776,7 @@ Main() { #{{{
             ;;
         '--lvm-expand')
             read -r LVM_EXPAND LVM_EXPAND_BY <<<"${2/:/ }"
-            [[ "$LVM_EXPAND_BY" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $1 $2"
+            [[ "${LVM_EXPAND_BY:-100}" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $1 $2"
             shift 2; continue
             ;;
         '--remove-pkgs')
