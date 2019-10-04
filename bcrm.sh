@@ -1676,8 +1676,7 @@ Main() { #{{{
     pid=$$
     echo $pid 1>&200
 
-    PKGS=(awk lvm rsync tar flock bc blockdev fdisk sfdisk)
-
+    PKGS=()
     while true; do
         case "$1" in
         '-h' | '--help')
@@ -1797,9 +1796,14 @@ Main() { #{{{
         esac
     done
 
+    grep -q 'LVM2_member' < <(lsblk -o FSTYPE "$SRC") && PKGS+=(lvm)
+    PKGS+=(awk rsync tar flock bc blockdev fdisk sfdisk locale-gen)
+
     local packages=()
     #Inform about ALL missing but necessary tools.
     for c in ${PKGS[@]}; do
+        echo "$c" >> /tmp/f
+
         hash "$c" 2>/dev/null || {
             case "$c" in
             lvm)
