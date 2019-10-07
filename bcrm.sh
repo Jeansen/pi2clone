@@ -1796,7 +1796,8 @@ Main() { #{{{
         esac
     done
 
-    grep -q 'LVM2_member' < <(lsblk -o FSTYPE "$SRC") && PKGS+=(lvm)
+    grep -q 'LVM2_member' < <([[ -d $SRC ]] && cat "$SRC/$F_PART_LIST" || lsblk -o FSTYPE "$SRC") && PKGS+=(lvm)
+
     PKGS+=(awk rsync tar flock bc blockdev fdisk sfdisk locale-gen)
 
     local packages=()
@@ -1903,7 +1904,9 @@ Main() { #{{{
         done
     fi
 
-    VG_SRC_NAME=$(echo $(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | awk '{print $2}' | sort -u | uniq)
+    VG_SRC_NAME=($(awk '{print $2}' < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sort -u))
+
+    [[ ${#VG_SRC_NAME[@]} -gt 1 ]] && exit_ 1 "Unsupported situation: PVs of $SRC assigned to multiplge VGs."
 
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
