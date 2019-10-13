@@ -9,11 +9,13 @@ locales	locales/locales_to_be_generated	select	en_US.UTF-8 UTF-8"
 
 Main() {
     local target="$1"
+    local code_name="$2"
+    local proxy="$3"
 
     hash debootstrap || exit 1
-    [[ -n $2 ]] && export http_proxy=$2
+    [[ -n $proxy ]] && export http_proxy=$proxy
 
-    debootstrap --include=git,lvm2,bc,pv,parallel,qemu-utils,rsync buster "$target"
+    debootstrap --include=git,lvm2,bc,pv,parallel,qemu-utils,rsync $code_name "$target"
     chroot "$target" bash -c debconf-set-selections < <(echo "$debconf_locales")
     #https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=697765 workaround
     for f in sys dev dev/pts proc run; do
@@ -26,7 +28,7 @@ Main() {
       umount -l $target/$f
     done
 
-    XZ_OPT=-4T0 tar --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*  -Jcf bcrm.tar.xz -C "$target" .
+    XZ_OPT=-4T0 tar --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*  -Jcf bcrm."${code_name}".tar.xz -C "$target" .
 }
 
 bash -n $(readlink -f $0) && Main "$@" #self check and run
