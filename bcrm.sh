@@ -21,7 +21,7 @@ export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Ma
 
 # CONSTANTS
 #----------------------------------------------------------------------------------------------------------------------
-declare F_SCHROOT='bcrm.tar.xz'
+declare F_SCHROOT='bcrm.stretch.tar.xz'
 declare F_PART_LIST='part_list'
 declare F_VGS_LIST='vgs_list'
 declare F_LVS_LIST='lvs_list'
@@ -214,7 +214,8 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "   " ""                        "For example: '/path/to/file.vdi:vdi'. See below for supported types."
     printf "  %-3s %-30s %s\n"   "   " "--destination-image"     "Use the given image as destination in the form of <path>:<type>[:<virtual-size>]"
     printf "  %-3s %-30s %s\n"   "   " ""                        "For instance: '/path/to/file.img:raw:20G'"
-    printf "  %-3s %-30s %s\n"   "   " ""                        "If you omit the file, it must exists. Otherwise it will be created"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "If you omit the size, the image file must exists."
+    printf "  %-3s %-30s %s\n"   "   " ""                        "If you provide a size, the image file will be created or overwritten."
     printf "  %-3s %-30s %s\n"   "-c," "--check"                 "Create/Validate checksums"
     printf "  %-3s %-30s %s\n"   "-z," "--compress"              "Use compression (compression ratio is about 1:3, but very slow!)"
     printf "  %-3s %-30s %s\n"   "   " "--split"                 "Split backup into chunks of 1G files"
@@ -1320,7 +1321,7 @@ Clone() { #{{{
         fi
 
         dd oflag=direct if=/dev/zero of="$DEST" bs=512 count=100000
-        dd oflag=direct bs=512 if=/dev/zero of="$DEST" count=4096 seek=$(($(blockdev --getsz $DEST) - 4096))
+        dd oflag=direct bs=512 if=/dev/zero of="$DEST" count=4096 seek=$(($(blockdev --getsz $DEST) - 4096)) #TODO still needed?
 
         #For some reason sfdisk < 2.29 does not create PARTUUIDs when importing a partition table.
         #But when we create a partition and afterward import a prviously dumped partition table, it works!
@@ -1584,6 +1585,9 @@ Main() { #{{{
             mount_ "/$f" -p "$SCHROOT_HOME/$f" -b
         done
 
+        [[ -n $DEST_IMG ]] && mount_ "${DEST_IMG%/*}" -p "$SCHROOT_HOME/${DEST_IMG%/*}" -b
+        [[ -n $SRC_IMG ]] && mount_ "${$SRC_IMG%/*}" -p "$SCHROOT_HOME/${$SRC_IMG%/*}" -b
+
         if [[ -d "$SRC" && -b $DEST ]]; then
             { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -p "$SCHROOT_HOME/$SRC" -b; } ||
                 exit_ 1 "Failed preparing chroot for restoring from backup."
@@ -1602,11 +1606,13 @@ Main() { #{{{
 
         cp -r $(dirname $(readlink -f $0)) "$SCHROOT_HOME"
         echo_ "Now executing chroot in $SCHROOT_HOME"
-        rm "$PIDFILE" && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/}
+        rm "$PIDFILE" && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/} #Do not double quote args to avoid wrong interpretation!
         for f in sys dev dev/pts proc run; do
             umount_ "/$f"
         done
         umount_ "$SCHROOT_HOME/$DEST"
+        umount_ "$SCHROOT_HOME/${$SRC_IMG%/*}"
+        umount_ "$SCHROOT_HOME/${DEST_IMG%/*}"
     } #}}}
 
     _prepare_locale() { #{{{
@@ -1708,6 +1714,8 @@ Main() { #{{{
             if [[ -n $DEST_IMG && -n $IMG_SIZE ]]; then
                 validate_size "$IMG_SIZE" || exit_ 2 "Invalid size attribute in $1 $2"
             fi
+
+            ischroot || modprobe nbd max_part=16 || exit_ 1 "Cannot load nbd kernel module."
 
             PKGS+=(qemu-img)
             CREATE_LOOP_DEV=true
@@ -1826,8 +1834,15 @@ Main() { #{{{
     [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: ${packages[*]}"
     eval "$abort"
 
+    if [[ $SCHROOT == true ]]; then
+        [[ -b "$SRC" && -d $DEST && -n "$(ls -A "$DEST")" ]] && exit_ 1 "Destination not empty!"
+        _run_schroot
+        Cleanup
+        exit_ 0
+    fi
+
     if [[ -n $SRC_IMG ]]; then
-        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG"
+        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG" && udevadm settle; } || exit_ 1
         SRC=$SRC_NBD
     fi
 
@@ -1835,7 +1850,8 @@ Main() { #{{{
 
     if [[ -n $DEST_IMG ]]; then
         create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."
-        modprobe nbd max_part=16 && qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG"
+        chmod +rwx "$DEST_IMG"
+        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG" && udevadm settle; } || exit_ 1
         DEST=$DEST_NBD
     fi
 
@@ -1941,11 +1957,6 @@ Main() { #{{{
     [[ ! -e /run/resolvconf/resolv.conf ]] && mkdir /run/resolvconf && cp /run/NetworkManager/resolv.conf /run/resolvconf/
     [[ ! -e /run/NetworkManager/resolv.conf ]] && mkdir /run/NetworkManager && cp /run/resolvconf/resolv.conf /run/NetworkManager/
 
-    if [[ $SCHROOT == true ]]; then
-        [[ -b "$SRC" && -d $DEST && -n "$(ls -A "$DEST")" ]] && exit_ 1 "Destination not empty!"
-        _run_schroot
-        Cleanup
-    fi
 
     _prepare_locale || exit_ 1 "Could not prepare locale!"
 

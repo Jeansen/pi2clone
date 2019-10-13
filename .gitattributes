@@ -1,1 +1,2 @@
 bcrm.tar.xz filter=lfs diff=lfs merge=lfs -text
+bcrm.stretch.tar.xz filter=lfs diff=lfs merge=lfs -text
