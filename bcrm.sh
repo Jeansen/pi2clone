@@ -1859,8 +1859,9 @@ Main() { #{{{
     [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: ${packages[*]}"
     eval "$abort"
 
+    [[ -b "$SRC" && -d $DEST && -n "$(ls -A "$DEST")" ]] && exit_ 1 "Destination not empty!"
+
     if [[ $SCHROOT == true ]]; then
-        [[ -b "$SRC" && -d $DEST && -n "$(ls -A "$DEST")" ]] && exit_ 1 "Destination not empty!"
         _run_schroot
         Cleanup
         exit_ 0
