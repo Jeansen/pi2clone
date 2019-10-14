@@ -1627,6 +1627,29 @@ Main() { #{{{
         locale-gen || return 1
     } #}}}
 
+	_is_boot_root() { #{{{
+		if [[ -n $BOOT_SIZE ]]; then
+			local boot_part=$({ [[ -d $SRC ]] && cat $SRC/$F_PART_TABLE || sfdisk -d $SRC; } | grep bootable | awk '{print $1}')
+			local ldata=$([[ -d $SRC ]] && cat $SRC/$F_PART_LIST || lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT $SRC)
+			read -r name kdev fstype uuid puuid type parttype mountpoint <<<$(echo "$ldata" | grep "NAME=\"$boot_part\"")
+			eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+
+			while read -r e; do
+				read -r name kdev fstype uuid puuid type parttype mountpoint <<<$($e)
+				eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+
+				mount_ "$NAME" -p "${MNTPNT}/tmp_mnt"
+				if [[ -e ${MNTPNT}/tmp_mnt/etc/fstab ]]; then
+					for id in $NAME $UUID $PARTUUID; do 
+						grep -E "$id\s+/\s+" "${MNTPNT}/tmp_mnt/etc/fstab" && return 0
+					done
+				fi
+				umount_ "${MNTPNT}/tmp_mnt"
+			done < <(echo "$ldata" | grep 'TYPE="part"' | grep -v swap | grep -v 'FSTYPE=""')
+		fi
+		return 1
+	} #}}}
+
     trap Cleanup INT TERM EXIT
 
     if [[ -t 1 ]]; then
@@ -1921,6 +1944,8 @@ Main() { #{{{
             grep "$f\$" <(ls "$SRC") || exit_ 2 "$SRC folder missing files."
         done
     fi
+
+	_is_boot_root && exit_ ! "Boot is equal to root partition."
 
     VG_SRC_NAME=($(awk '{print $2}' < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sort -u))
 
