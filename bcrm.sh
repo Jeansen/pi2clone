@@ -1237,12 +1237,16 @@ Clone() { #{{{
         local swap_size=0
         declare -A src_lfs
 
-        local ldata=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST";
+        local lvm_data=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST";
                 else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path | grep "$VG_SRC_NAME\b";
                 fi)
 
+        local vg_data=$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_VGS_LIST";
+                else vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free;
+                fi)
+
         if [[ -n $SWAP_PART ]]; then
-            read -r swap_name swap_size <<<$(echo "$ldata" | grep $SWAP_PART | awk '{print $1, $3}')
+            read -r swap_name swap_size <<<$(echo "$lvm_data" | grep $SWAP_PART | awk '{print $1, $3}')
         fi
         ((SWAP_SIZE > 0)) && swap_size=$(to_mbyte ${SWAP_SIZE}K)
 
@@ -1260,7 +1264,7 @@ Clone() { #{{{
             read -r vg_name vg_size vg_free <<<"$e"
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*} - ${vg_free%%.*} - ${swap_size%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_free%%.*}
-        done < <(vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free)
+        done < <(echo $vg_data)
 
         denom_size=$((s1 < s2 ? s2 : s1))
 
@@ -1284,9 +1288,7 @@ Clone() { #{{{
                     lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
                 fi
             fi
-        done < <(if [[ $_RMODE == true ]]; then cat "$SRC/$F_LVS_LIST";
-                else lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path | grep "$VG_SRC_NAME\b";
-                fi)
+        done < <(echo $lvm_data)
 
         [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
@@ -1529,7 +1531,7 @@ Clone() { #{{{
     [[ $_RMODE == true ]] && SECTORS_USED=$(cat "$SRC/$F_SECTORS_USED")
     [[ -b $DEST ]] && cnt=$(to_kbyte $(blockdev --getsize64 "$DEST"))
     [[ -d $DEST ]] && cnt=$(df -k --output=avail "$DEST" | tail -n -1)
-    ((cnt - SECTORS_USED <= 0)) && exit_ 10 "Require $(to_mbyte ${SECTORS}K)M but destination is only $(to_mbyte ${cnt}K)M"
+    ((cnt - SECTORS_USED <= 0)) && exit_ 10 "Require $(to_mbyte ${SECTORS_USED}K)M but destination is only $(to_mbyte ${cnt}K)M"
 
     if [[ $_RMODE == true ]]; then
         _from_file || return 1
