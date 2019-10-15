@@ -21,6 +21,7 @@ export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Ma
 
 # CONSTANTS
 #----------------------------------------------------------------------------------------------------------------------
+declare F_SCHROOT_CONFIG='/etc/schroot/chroot.d/bcrm'
 declare F_SCHROOT='bcrm.stretch.tar.xz'
 declare F_PART_LIST='part_list'
 declare F_VGS_LIST='vgs_list'
@@ -1054,7 +1055,8 @@ sector_to_tbyte() { #{{{
 Cleanup() { #{{{
     {
         umount_
-        rm -rf "$SCHROOT_HOME" #TODO add option to overwrite
+        [[ $SCHROOT_HOME =~ ^/tmp/ ]] && rm -rf "$SCHROOT_HOME" #TODO add option to overwrite and show warning
+        rm "$F_SCHROOT_CONFIG"
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
         [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
@@ -1604,7 +1606,7 @@ Main() { #{{{
             directory=${SCHROOT_HOME}
             profile=desktop
             preserve-environment=true
-        "  ))" |  sed -e '/./,$!d; s/^\s*//' > /etc/schroot/chroot.d/bcrm
+        "  ))" |  sed -e '/./,$!d; s/^\s*//' > $F_SCHROOT_CONFIG
 
         cp -r $(dirname $(readlink -f $0)) "$SCHROOT_HOME"
         echo_ "Now executing chroot in $SCHROOT_HOME"
