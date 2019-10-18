@@ -27,6 +27,7 @@ declare F_PART_LIST='part_list'
 declare F_VGS_LIST='vgs_list'
 declare F_LVS_LIST='lvs_list'
 declare F_PVS_LIST='pvs_list'
+declare F_BOOT_PART='boot_part'
 declare F_SECTORS_SRC='sectors'
 declare F_SECTORS_USED='sectors_used'
 declare F_PART_TABLE='part_table'
@@ -79,13 +80,14 @@ declare PVALL=false
 declare SPLIT=false
 declare IS_CHECKSUM=false
 declare SCHROOT=false
+declare IS_CLEANUP=true
 
 declare MIN_RESIZE=2048 #In 1M units
 declare SWAP_SIZE=0
 declare BOOT_SIZE=0
 declare LVM_EXPAND_BY=0 #How much % of free space to use from a VG, e.g. when a dest disk is larger than a src disk.
 
-# CHECKS FILLED IN MAIN
+# CHECKS FILLED BY MAIN
 #----------------------------------------------------------------------------------------------------------------------
 declare VG_SRC_NAME=""
 
@@ -233,6 +235,8 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "-w," "--swap-size"             "Swap partition size. May be zero to remove any swap partition."
     printf "  %-3s %-30s %s\n"   "-m," "--resize-threshold"      "Do not resize partitions smaller than <size> (default 2048M)"
     printf "  %-3s %-30s %s\n"   "   " "--schroot"               "Run in a secure chroot environment with a fixed and tested tool chain"
+  	printf "  %-3s %-30s %s\n"   "   " "--no-cleanup"            "Do not remove temporary (backup) files. Does not affect mounts."
+	  printf "  %-3s %-30s %s\n"   "   " ""         			      	 "Useful when tracking down errors with --schroot."
     printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
     printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
 
@@ -1055,8 +1059,10 @@ sector_to_tbyte() { #{{{
 Cleanup() { #{{{
     {
         umount_
+		if [[ $IS_CLEANUP == true  ]]; then
         [[ $SCHROOT_HOME =~ ^/tmp/ ]] && rm -rf "$SCHROOT_HOME" #TODO add option to overwrite and show warning
         rm "$F_SCHROOT_CONFIG"
+		fi
         [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
         [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
@@ -1202,6 +1208,8 @@ To_file() { #{{{
 
     popd >/dev/null || return 1
     echo "$SECTORS_USED" >"$DEST/$F_SECTORS_USED"
+    echo "$BOOT_PART" >"$DEST/$F_BOOT_PART"
+
     if [[ $IS_CHECKSUM == true ]]; then
         message -c -t "Creating checksums"
         {
@@ -1379,6 +1387,9 @@ Clone() { #{{{
                 mount_ "$ddev" -t "$fs"
                 pushd "${MNTPNT}/$ddev" >/dev/null || return 1
 
+                [[ -d ${MNTPNT}/$sdev/EFI ]] && HAS_EFI=true
+                [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
+
                 local ds=$(df --block-size=1M --output=avail "${MNTPNT}/$ddev" | tail -n -1)
                 ((ds - ss <= 0)) && exit_ 10 "Require ${ss}M but destination is only ${ds}M"
 
@@ -1387,7 +1398,7 @@ Clone() { #{{{
 
                 if [[ $INTERACTIVE == true ]]; then
                     local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
-                    cmd="cat \"${SRC}\"/${file}* | pv --interval 0.5 --numeric -s $size | $cmd"
+                    cmd="pv --interval 0.5 --numeric -s $size \"${SRC}\"/${file}* | $cmd"
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     while read -r e; do
                         [[ $e -ge 100 ]] && e=100
@@ -1397,7 +1408,7 @@ Clone() { #{{{
                     message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
                 else
                     message -c -t "Restoring $file"
-                    cmd="cat ${SRC}/${file}* | $cmd"
+                    cmd="$cmd < ${SRC}/${file}*"
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     eval "$cmd"
                 fi
@@ -1581,6 +1592,7 @@ Main() { #{{{
         # debootstrap --unpack-tarball=$(dirname $(readlink -f $0))/bcrm.tar --include=git,locales,lvm2,bc,pv,parallel,qemu-utils,rsync stretch /tmp/dbs
 
         [[ -s $SCRIPTPATH/$F_SCHROOT ]] || exit_ 2 "Cannot run schroot because the archive containing it - $F_SCHROOT - is missing."
+        [[ -n $(ls -A "$SCHROOT_HOME") ]] && exit_ 2 "Schroot home not empty!"
 
         echo_ "Creating chroot environment. This might take a while ..."
         { mkdir -p "$SCHROOT_HOME" && tar xf "${SCRIPTPATH}/$F_SCHROOT" -C "$_"; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
@@ -1611,6 +1623,7 @@ Main() { #{{{
         cp -r $(dirname $(readlink -f $0)) "$SCHROOT_HOME"
         echo_ "Now executing chroot in $SCHROOT_HOME"
         rm "$PIDFILE" && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/} #Do not double quote args to avoid wrong interpretation!
+
         for f in sys dev dev/pts proc run; do
             umount_ "/$f"
         done
@@ -1629,27 +1642,38 @@ Main() { #{{{
         locale-gen || return 1
     } #}}}
 
-	_is_boot_root() { #{{{
-		if [[ -n $BOOT_SIZE ]]; then
-			local boot_part=$({ [[ -d $SRC ]] && cat $SRC/$F_PART_TABLE || sfdisk -d $SRC; } | grep bootable | awk '{print $1}')
-			local ldata=$([[ -d $SRC ]] && cat $SRC/$F_PART_LIST || lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT $SRC)
-			read -r name kdev fstype uuid puuid type parttype mountpoint <<<$(echo "$ldata" | grep "NAME=\"$boot_part\"")
-			eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+    _find_boot() { #{{{
+        local ldata=$(lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT $SRC)
+        local pdata=$(sfdisk -d $SRC)
+        local boot_parts=
 
-			while read -r e; do
-				read -r name kdev fstype uuid puuid type parttype mountpoint <<<$($e)
-				eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        _set() { #{{{
+            local f=
 
-				mount_ "$NAME" -p "${MNTPNT}/tmp_mnt"
-				if [[ -e ${MNTPNT}/tmp_mnt/etc/fstab ]]; then
-					for id in $NAME $UUID $PARTUUID; do 
-						grep -E "$id\s+/\s+" "${MNTPNT}/tmp_mnt/etc/fstab" && return 0
+            for f in $1; do
+                mount_ "$f" -p "${MNTPNT}/$f"
+                if [[ -e ${MNTPNT}/$f/etc/fstab ]]; then
+                    local part=$(grep -E "\s+/boot\s+" "${MNTPNT}/$f/etc/fstab" | awk '{print $1}')
+                    if [[ -n $part ]]; then
+                        read -r name kdev fstype uuid puuid type parttype mountpoint <<<$(echo "$ldata" | grep "=\"${part#*=}\"")
+						eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+                        $({ [[ -d $SRC ]] && cat $SRC/$F_PART_TABLE || sfdisk -d $SRC; } | grep $KNAME | awk '{print $1}')
+                        boot_parts=$KNAME
+                    fi
+                fi
+                umount_ "${MNTPNT}/$f"
 					done
+        } #}}}
+
+        if [[ $IS_LVM == true ]]; then
+            local parts=$(lsblk -lpo name,fstype | grep "${VG_SRC_NAME//-/--}"  | grep -v swap | awk '{print $1}')
+            _set "$parts"
 				fi
-				umount_ "${MNTPNT}/tmp_mnt"
-			done < <(echo "$ldata" | grep 'TYPE="part"' | grep -v swap | grep -v 'FSTYPE=""')
+        if [[ -z $boot_parts ]]; then
+            local parts=$(echo "$pdata" | grep -E 'type=(0FC63DAF-8483-4772-8E79-3D69D8477DE4|83|933AC7E1-2EB4-4F13-B844-0E14E2AEF915|c)'| awk '{print $1}')
+            _set "$parts"
 		fi
-		return 1
+        echo "$boot_parts"
 	} #}}}
 
     trap Cleanup INT TERM EXIT
@@ -1681,6 +1705,7 @@ Main() { #{{{
             quiet,
             schroot,
             boot-size:,
+            no-cleanup,
             check' \
         -n "$(basename "$0" \
         )" -- "$@")
@@ -1822,6 +1847,10 @@ Main() { #{{{
             SCHROOT=true;
             shift 1; continue
             ;;
+        '--no-cleanup')
+            IS_CLEANUP=false
+            shift 1; continue
+            ;;
         '--')
 			shift; break
             ;;
@@ -1875,6 +1904,7 @@ Main() { #{{{
     fi
 
     [[ -n $DEST && -n $DEST_IMG && -n $IMG_TYPE && -n $IMG_SIZE ]] && exit_ 1 "Invalid combination."
+    [[ -d $DEST && -n $BOOT_SIZE ]] && exit_ 1 "Invalid combination."
 
     if [[ -n $DEST_IMG ]]; then
         create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."
@@ -1936,6 +1966,7 @@ Main() { #{{{
             -s $SRC/$F_PART_LIST &&
             -s $SRC/$F_SECTORS_SRC &&
             -s $SRC/$F_SECTORS_USED &&
+            -s $SRC/$F_BOOT_PART &&
             -s $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, one or more meta files are missing or empty."
         if [[ $IS_LVM == true ]]; then
             [[ -s $SRC/$F_VGS_LIST &&
@@ -1976,12 +2007,9 @@ Main() { #{{{
         lsblk -lpo name,fstype "$SRC" | grep swap | awk '{print $1}'
     fi)
 
-    #Botable is the first partition or the one marked as bootable
-    BOOT_PART=$(if [[ -d $SRC ]]; then
-        cat "$SRC/$F_PART_TABLE" | grep 'bootable\|^/' | head -n 1 | awk '{print $1}'
-    else
-        sfdisk --dump "$SRC" | grep 'bootable\|^/' | head -n 1 | awk '{print $1}'
-    fi)
+    [[ -d $SRC ]] && BOOT_PART=$(cat $SRC/$F_BOOT_PART) || BOOT_PART=$(_find_boot)
+
+    [[ -n $BOOT_SIZE && -z $BOOT_PART ]] && exit_ 1 "Boot is equal to root partition."
 
     #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
     [[ ! -e /run/resolvconf/resolv.conf ]] && mkdir /run/resolvconf && cp /run/NetworkManager/resolv.conf /run/resolvconf/
