@@ -1,4 +1,5 @@
 #! /usr/bin/env bash
+# shellcheck disable=SC2155,SC2153,SC2015,SC2094,SC2016,SC2034
 
 # Copyright (C) 2017-2019 Marcel Lautenbach
 #
@@ -586,9 +587,11 @@ set_dest_uuids() { #{{{
     declare -n dnames="$3"
     declare -n dests="$4"
 
-    [[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
-    blockdev --rereadpt $DEST && udevadm settle
-    [[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
+	if [[ -b $DEST ]]; then
+		[[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
+		blockdev --rereadpt $DEST && udevadm settle
+		[[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
+	fi
 
     udevadm settle
 
@@ -1063,7 +1066,7 @@ Cleanup() { #{{{
         [[ $SCHROOT_HOME =~ ^/tmp/ ]] && rm -rf "$SCHROOT_HOME" #TODO add option to overwrite and show warning
         rm "$F_SCHROOT_CONFIG"
 		fi
-        [[ $VG_SRC_NAME_CLONE ]] && vgchange -an "$VG_SRC_NAME_CLONE"
+        [[ $VG_SRC_NAME_CLONE && -b $DEST ]] && vgchange -an "$VG_SRC_NAME_CLONE"
         [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $SRC_NBD
@@ -1661,12 +1664,12 @@ Main() { #{{{
                         boot_parts=$KNAME
                     fi
                 fi
-                umount_ "${MNTPNT}/$f"
-					done
+                umount_ "$f"
+            done
         } #}}}
 
         if [[ $IS_LVM == true ]]; then
-            local parts=$(lsblk -lpo name,fstype | grep "${VG_SRC_NAME//-/--}"  | grep -v swap | awk '{print $1}')
+            local parts=$(lsblk -lpo name,fstype | grep "${VG_SRC_NAME//-/--}-"  | grep -v swap | awk '{print $1}')
             _set "$parts"
 				fi
         if [[ -z $boot_parts ]]; then
@@ -1904,7 +1907,7 @@ Main() { #{{{
     fi
 
     [[ -n $DEST && -n $DEST_IMG && -n $IMG_TYPE && -n $IMG_SIZE ]] && exit_ 1 "Invalid combination."
-    [[ -d $DEST && -n $BOOT_SIZE ]] && exit_ 1 "Invalid combination."
+    [[ -d $DEST && $BOOT_SIZE -gt 0 ]] && exit_ 1 "Invalid combination."
 
     if [[ -n $DEST_IMG ]]; then
         create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."
@@ -2009,7 +2012,7 @@ Main() { #{{{
 
     [[ -d $SRC ]] && BOOT_PART=$(cat $SRC/$F_BOOT_PART) || BOOT_PART=$(_find_boot)
 
-    [[ -n $BOOT_SIZE && -z $BOOT_PART ]] && exit_ 1 "Boot is equal to root partition."
+    [[ $BOOT_SIZE -gt 0 && -z $BOOT_PART ]] && exit_ 1 "Boot is equal to root partition."
 
     #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
     [[ ! -e /run/resolvconf/resolv.conf ]] && mkdir /run/resolvconf && cp /run/NetworkManager/resolv.conf /run/resolvconf/
