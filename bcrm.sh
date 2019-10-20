@@ -448,7 +448,7 @@ mbr2gpt() { #{{{
     blockdev --rereadpt $dest && udevadm settle
     flock $dest sgdisk -z "$dest"
     flock $dest sgdisk -g "$dest"
-    blockdev --rereadpt $dest && udevadm settle
+    blockdev --rereadpt "$dest" && udevadm settle
 
     local pdata=$(sfdisk -d "$dest")
     local fstsctr=$(echo "$pdata" | grep -o -P 'size=\s*(\d*)' | awk '{print $2}' | head -n 1)
@@ -456,7 +456,7 @@ mbr2gpt() { #{{{
     pdata=$(echo "$pdata" | grep 'size=' | sed -e 's/^[^,]*,//; s/uuid=[a-Z0-9-]*,\{,1\}//')
     pdata=$(echo -e "size=1024000, type=${efisysid}\n${pdata}")
     flock "$dest" sfdisk "$dest" < <(echo "$pdata")
-    blockdev --rereadpt $dest && udevadm settle
+    blockdev --rereadpt "$dest" && udevadm settle
 } #}}}
 
 # $1: <mount point>
@@ -716,10 +716,9 @@ disk_setup() { #{{{
 
     local plist
     if [[ -n $file ]]; then
-        plist=$(cat "$file" |
-            grep -vE 'PARTTYPE="0x5"' |
-            grep -vE 'TYPE="disk"' |
-            sort -ru)
+        plist=$(grep -vE 'PARTTYPE="0x5"' "$file" |
+                grep -vE 'TYPE="disk"' |
+                sort -ru)
     else
         plist=$(
             lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$src" |
@@ -815,7 +814,7 @@ boot_setup() { #{{{
             if [[ -e ${MNTPNT}/$d/${path[1]} ]]; then
                 #Make sure swap is set correctly.
                 local uuid fstype
-                read -r fstype uuid <<<$(lsblk -plo fstype,uuid $DEST ${PVS[@]} | grep '^swap')
+                read -r fstype uuid <<<$(lsblk -plo fstype,uuid "$DEST" ${PVS[@]} | grep '^swap')
                 sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "${MNTPNT}/$d/${path[1]}"
             fi
         done
@@ -998,28 +997,28 @@ to_byte() { #{{{
 # $1: <bytes> | <number>[K|M|G|T]
 to_kbyte() { #{{{
     local v=$1
-    validate_size $1 && v=$(to_byte $1)
+    validate_size "$v" && v=$(to_byte "$v")
     echo $((v / 2 ** 10))
 } #}}}
 
 # $1: <bytes> | <number>[K|M|G|T]
 to_mbyte() { #{{{
     local v=$1
-    validate_size $1 && v=$(to_byte $1)
+    validate_size "$v" && v=$(to_byte "$v")
     echo $((v / 2 ** 20))
 } #}}}
 
 # $1: <bytes> | <number>[K|M|G|T]
 to_gbyte() { #{{{
     local v=$1
-    validate_size $1 && v=$(to_byte $1)
+    validate_size "$v" && v=$(to_byte "$v")
     echo $((v / 2 ** 30))
 } #}}}
 
 # $1: <bytes> | <number>[K|M|G|T]
 to_tbyte() { #{{{
     local v=$1
-    validate_size $1 && v=$(to_byte $1)
+    validate_size "$v" && v=$(to_byte "$v")
     echo $((v / 2 ** 40))
 } #}}}
 
@@ -1031,7 +1030,7 @@ validate_size() { #{{{
 # $1: <bytes> | <number>[K|M|G|T]
 to_sector() { #{{{
     local v=$1
-    validate_size $1 && v=$(to_byte $1)
+    validate_size "$v" && v=$(to_byte "$v")
     echo $((v / 512))
 } #}}}
 
@@ -1148,7 +1147,7 @@ To_file() { #{{{
             local type=${TYPES[$sdev]}
             local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
 
-            local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
+            local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep "$sdev" | xargs | awk '{print $1}')
             local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -ru | awk '{print $2}')
 
             [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
@@ -1259,7 +1258,7 @@ Clone() { #{{{
                 fi)
 
         if [[ -n $SWAP_PART ]]; then
-            read -r swap_name swap_size <<<$(echo "$lvm_data" | grep $SWAP_PART | awk '{print $1, $3}')
+            read -r swap_name swap_size <<<$(echo "$lvm_data" | grep "$SWAP_PART" | awk '{print $1, $3}')
         fi
         ((SWAP_SIZE > 0)) && swap_size=$(to_mbyte ${SWAP_SIZE}K)
 
@@ -1277,7 +1276,7 @@ Clone() { #{{{
             read -r vg_name vg_size vg_free <<<"$e"
             [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*} - ${vg_free%%.*} - ${swap_size%%.*}))
             [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=${vg_free%%.*}
-        done < <(echo $vg_data)
+        done < <(echo "$vg_data")
 
         denom_size=$((s1 < s2 ? s2 : s1))
 
@@ -1289,7 +1288,7 @@ Clone() { #{{{
         while read -r e; do
             read -r lv_name vg_name lv_size vg_size vg_free lv_role lv_dm_path <<<"$e"
             if [[ $vg_name == "$VG_SRC_NAME" ]]; then
-                [[ $lv_dm_path == $SWAP_PART ]] && continue
+                [[ $lv_dm_path == "$SWAP_PART" ]] && continue
                 [[ -n $LVM_EXPAND && $lv_name == "$LVM_EXPAND" ]] && continue
                 [[ $lv_role =~ snapshot ]] && continue
                 size=$(echo "$lv_size * 100 / $denom_size" | bc)
@@ -1301,7 +1300,7 @@ Clone() { #{{{
                     lvcreate --yes -l${size}%VG -n "$lv_name" "$VG_SRC_NAME_CLONE"
                 fi
             fi
-        done < <(echo $lvm_data)
+        done < <(echo "$lvm_data")
 
         [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
@@ -1316,7 +1315,7 @@ Clone() { #{{{
             eval "$kname" "$name" "$fstype" "$type"
             [[ -z ${src_lfs[${NAME##*-}]} ]] && exit_ 1 "Unexpected Error" #Yes, I know... but has to do for the moment!
             { [[ "${src_lfs[${NAME##*-}]}" == swap ]] && mkswap -f "$NAME"; } || mkfs -t "${src_lfs[${NAME##*-}]}" "$NAME"
-        done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | sort -ru | grep ${VG_SRC_NAME_CLONE//-/--}); : 'The
+        done < <(lsblk -Ppo KNAME,NAME,FSTYPE,TYPE "$DEST" ${PVS[@]} | sort -ru | grep "${VG_SRC_NAME_CLONE//-/--}"); : 'The
         device mapper doubles hyphens in a LV/VG names exactly so it can distinguish between hyphens _inside_ an LV or
         VG name and a hyphen used as separator _between_ them.'
     } #}}}
@@ -1331,7 +1330,7 @@ Clone() { #{{{
 
             while read -r e; do
                 echo "pvremove -f $e"
-                pvremove $e || exit_ 1 "Cannot remove PV $e"
+                pvremove "$e" || exit_ 1 "Cannot remove PV $e"
             done < <(pvs --noheadings -o pv_name,vg_name | grep -E '(/\w*)+(\s+)$')
         fi
 
@@ -1417,7 +1416,7 @@ Clone() { #{{{
                 fi
 
                 popd >/dev/null || return 1
-                _finish ${MNTPNT}/$ddev 2>/dev/null
+                _finish "${MNTPNT}/$ddev" 2>/dev/null
             fi
             message -y
         done
@@ -1562,7 +1561,7 @@ Clone() { #{{{
                 crypt_setup "$ENCRYPT_PWD" ${DESTS[${SRC2DEST[${MOUNTS['/']}]}]} "$DEST" "$LUKS_LVM_NAME" "$ENCRYPT_PART" || return 1
             else
                 [[ $HAS_EFI == true && $SYS_HAS_EFI == false ]] && return 1
-                grub_setup ${DESTS[${SRC2DEST[${MOUNTS['/']}]}]} $HAS_EFI $UEFI "$DEST" || return 1
+                grub_setup ${DESTS[${SRC2DEST[${MOUNTS['/']}]}]} "$HAS_EFI" "$UEFI" "$DEST" || return 1
             fi
         }
         message -y
@@ -1660,7 +1659,7 @@ Main() { #{{{
                     if [[ -n $part ]]; then
                         read -r name kdev fstype uuid puuid type parttype mountpoint <<<$(echo "$ldata" | grep "=\"${part#*=}\"")
 						eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-                        $({ [[ -d $SRC ]] && cat $SRC/$F_PART_TABLE || sfdisk -d $SRC; } | grep $KNAME | awk '{print $1}')
+                        $({ [[ -d $SRC ]] && cat "$SRC/$F_PART_TABLE" || sfdisk -d "$SRC"; } | grep $KNAME | awk '{print $1}')
                         boot_parts=$KNAME
                     fi
                 fi
@@ -1749,7 +1748,7 @@ Main() { #{{{
             shift 2; continue
             ;;
         '--source-image')
-            read -r SRC_IMG IMG_TYPE <<<${2//:/ }
+            read -r SRC_IMG IMG_TYPE <<<"${2//:/ }"
 
             [[ -n $SRC_IMG && -z $IMG_TYPE ]] && exit_ 1 "Missing type attribute"
             [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $1 $2"
@@ -1760,7 +1759,7 @@ Main() { #{{{
             shift 2; continue
             ;;
         '--destination-image')
-            read -r DEST_IMG IMG_TYPE IMG_SIZE <<<${2//:/ }
+            read -r DEST_IMG IMG_TYPE IMG_SIZE <<<"${2//:/ }"
 
             [[ -n $DEST_IMG && -z $IMG_TYPE ]] && exit_ 1 "Missing type attribute"
             [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $1 $2"
@@ -1869,7 +1868,7 @@ Main() { #{{{
 
     local packages=()
     #Inform about ALL missing but necessary tools.
-    for c in ${PKGS[@]}; do
+    for c in "${PKGS[@]}"; do
         echo "$c" >> /tmp/f
 
         hash "$c" 2>/dev/null || {
@@ -2006,7 +2005,7 @@ Main() { #{{{
     fi
 
     SWAP_PART=$(if [[ -d $SRC ]]; then
-        cat "$SRC/$F_PART_LIST" | grep swap | awk '{print $1}' | cut -d '"' -f 2
+        grep 'swap' "$SRC/$F_PART_LIST" | awk '{print $1}' | cut -d '"' -f 2
     else
         lsblk -lpo name,fstype "$SRC" | grep swap | awk '{print $1}'
     fi)
