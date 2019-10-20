@@ -1953,7 +1953,8 @@ Main() { #{{{
     [[ $PVALL == true && -n $ENCRYPT_PWD ]] && exit_ 1 "Encryption only supported for simple LVM setups with a single PV!"
 
     #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
-    for d in "$SRC" "$DEST"; do
+    for d in "$SRC" "$DEST" "$DEST_IMG"; do
+        [[ -f $d ]] && d=$(dirname $d)
         if [[ -d $d ]]; then
             local disk=()
             disk+=($(df --block-size=1M $d | tail -n 1 | awk '{print $1}'))
