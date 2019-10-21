@@ -1986,6 +1986,8 @@ Main() { #{{{
 
     VG_SRC_NAME=($(awk '{print $2}' < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sort -u))
 
+    [[ $VG_SRC_NAME == $VG_SRC_NAME_CLONE ]] && exit_ 1 "VG with name '$VG_SRC_NAME_CLONE' already exists!"
+
     [[ ${#VG_SRC_NAME[@]} -gt 1 ]] && exit_ 1 "Unsupported situation: PVs of $SRC assigned to multiplge VGs."
 
     if [[ -z $VG_SRC_NAME ]]; then
@@ -2001,7 +2003,7 @@ Main() { #{{{
 
         [[ -n $LVM_EXPAND ]] && ! _is_valid_lv "$LVM_EXPAND" "$VG_SRC_NAME" && exit_ 2 "Volumen name ${LVM_EXPAND} does not exists in ${VG_SRC_NAME}!"
 
-        grep -q "^$VG_SRC_NAME_CLONE\$" < <(dmsetup deps -o devname) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
+        grep -q "${VG_SRC_NAME_CLONE//-/--}-" < <(dmsetup deps -o devname) && exit_ 2 "Generated VG name $VG_SRC_NAME_CLONE already exists!"
     fi
 
     SWAP_PART=$(if [[ -d $SRC ]]; then
