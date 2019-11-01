@@ -496,7 +496,7 @@ expand_disk() { #{{{
     } #}}}
 
     [[ -n $SWAP_PART && $SWAP_SIZE -ge 0 ]] && _part_size_check $SWAP_PART $SWAP_SIZE
-    [[ -n $BOOT_PART && $BOOT_SIZE -ge 0 ]] && _part_size_check $BOOT_PART $BOOT_SIZE
+    [[ -n $BOOT_PART && $BOOT_SIZE -gt 0 ]] && _part_size_check $BOOT_PART $BOOT_SIZE
 
     for k in "${!var_parts[@]}"; do
         nv=$( echo "${var_parts[$k]} * $expand_factor" | bc )
