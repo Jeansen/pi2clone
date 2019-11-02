@@ -2168,7 +2168,12 @@ Main() { #{{{
         done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name; fi)
     fi
 
-    [[ -n $VG_SRC_NAME ]] && vg_disks "$VG_SRC_NAME" "VG_DISKS" && IS_LVM=true
+    if [[ -n $VG_SRC_NAME ]]; then
+        vg_disks "$VG_SRC_NAME" "VG_DISKS" && IS_LVM=true
+        if [[ -b $SRC ]] && grep -q 'LVM2_member' < <(lsblk -lpo fstype $SRC); then
+            grep -q lvm < <(lsblk -lpo type $SRC) || exit_ 1 "Found LVM, but LVs have not been activated. Did you forget to run 'vgchange -ay $VG_SRC_NAME' ?"
+        fi
+    fi
 
     if [[ $IS_LVM == true ]]; then
         if [[ -n $LVM_EXPAND ]]; then
