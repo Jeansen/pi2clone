@@ -623,11 +623,11 @@ encrypt() { #{{{
     local dest="$2"
     local name="$3"
 
-    { echo ';' | sfdisk "$dest" && sfdisk -Vq; } || return 1 #delete all partitions and create one for the whole disk.
+    { echo ';' | sfdisk "$dest"; } || return 1 #delete all partitions and create one for the whole disk.
     sleep 3
     ENCRYPT_PART=$(sfdisk -qlo device "$dest" | tail -n 1)
-    echo -n "$passwd" | cryptsetup luksFormat "$ENCRYPT_PART" -
-    echo -n "$passwd" | cryptsetup open "$ENCRYPT_PART" "$name" --type luks -
+    echo -n "$passwd" | cryptsetup luksFormat "$ENCRYPT_PART" --type luks1 -
+    echo -n "$passwd" | cryptsetup open "$ENCRYPT_PART" "$name" --type luks1 -
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -1457,7 +1457,7 @@ Clone() { #{{{
             flock "$DEST" sfdisk --force "$DEST" < <(expand_disk "$SECTORS_SRC" "$SECTORS_DEST" "$ptable")
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
         fi
-        sync_block_dev $DEST
+        partprobe "$DEST"
 
         [[ $UEFI == true ]] && mbr2gpt $DEST
     } #}}}
@@ -1607,10 +1607,8 @@ Clone() { #{{{
         set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS_SRC_USED" "$f"
 
         if [[ $ENCRYPT_PWD ]]; then
-            pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME"
-            sleep 3
-            _lvm_setup "/dev/mapper/$LUKS_LVM_NAME"
-            sleep 3
+            pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
+            _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle #TODO check how dest is used in lvm_setup for crypt
         else
             disk_setup "$f" "$UEFI" "$SRC" "$DEST"
             if [[ ${#LMBRS[@]} -gt 0 ]]; then
