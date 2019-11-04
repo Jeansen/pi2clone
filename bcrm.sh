@@ -138,7 +138,7 @@ ctx_init() { #{{{
         local IFS='='
         while read -r k v; do
             CONTEXT["$k"]="$v"
-        done < "$SRC/$F_CONTEXT"
+        done < <(sed '/^#/d; /^$/d' "$SRC/$F_CONTEXT")
 
         local keys=$(echo "${!map[*]} ${!CONTEXT[*]}" | tr -s " " $'\n' | sort | uniq -d)
 
@@ -189,6 +189,8 @@ ctx_save() { #{{{
         [[ -n ${CONTEXT[$f]} ]] && echo "$f=${CONTEXT[$f]}" >> "$DEST/$F_CONTEXT"
     done
     sed -i '/^\s*$/d' "$DEST/$F_CONTEXT"
+    echo "# Backup date: $(date)" >> "$DEST/$F_CONTEXT"
+    echo "# Version used: $(git log -1 --format="%H")" >> "$DEST/$F_CONTEXT"
 } #}}}
 
 
