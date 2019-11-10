@@ -23,6 +23,8 @@ export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Ma
 
 # CONSTANTS
 #----------------------------------------------------------------------------------------------------------------------
+declare -A SRC_2
+declare -A DEST_2
 declare F_SCHROOT_CONFIG='/etc/schroot/chroot.d/bcrm'
 declare F_SCHROOT='bcrm.stretch.tar.xz'
 declare F_PART_LIST='part_list'
@@ -58,12 +60,9 @@ declare -A CHG_SYS_FILES    #Container for system files that needed to be change
                             #Key = original file path, Value = MD5sum
 
 declare -A MNTJRNL MOUNTS
-declare -A FILESYSTEMS NAMES PARTUUIDS UUIDS TYPES PUUIDS2UUIDS DESTS
 declare -A SRC2DEST PSRC2PDEST NSRC2NDEST
 
-declare SPUUIDS=() SUUIDS=()
-declare DPUUIDS=() DUUIDS=()
-declare LMBRS=() SRCS=() LSRCS=() PVS=() VG_DISKS=()
+declare PVS=() VG_DISKS=()
 
 # FILLED BY OR BECAUSE OF PROGRAM ARGUMENTS
 #----------------------------------------------------------------------------------------------------------------------
@@ -316,7 +315,7 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "   " "--remove-pkgs"           "Remove the given list of whitespace-separated packages as a final step."
     printf "  %-3s %-30s %s\n"   "   " ""                        "The whole list must be enclosed in \"\""
     printf "  %-3s %-30s %s\n"   "-n," "--new-vg-name"           "LVM only: Define new volume group name"
-    printf "  %-3s %-30s %s\n"   "  ," "--vg-free-size"          "LVM only: How much space should remain free in a VG."
+    printf "  %-3s %-30s %s\n"   "   " "--vg-free-size"          "LVM only: How much space should remain free in a VG."
     printf "  %-3s %-30s %s\n"   "-e," "--encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
     printf "  %-3s %-30s %s\n"   "-p," "--use-all-pvs"           "LVM only: Use all disks found on destination as PVs for VG"
     printf "  %-3s %-30s %s\n"   "   " "--lvm-expand"            "LVM only: Have the given LV use the remaining free space."
@@ -586,30 +585,33 @@ create_rclocal() { #{{{
 } #}}}
 
 mounts() { #{{{
-    for x in "${SRCS[@]}" "${LSRCS[@]}"; do
-        local sdev=$x
-        local sid=${UUIDS[$sdev]}
+    f[0]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
+    f[1]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
+    f[2]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
 
-        mkdir -p "${MNTPNT}/$sdev"
+
+    for x in "${!SRC_2[@]}"; do
+        local sid=$x
+        IFS=: read -r sdev rest<<<${SRC_2[$x]}
 
         mount_ "$sdev"
 
-        f[0]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
-        f[1]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
-        f[2]='cat ${MNTPNT}/$sdev/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
-
         if [[ -f ${MNTPNT}/$sdev/etc/fstab ]]; then
-            for ((i = 0; i < ${#f[@]}; i++)); do
-                while read -r e; do
-                    read -r name mnt <<<"$e"
-                    if [[ -n ${NAMES[$name]} ]]; then
-                        MOUNTS[$mnt]="$name" && MOUNTS[$name]="$mnt"
-                    elif [[ -n ${PUUIDS2UUIDS[$name]} ]]; then
-                        MOUNTS[$mnt]="${PUUIDS2UUIDS[$name]}" && MOUNTS[${PUUIDS2UUIDS[$name]}]="$mnt"
-                    elif [[ -n ${UUIDS[$name]} ]]; then
-                        MOUNTS[$mnt]="${UUIDS[$name]}" && MOUNTS[${UUIDS[$name]}]="$mnt"
-                    fi
-                done < <(eval "${f[$i]}")
+            for y in "${!SRC_2[@]}"; do
+                sid=$y 
+                #using sdev causes strange behaviour instead of devname
+                IFS=: read -r sdevname fs spid ptype type rest<<<${SRC_2[$y]}
+                for ((i = 0; i < ${#f[@]}; i++)); do
+                    while read -r e; do
+                        read -r dev mnt <<<"$e"
+                        if [[ $dev == $sdevname || $dev == $spid || $dev == $sid ]]; then
+                            MOUNTS[$mnt]="$y"
+                            [[ -n $dev ]] && MOUNTS[$dev]="$mnt"
+                            [[ -n $sid ]] && MOUNTS[$sid]="$mnt"
+                            [[ -n $spid ]] && MOUNTS[$spid]="$mnt"
+                        fi
+                    done < <(eval "${f[$i]}")
+                done
             done
         fi
 
@@ -691,16 +693,7 @@ validate_m5dsums() { #{{{
 
 #----------------------------------------------------------------------------------------------------------------------
 
-# $1: <Ref. DPUUIDS>
-# $2: <Ref. DUUIDS>
-# $3: <Ref. DNAMES>
-# $4: <Ref. DESTS>
 set_dest_uuids() { #{{{
-    declare -n dpuuids="$1"
-    declare -n duuids="$2"
-    declare -n dnames="$3"
-    declare -n dests="$4"
-
     if [[ -b $DEST ]]; then
         [[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
         [[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
@@ -713,104 +706,33 @@ set_dest_uuids() { #{{{
         [[ $FSTYPE == swap ]] && continue
         [[ $UEFI == true && $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
-        [[ -n $UUID ]] && dests[$UUID]="$NAME"
-        [[ -n $PARTUUID ]] && dests[$PARTUUID]="$NAME"
-        [[ ${PVS[@]} =~ $NAME ]] && continue
-        dpuuids+=($PARTUUID)
-        duuids+=($UUID)
-        dnames+=($NAME)
-    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -ru | grep -vE '\bdisk|\bUUID="".*\bPARTUUID=""')
+
+        mount_ "$NAME" -t "$FSTYPE"
+        read -r used avail <<<$(df --block-size=1K --output=used,avail "${MNTPNT}/$tdev/" | tail -n -1)
+        umount_ "$NAME"
+        DEST_2[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
+
+        # [[ ${PVS[@]} =~ $NAME ]] && continue
+    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -u | grep -vE '\bdisk|\bUUID="".*\bPARTUUID=""')
 } #}}}
 
-# $1: <Ref. SPUUIDS>
-# $2: <Ref. SUUIDS>
-# $3: <Ref. SNAMES>
-# $4: <Ref. LMBRS>
-# $5: <Ref. SECTORS_SRC_USED>
-# $6: <File with lsblk dump>
-set_src_uuids() { #{{{
-    declare -n spuuids="$1"
-    declare -n suuids="$2"
-    declare -n snames="$3"
-    declare -n lmbrs="$4"
-    declare -n sectors="$5"
-    declare file="$6"
-
-    _count() { #{{{
-        if [[ $SWAP_SIZE -lt 0 ]]; then
-            local size=$(swapon --show=size,name --bytes --noheadings | grep $1 | awk '{print $1}') #no swap = 0
-            size=$(to_kbyte ${size:-0})
-        fi
-        sectors=$(( $size + $sectors + $(df -k --output=used $1 | tail -n -1) ))
-    } #}}}
-
-    local n=0
-    local plist
-
-    if [[ -n $file ]]; then
-        plist=$(cat "$file")
-    else
-        plist=$($LSBLK_CMD "$SRC" ${VG_DISKS[@]})
-    fi
-
-    while read -r e; do
-        read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
-        eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-
-        [[ -b $SRC ]] && _count "$KNAME"
-        [[ $FSTYPE == swap ]] && continue
-        [[ ($TYPE == part && $FSTYPE == LVM2_member || $FSTYPE == crypto_LUKS) && $ENCRYPT_PWD ]] && continue
-        [[ $FSTYPE == crypto_LUKS ]] && FSTYPE=ext4 && lmbrs[$n]="$UUID" #TODO I think that is wrong!
-        [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
-        lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
-        [[ $NAME =~ real$|cow$ ]] && continue
-        [[ $FSTYPE == LVM2_member ]] && lmbrs[$n]="$UUID" && n=$((n + 1)) && continue
-        spuuids+=($PARTUUID)
-        suuids+=($UUID)
-        snames+=($NAME)
-    done < <(echo "$plist" | sort -ru | grep -v 'disk')
-
-    [[ $SWAP_SIZE -gt 0 ]] && sectors=$((sectors + SWAP_SIZE))
-} #}}}
-
-# $1: <Ref. UUIDS>
-# $2: <Ref. SRCS>
-# $3: <Ref. LSRCS>
-# $4: <Ref. PARTUUIDS>
-# $5: <Ref. PUUIDS2UUIDS>
-# $6: <Ref. TYPES>
-# $7: <Ref. NAMES>
-# $8: <Ref. FILESYSTEMS>
-# $9: <File with lsblk dump>
+# $2: <File with lsblk dump>
 init_srcs() { #{{{
-    declare -n uuids="$1"
-    declare -n srcs="$2"
-    declare -n lsrcs="$3"
-    declare -n partuuids="$4"
-    declare -n puuids2uuids="$5"
-    declare -n types="$6"
-    declare -n names="$7"
-    declare -n filesystems="$8"
-    declare file="$9"
+    declare file="$1"
 
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
-        eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        eval declare "$name" "$kdev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+
         [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
-        [[ $TYPE == lvm && -z $file ]] && lsrcs+=($NAME)
-        [[ $TYPE == part ]] && srcs+=($NAME)
-        filesystems[$NAME]="$FSTYPE"
-        partuuids[$NAME]="$PARTUUID"
-        uuids[$NAME]="$UUID"
-        types[$NAME]="$TYPE"
-        [[ -n $UUID ]] && names[$UUID]=$NAME
-        [[ -n $PARTUUID ]] && names[$PARTUUID]=$NAME
-        [[ -n $UUID && -n $PARTUUID ]] && puuids2uuids[$PARTUUID]="$UUID"
-    done < <( if [[ -n $file ]]; then cat "$file";
-              else $LSBLK_CMD "$SRC" ${VG_DISKS[@]} | sort -ru | grep -v 'disk';
-    fi)
+
+        mount_ "$NAME" -t "$FSTYPE"
+        read -r used avail <<<$(df -k --output=used,avail "${MNTPNT}/$NAME/" | tail -n -1)
+        umount_ "$NAME"
+        SRC_2[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
+	done < <( if [[ -n $file ]]; then cat "$file"; else $LSBLK_CMD "$SRC" ${VG_DISKS[@]}; fi | sort -u | grep -v 'disk')
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -898,8 +820,11 @@ disk_setup() { #{{{
 } #}}}
 
 # $1: <Ref.>
+# $2: <src-mount>
+# $3: <dest-mount>
 boot_setup() { #{{{
     declare -n sd="$1"
+    declare dmnt="$2"
 
     local path=(
         "/cmdline.txt"
@@ -910,24 +835,24 @@ boot_setup() { #{{{
     )
 
     for k in "${!sd[@]}"; do
-        for d in "${DESTS[@]}"; do
+        for d in "${DEST_2[@]}"; do
             sed -i "s|$k|${sd[$k]}|" \
-                "${MNTPNT}/$d/${path[0]}" "${MNTPNT}/$d/${path[1]}" \
-                "${MNTPNT}/$d/${path[2]}" "${MNTPNT}/$d/${path[3]}" \
+                "$dmnt/${path[0]}" "$dmnt/${path[1]}" \
+                "$dmnt/${path[2]}" "$dmnt/${path[3]}" \
                 2>/dev/null
 
             #Resume file might be wrong, so we just set it explicitely
-            if [[ -e ${MNTPNT}/$d/${path[4]} ]]; then
+            if [[ -e $dmnt/${path[4]} ]]; then
                 local uuid fstype
                 read -r uuid fstype <<<$(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
                 uuid=${uuid//\"/} #get rid of ""
-                eval sed -i -E '/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i' "${MNTPNT}/$d/${path[4]}"
+                eval sed -i -E '/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i' "$dmnt/${path[4]}"
             fi
-            if [[ -e ${MNTPNT}/$d/${path[1]} ]]; then
+            if [[ -e $dmnt/${path[1]} ]]; then
                 #Make sure swap is set correctly.
                 local uuid fstype
                 read -r fstype uuid <<<$(lsblk -plo fstype,uuid "$DEST" ${PVS[@]} | grep '^swap')
-                sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "${MNTPNT}/$d/${path[1]}"
+                sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "$dmnt/${path[1]}"
             fi
         done
     done
@@ -954,14 +879,9 @@ grub_setup() { #{{{
         mount --bind "/$f" "$mp/$f"
     done
 
-    local IFS=$'\n'
-    local mounts=($(sort <<<"${!MOUNTS[*]}"))
-
-    for m in ${mounts[*]}; do
-        [[ "$m" == / ]] && continue
-        if [[ "$m" =~ ^/ ]]; then
-            mount_ "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" -p "$mp/$m"
-        fi
+    for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
+        IFS=: read -r ddev rest<<<${DEST_2[${SRC2DEST[${MOUNTS[$m]}]}]}
+        mount_ $ddev -p "$mp/$m"
     done
 
     if [[ $uefi == true && $has_efi == true ]]; then
@@ -1008,9 +928,9 @@ crypt_setup() { #{{{
         mount --bind "/$f" "$mp/$f"
     done
 
-    for m in "${!MOUNTS[@]}"; do
-        [[ "$m" == / ]] && continue
-        [[ "$m" =~ ^/ ]] && mount "${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}" "$mp/$m"
+    for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
+        IFS=: read -r ddev rest<<<${DEST_2[${SRC2DEST[${MOUNTS[$m]}]}]}
+        mount_ $ddev -p "$mp/$m"
     done
 
     printf '%s' '#!/bin/sh
@@ -1234,8 +1154,7 @@ To_file() { #{{{
     message -c -t "Creating backup of disk layout"
     {
         logmsg "${lm[0]}" && _save_disk_layout
-        init_srcs "UUIDS" "SRCS" "LSRCS" "PARTUUIDS" "PUUIDS2UUIDS" "TYPES" "NAMES" "FILESYSTEMS"
-        set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS_SRC_USED"
+        init_srcs
         mounts
     }
     message -y
@@ -1249,74 +1168,64 @@ To_file() { #{{{
 
     #TODO remove this extra counter and do a simpler loop
     local g=0
-    for x in SRCS LSRCS; do
-        eval declare -n s="$x"
 
-        for ((i = 0; i < ${#s[@]}; i++)); do
-            local sdev=${s[$i]}
-            local sid=${UUIDS[$sdev]}
-            local spid=${PARTUUIDS[$sdev]}
-            local fs=${FILESYSTEMS[$sdev]}
-            local type=${TYPES[$sdev]}
-            local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
+    for x in ${!SRC_2[@]}; do
+        local sid=$x
+        IFS=: read -r sdev fs spid ptype type used avail<<<${SRC_2[$x]}
+        local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
+        local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep "$sdev" | xargs | awk '{print $1}')
+        local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -ru | awk '{print $2}')
+        local tdev=$sdev
 
-            local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep "$sdev" | xargs | awk '{print $1}')
-            local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -ru | awk '{print $2}')
-
-            [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
-            local tdev=$sdev
-
-            {
-                if [[ $x == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
-                    local tdev=$SNAP4CLONE
-                    lvremove -f "${VG_SRC_NAME}/$tdev"
-                    lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name"
-                    sleep 3
-                    mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev"
-                else
-                    mount_ "$tdev" -t "${FILESYSTEMS[$tdev]}"
-                fi
-            }
-
-            local src_size=$(df --block-size=1M --output=used "${MNTPNT}/$tdev/" | tail -n -1 | sed -e 's/^\s*//; s/\s*$//')
-            cmd="tar --warning=none --directory=${MNTPNT}/$tdev --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
-            file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${src_size}.${sdev//\//_}.${mount//\//_} "
-
-            [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
-
-            if [[ $INTERACTIVE == true ]]; then
-                message -u -c -t "Creating backup for $sdev [ scan ]"
-                local size=$(du --bytes --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s ${MNTPNT}/$tdev | awk '{print $1}')
-                if [[ $SPLIT == true ]]; then
-                    cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
-                else
-                    cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size > $file"
-                fi
-
-                while read -r e; do
-                    [[ $e -ge 100 ]] && e=100 #Just a precaution
-                    message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
-                done < <(eval "$cmd" 2>&1) #Note that with pv stderr holds the current percentage value!
-                message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
+        {
+            if [[ type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
+                local tdev=$SNAP4CLONE
+                lvremove -f "${VG_SRC_NAME}/$tdev"
+                lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name"
+                sleep 3
+                mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev"
             else
-                message -c -t "Creating backup for $sdev"
-                {
-                    if [[ $SPLIT == true ]]; then
-                        cmd="$cmd -Scpf - . | split -b 1G - $file"
-                    else
-                        cmd="$cmd -Scpf $file ."
-                    fi
-                    eval "$cmd"
-                }
+                mount_ "$tdev" -t $fs
+            fi
+        }
+
+        cmd="tar --warning=none --directory=${MNTPNT}/$tdev --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* --atime-preserve --numeric-owner --xattrs"
+        file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${used}.${sdev//\//_}.${mount//\//_} "
+
+        [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
+
+        if [[ $INTERACTIVE == true ]]; then
+            message -u -c -t "Creating backup for $sdev [ scan ]"
+            local size=$(du --bytes --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s ${MNTPNT}/$tdev | awk '{print $1}')
+            if [[ $SPLIT == true ]]; then
+                cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
+            else
+                cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size > $file"
             fi
 
+            while read -r e; do
+                [[ $e -ge 100 ]] && e=100 #Just a precaution
+                message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
+            done < <(eval "$cmd" 2>&1) #Note that with pv stderr holds the current percentage value!
+            message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
+        else
+            message -c -t "Creating backup for $sdev"
             {
-                umount_ "${MNTPNT}/$tdev"
-                [[ $tdev == $SNAP4CLONE ]] && lvremove -f "${VG_SRC_NAME}/$tdev"
+                if [[ $SPLIT == true ]]; then
+                    cmd="$cmd -Scpf - . | split -b 1G - $file"
+                else
+                    cmd="$cmd -Scpf $file ."
+                fi
+                eval "$cmd"
             }
-            message -y
-            g=$((g + 1))
-        done
+        fi
+
+        {
+            umount_ "${MNTPNT}/$tdev"
+            [[ $tdev == $SNAP4CLONE ]] && lvremove -f "${VG_SRC_NAME}/$tdev"
+        }
+        message -y
+        g=$((g + 1))
 
         for ((i = 0; i < ${#s[@]}; i++)); do umount_ "${s[$i]}"; done
     done
@@ -1467,9 +1376,9 @@ Clone() { #{{{
     _finish() { #{{{
         [[ -f "$1/etc/hostname" && -n $HOST_NAME ]] && echo "$HOST_NAME" >"$1/etc/hostname"
         [[ -f $1/grub/grub.cfg || -f $1/grub.cfg || -f $1/boot/grub/grub.cfg ]] && HAS_GRUB=true
-        [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST"
-        [[ ${#PSRC2PDEST[@]} -gt 0 ]] && boot_setup "PSRC2PDEST"
-        [[ ${#NSRC2NDEST[@]} -gt 0 ]] && boot_setup "NSRC2NDEST"
+        [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST" "$1"
+        [[ ${#PSRC2PDEST[@]} -gt 0 ]] && boot_setup "PSRC2PDEST" "$1"
+        [[ ${#NSRC2NDEST[@]} -gt 0 ]] && boot_setup "NSRC2NDEST" "$1"
 
         umount_ "$sdev"
         umount_ "$ddev"
@@ -1486,9 +1395,8 @@ Clone() { #{{{
 
         #Now, we are ready to restore files from previous backup images
         for file in "${files[@]}"; do
-            read -r i uuid puuid fs type ss dev mnt <<<"${file//./ }"
-            local ddev=${DESTS[${SRC2DEST[$uuid]}]}
-            [[ -z $ddev ]] && ddev=${DESTS[${PSRC2PDEST[$puuid]}]}
+            read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
+			IFS=: read -r ddev dfs dpid dptype dtype davail<<<${DEST_2[${SRC2DEST[$uuid]}]}
 
             MOUNTS[${mnt//_/\/}]="$uuid"
 
@@ -1498,8 +1406,7 @@ Clone() { #{{{
 
                 [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
 
-                local ds=$(df --block-size=1M --output=avail "${MNTPNT}/$ddev" | tail -n -1)
-                ((ds - ss <= 0)) && exit_ 10 "Require ${ss}M but destination is only ${ds}M"
+                ((davail - sused <= 0)) && exit_ 10 "Require ${sused}K but destination is only ${davail}K"
 
                 local cmd="tar -xf - -C ${MNTPNT}/$ddev"
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
@@ -1532,105 +1439,115 @@ Clone() { #{{{
     } #}}}
 
     _clone() { #{{{
-        for dev in SRCS LSRCS; do
-            eval declare -n s="$dev"
+		for x in ${!SRC_2[@]}; do
+			local sid=$x
+			IFS=: read -r sdev sfs spid sptype stype sused savail <<<${SRC_2[$x]}
 
-            for ((i = 0; i < ${#s[@]}; i++)); do
-                local sdev=${s[$i]}
-                local sid=${UUIDS[$sdev]}
-                local ddev=${DESTS[${SRC2DEST[$sid]}]}
-                local tdev=$sdev
-                local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
-                local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -u | awk '{print $2}')
+			IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DEST_2[${SRC2DEST[$x]}]}
 
-                [[ -z ${FILESYSTEMS[$sdev]} ]] && continue
-                mkdir -p "${MNTPNT}/$ddev" "${MNTPNT}/$sdev"
-                [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
+			local tdev=$sdev
+			local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
+			local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -u | awk '{print $2}')
 
-                {
-                    if [[ $dev == LSRCS && ${#LMBRS[@]} -gt 0 && "${src_vg_free%%.*}" -ge "500" ]]; then
-                        tdev='snap4clone'
-                        mkdir -p "${MNTPNT}/$tdev"
-                        lvremove -q -f "${VG_SRC_NAME}/$tdev"
-                        lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name" &&
-                            sleep 3 &&
-                            mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev" || return 1
-                    else
-                        mount_ "$sdev"
-                    fi
-                }
+			[[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
 
-                mount_ "$ddev"
+			{
+				if [[ type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
+					tdev='snap4clone'
+					lvremove -q -f "${VG_SRC_NAME}/$tdev"
+					lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name" &&
+						sleep 3 &&
+						mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev" || return 1
+				else
+					mount_ "$sdev"
+				fi
+			}
 
-                local ss=$(df --block-size=1M --output=used "${MNTPNT}/$tdev/" | tail -n -1)
-                local ds=$(df --block-size=1M --output=avail "${MNTPNT}/$ddev" | tail -n -1)
-                ((ds - ss <= 0)) && exit_ 10 "Require ${ss}M but $ddev is only ${ds}M"
+			mount_ "$ddev"
 
-                if [[ $INTERACTIVE == true ]]; then
-                    message -u -c -t "Cloning $sdev to $ddev [ scan ]"
-                    local size=$(
-                        rsync -aSXxH --stats --dry-run "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev" |
-                            grep -oP 'Number of files: \d*(,\d*)*' |
-                            cut -d ':' -f2 |
-                            tr -d ' ' |
-                            sed -e 's/,//g'
-                    )
+			((davail - sused <= 0)) && exit_ 10 "Require ${sused}K but $ddev is only ${davail}K"
 
-                    while read -r e; do
-                        [[ $e -ge 100 ]] && e=100
-                        message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
-                    done < <((rsync -vaSXxH "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
-                    message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' 100) ]"
-                else
-                    message -c -t "Cloning $sdev to $ddev"
-                    {
-                        rsync -aSXxH "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev"
-                    } >/dev/null
-                fi
-                {
-                    sleep 3
-                    umount_ "/dev/${VG_SRC_NAME}/$tdev"
-                    [[ $dev == LSRCS ]] && lvremove -q -f "${VG_SRC_NAME}/$tdev"
+			if [[ $INTERACTIVE == true ]]; then
+				message -u -c -t "Cloning $sdev to $ddev [ scan ]"
+				local size=$(
+					rsync -aSXxH --stats --dry-run "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev" |
+						grep -oP 'Number of files: \d*(,\d*)*' |
+						cut -d ':' -f2 |
+						tr -d ' ' |
+						sed -e 's/,//g'
+				)
 
-                    _finish "${MNTPNT}/$ddev" 2>/dev/null
-                }
-                message -y
-            done
+				while read -r e; do
+					[[ $e -ge 100 ]] && e=100
+					message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
+				done < <((rsync -vaSXxH "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
+				message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' 100) ]"
+			else
+				message -c -t "Cloning $sdev to $ddev"
+				{
+					rsync -aSXxH "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev"
+				} >/dev/null
+			fi
+			{
+				sleep 3
+				umount_ "/dev/${VG_SRC_NAME}/$tdev"
+				[[ type == lvm ]] && lvremove -q -f "${VG_SRC_NAME}/$tdev"
+
+				_finish "${MNTPNT}/$ddev" 2>/dev/null
+			}
+			message -y
         done
 
         return 0
     } #}}}
 
+	_src2dest() { #{{{
+		declare -A s d
+		declare sk dk
+
+		for x in ${!SRC_2[@]}; do
+			IFS=: read -r sdev rest <<<${SRC_2[$x]}
+			s[$sdev]=$x
+		done
+
+		for x in ${!DEST_2[@]}; do
+			IFS=: read -r ddev rest <<<${DEST_2[$x]}
+			d[$ddev]=$x
+		done
+
+		local sk=($(echo ${!s[@]} | tr ' ' '\n' | sort))
+		local dk=($(echo ${!d[@]} | tr ' ' '\n' | sort))
+
+		for ((i = 0; i < ${#SRC_2[@]}; i++)); do 
+			IFS=: read -r sdev sfs spid sptype stype srest <<<${SRC_2[${s[${sk[$i]}]}]}
+			IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DEST_2[${d[${dk[$i]}]}]}
+
+			SRC2DEST[${s[${sk[$i]}]}]=${d[${dk[$i]}]}
+			[[ -n $spid && -n $dpid ]] && PSRC2PDEST[$spid]=$dpid
+			[[ -n $sdev && -n $ddev ]] &&NSRC2NDEST[$sdev]=$ddev
+		done
+	} #}}}
+
     message -c -t "Cloning disk layout"
     {
         local f=$([[ $_RMODE == true ]] && echo "$SRC/$F_PART_LIST")
         _prepare_disk #First collect what we have in our backup
-        init_srcs "UUIDS" "SRCS" "LSRCS" "PARTUUIDS" "PUUIDS2UUIDS" "TYPES" "NAMES" "FILESYSTEMS" "$f"
-        set_src_uuids "SPUUIDS" "SUUIDS" "SNAMES" "LMBRS" "SECTORS_SRC_USED" "$f"
+        init_srcs "$f"
 
         if [[ $ENCRYPT_PWD ]]; then
             pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
             _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle #TODO check how dest is used in lvm_setup for crypt
         else
             disk_setup "$f" "$UEFI" "$SRC" "$DEST"
-            if [[ ${#LMBRS[@]} -gt 0 ]]; then
+			if echo "${SRC_2[*]}" | grep -q 'lvm'; then
                 _lvm_setup "$DEST"
                 sleep 3
-            fi
+			fi
         fi
 
         #Now collect what we have created
-        set_dest_uuids "DPUUIDS" "DUUIDS" "DNAMES" "DESTS"
-
-        if [[ ${#SUUIDS[@]} != "${#DUUIDS[@]}" || ${#SPUUIDS[@]} != "${#DPUUIDS[@]}" || ${#SNAMES[@]} != "${#DNAMES[@]}" ]]; then
-            echo >&2 "Source and destination tables for UUIDs, PARTUUIDs or NAMES did not macht. This should not happen!"
-            return 1
-        fi
-
-        #TODO
-        for ((i = 0; i < ${#SUUIDS[@]}; i++)); do SRC2DEST[${SUUIDS[$i]}]=${DUUIDS[$i]}; done
-        for ((i = 0; i < ${#SPUUIDS[@]}; i++)); do PSRC2PDEST[${SPUUIDS[$i]}]=${DPUUIDS[$i]}; done
-        for ((i = 0; i < ${#SNAMES[@]}; i++)); do NSRC2NDEST[${SNAMES[$i]}]=${DNAMES[$i]}; done
+        set_dest_uuids
+		_src2dest
 
         [[ $_RMODE == false ]] && mounts
     }
@@ -1646,10 +1563,11 @@ Clone() { #{{{
         message -c -t "Installing Grub"
         {
             if [[ $ENCRYPT_PWD ]]; then
-                crypt_setup "$ENCRYPT_PWD" ${DESTS[${SRC2DEST[${MOUNTS['/']}]}]} "$DEST" "$LUKS_LVM_NAME" "$ENCRYPT_PART" || return 1
+                crypt_setup "$ENCRYPT_PWD" ${DEST_2[${SRC2DEST[${MOUNTS['/']}]}]} "$DEST" "$LUKS_LVM_NAME" "$ENCRYPT_PART" || return 1
             else
                 [[ $HAS_EFI == true && $SYS_HAS_EFI == false ]] && return 1
-                grub_setup ${DESTS[${SRC2DEST[${MOUNTS['/']}]}]} "$HAS_EFI" "$UEFI" "$DEST" || return 1
+				IFS=: read -r ddev rest<<<${DEST_2[${SRC2DEST[${MOUNTS['/']}]}]}
+                grub_setup $ddev "$HAS_EFI" "$UEFI" "$DEST" || return 1
             fi
         }
         message -y
@@ -1919,7 +1837,7 @@ Main() { #{{{
             HOST_NAME="$2"
             shift 2; continue
             ;;
-        '-u' | 'make-uefi')
+        '-u' | '--make-uefi')
             UEFI=true;
             shift 1; continue
             ;;
@@ -2158,9 +2076,9 @@ Main() { #{{{
 
     VG_SRC_NAME=($(awk '{print $2}' < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sort -u))
 
-    [[ $VG_SRC_NAME == $VG_SRC_NAME_CLONE ]] && exit_ 1 "VG with name '$VG_SRC_NAME_CLONE' already exists!"
-
     [[ ${#VG_SRC_NAME[@]} -gt 1 ]] && exit_ 1 "Unsupported situation: PVs of $SRC assigned to multiplge VGs."
+
+    [[ ${VG_SRC_NAME[0]} == "$VG_SRC_NAME_CLONE" ]] && exit_ 1 "VG with name '$VG_SRC_NAME_CLONE' already exists!"
 
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
@@ -2186,7 +2104,7 @@ Main() { #{{{
 
         if [[ -b $DEST ]]; then
             #Even whenn SRC and DEST have dirrent VG names, another one could already exists!
-            [[ $(vgs --no-headings -o vg_name) =~ $VG_SRC_NAME_CLONE ]] \
+            [[ $(vgs --no-headings -o vg_name) == $VG_SRC_NAME_CLONE ]] \
                 && exit_ 1 "VG with name '$VG_SRC_NAME_CLONE' already exists!"
 
             if [[ -b $SRC ]]; then
