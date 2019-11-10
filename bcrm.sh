@@ -1826,6 +1826,7 @@ Main() { #{{{
             ;;
         '-n' | '--new-vg-name')
             VG_SRC_NAME_CLONE="$2"
+            [[ $VG_SRC_NAME_CLONE =~ ^[a-zA-Z0-9_][a-zA-Z0-9+_.-]* ]] || exit_ 1 "Valid characters for VG names are: 'a-z A-Z 0-9 + _ . -'. VG names cannot begin with a hyphen."
             shift 2; continue
             ;;
         '-e' | '--encrypt-with-password')
