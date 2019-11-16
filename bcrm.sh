@@ -23,8 +23,8 @@ export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Ma
 
 # CONSTANTS
 #----------------------------------------------------------------------------------------------------------------------
-declare -A SRC_2
-declare -A DEST_2
+declare -A SRCS
+declare -A DESTS
 declare F_SCHROOT_CONFIG='/etc/schroot/chroot.d/bcrm'
 declare F_SCHROOT='bcrm.stretch.tar.xz'
 declare F_PART_LIST='part_list'
@@ -613,19 +613,19 @@ mounts() { #{{{
     f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
 
 
-    for x in "${!SRC_2[@]}"; do
+    for x in "${!SRCS[@]}"; do
         local mpnt=
         local sid=$x
-        IFS=: read -r sdev rest<<<${SRC_2[$x]}
+        IFS=: read -r sdev rest<<<${SRCS[$x]}
 
         mount_ "$sdev" && mpnt=${MNTJRNL[$sdev]}
         [[ -z $mpnt ]] && exit_ 1 "Could not mount ${sdev}."
 
         if [[ -f $mpnt/etc/fstab ]]; then
-            for y in "${!SRC_2[@]}"; do
+            for y in "${!SRCS[@]}"; do
                 sid=$y
                 #using sdev causes strange behaviour instead of devname
-                IFS=: read -r sdevname fs spid ptype type rest<<<${SRC_2[$y]}
+                IFS=: read -r sdevname fs spid ptype type rest<<<${SRCS[$y]}
                 for ((i = 0; i < ${#f[@]}; i++)); do
                     while read -r e; do
                         read -r dev mnt <<<"$e"
@@ -741,7 +741,7 @@ set_dest_uuids() { #{{{
         mount_ "$NAME" -t "$FSTYPE"
         read -r used avail <<<$(df --block-size=1K --output=used,avail "${MNTPNT}/$tdev/" | tail -n -1)
         umount_ "$NAME"
-        DEST_2[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
+        DESTS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
 
         # [[ ${PVS[@]} =~ $NAME ]] && continue
     done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -u | grep -vE '\bdisk|\bUUID="".*\bPARTUUID=""')
@@ -762,7 +762,7 @@ init_srcs() { #{{{
         mount_ "$NAME" -t "$FSTYPE"
         read -r used avail <<<$(df -k --output=used,avail "${MNTPNT}/$NAME/" | tail -n -1)
         umount_ "$NAME"
-        SRC_2[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
+        SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
     done < <( if [[ -n $file ]]; then cat "$file"; else $LSBLK_CMD "$SRC" ${VG_DISKS[@]}; fi | sort -u | grep -v 'disk')
 } #}}}
 
@@ -866,7 +866,7 @@ boot_setup() { #{{{
     )
 
     for k in "${!sd[@]}"; do
-        for d in "${DEST_2[@]}"; do
+        for d in "${DESTS[@]}"; do
             sed -i "s|$k|${sd[$k]}|" \
                 "$dmnt/${path[0]}" "$dmnt/${path[1]}" \
                 "$dmnt/${path[2]}" "$dmnt/${path[3]}" \
@@ -911,7 +911,7 @@ grub_setup() { #{{{
     done
 
     for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
-        IFS=: read -r ddev rest<<<${DEST_2[${SRC2DEST[${MOUNTS[$m]}]}]}
+        IFS=: read -r ddev rest<<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
         mount_ $ddev -p "$mp/$m"
     done
 
@@ -960,7 +960,7 @@ crypt_setup() { #{{{
     done
 
     for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
-        IFS=: read -r ddev rest<<<${DEST_2[${SRC2DEST[${MOUNTS[$m]}]}]}
+        IFS=: read -r ddev rest<<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
         mount_ $ddev -p "$mp/$m" || exit_ 1 "Faild to mount $ddev to ${mp/$m}."
     done
 
@@ -1200,9 +1200,9 @@ To_file() { #{{{
     #TODO remove this extra counter and do a simpler loop
     local g=0
 
-    for x in ${!SRC_2[@]}; do
+    for x in ${!SRCS[@]}; do
         local sid=$x
-        IFS=: read -r sdev fs spid ptype type used avail<<<${SRC_2[$x]}
+        IFS=: read -r sdev fs spid ptype type used avail<<<${SRCS[$x]}
         local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
         local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep "$sdev" | xargs | awk '{print $1}')
         local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -ru | awk '{print $2}')
@@ -1350,7 +1350,7 @@ Clone() { #{{{
             fi
         done < <(echo "$lvm_data")
 
-        for f in ${SRC_2[@]}; do
+        for f in ${SRCS[@]}; do
             IFS=: read -r sname fs spid ptype type used avail<<<$f
             if grep -qE "${sname}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n'); then
                 lv_size=$(to_mbyte $((used + avail))K)
@@ -1365,7 +1365,7 @@ Clone() { #{{{
 
         [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
-        for x in ${SRC_2[@]}; do
+        for x in ${SRCS[@]}; do
             IFS=: read -r name fs pid ptype type used avail <<<$x
             [[ $type == 'lvm' ]] && src_lfs[${name##*-}]=$fs
             [[ $type == 'part' ]] && grep -qE "${name}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n') && src_lfs[${TO_LVM[$name]}]=$fs
@@ -1439,7 +1439,7 @@ Clone() { #{{{
         #Now, we are ready to restore files from previous backup images
         for file in "${files[@]}"; do
             read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
-            IFS=: read -r ddev dfs dpid dptype dtype davail<<<${DEST_2[${SRC2DEST[$uuid]}]}
+            IFS=: read -r ddev dfs dpid dptype dtype davail<<<${DESTS[${SRC2DEST[$uuid]}]}
 
             MOUNTS[${mnt//_/\/}]="$uuid"
 
@@ -1482,10 +1482,10 @@ Clone() { #{{{
     } #}}}
 
     _clone() { #{{{
-        for x in ${!SRC_2[@]}; do
+        for x in ${!SRCS[@]}; do
             local sid=$x
-            IFS=: read -r sdev sfs spid sptype stype sused savail <<<${SRC_2[$x]}
-            IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DEST_2[${SRC2DEST[$x]}]}
+            IFS=: read -r sdev sfs spid sptype stype sused savail <<<${SRCS[$x]}
+            IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$x]}]}
 
             local tdev=$sdev
             local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
@@ -1547,13 +1547,13 @@ Clone() { #{{{
         declare -A s d
         declare sk dk
 
-        for x in ${!SRC_2[@]}; do
-            IFS=: read -r sdev rest <<<${SRC_2[$x]}
+        for x in ${!SRCS[@]}; do
+            IFS=: read -r sdev rest <<<${SRCS[$x]}
             s[$sdev]=$x
         done
 
-        for x in ${!DEST_2[@]}; do
-            IFS=: read -r ddev rest <<<${DEST_2[$x]}
+        for x in ${!DESTS[@]}; do
+            IFS=: read -r ddev rest <<<${DESTS[$x]}
             d[$ddev]=$x
         done
 
@@ -1563,9 +1563,9 @@ Clone() { #{{{
         local si=0
         local di=0
 
-        for ((i = 0; i < ${#SRC_2[@]}; i++)); do
-            IFS=: read -r sdev sfs spid sptype stype srest <<<${SRC_2[${s[${sk[$i]}]}]}
-            IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DEST_2[${d[${dk[$i]}]}]}
+        for ((i = 0; i < ${#SRCS[@]}; i++)); do
+            IFS=: read -r sdev sfs spid sptype stype srest <<<${SRCS[${s[${sk[$i]}]}]}
+            IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DESTS[${d[${dk[$i]}]}]}
 
             [[ -n ${TO_LVM[$sdev]} ]] && si=$i
             grep -qE "\b${ddev##*-}\b" < <(echo ${TO_LVM[*]} | tr ' ' '\n') && di=$i
@@ -1577,9 +1577,9 @@ Clone() { #{{{
             fi
         done
 
-        for ((i = 0; i < ${#SRC_2[@]}; i++)); do
-            IFS=: read -r sdev sfs spid sptype stype srest <<<${SRC_2[${s[${sk[$i]}]}]}
-            IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DEST_2[${d[${dk[$i]}]}]}
+        for ((i = 0; i < ${#SRCS[@]}; i++)); do
+            IFS=: read -r sdev sfs spid sptype stype srest <<<${SRCS[${s[${sk[$i]}]}]}
+            IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DESTS[${d[${dk[$i]}]}]}
 
             SRC2DEST[${s[${sk[$i]}]}]=${d[${dk[$i]}]}
             [[ -n $spid && -n $dpid ]] && PSRC2PDEST[$spid]=$dpid
@@ -1601,7 +1601,7 @@ Clone() { #{{{
             _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle #TODO check how dest is used in lvm_setup for crypt
         else
             disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
-            if echo "${SRC_2[*]}" | grep -q 'lvm'; then
+            if echo "${SRCS[*]}" | grep -q 'lvm'; then
                 _lvm_setup "$DEST"
                 sleep 3
             fi
@@ -1624,7 +1624,7 @@ Clone() { #{{{
     if [[ $HAS_GRUB == true ]]; then
         message -c -t "Installing Grub"
         {
-            IFS=: read -r ddev rest<<<${DEST_2[${SRC2DEST[${MOUNTS['/']}]}]}
+            IFS=: read -r ddev rest<<<${DESTS[${SRC2DEST[${MOUNTS['/']}]}]}
             [[ -z $ddev ]] && exit_ 1 "Unexpected error - empty destination."
             if [[ $ENCRYPT_PWD ]]; then
                 crypt_setup "$ENCRYPT_PWD" $ddev "$DEST" "$LUKS_LVM_NAME" "$ENCRYPT_PART" || return 1
