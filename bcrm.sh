@@ -2089,6 +2089,13 @@ Main() { #{{{
         && lsblk -lpo parttype "$SRC" | grep -nqi 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b' \
         && HAS_EFI=true
 
+    if [[ -b $DEST ]]; then
+        read pv_name vg_name < <(pvs -o pv_name,vg_name --no-headings | grep "$DEST")
+        [[ -n $pv_name ]] && exit_ 1 "Destination has physical volumes still assigned to VG $vg_name".
+        unset pv_name vg_name
+    fi
+
+
     [[ $HAS_EFI == true && $UEFI == true ]] && UEFI=false #Ignore -u if destination is alread EFI-enabled.
 
     for d in "$SRC" "$DEST"; do
@@ -2156,6 +2163,8 @@ Main() { #{{{
 
         [[ -b $DEST ]] \
             && SECTORS_DEST=$(to_sector ${dest_size}M)
+
+        unset dest_size
     }
 
     #Make sure source or destination folder are not mounted on the same disk to backup to or restore from.
@@ -2192,6 +2201,7 @@ Main() { #{{{
             for l in ${!TO_LVM[@]}; do
                 grep -qE "\b${TO_LVM[$l]}\b" < <(echo "$lvs") && exit_ 1 "LV name '${TO_LVM[$l]}' already exists. Cannot convert "
             done
+            unset lvs
         }
 
         if [[ -n $LVM_EXPAND ]]; then
