@@ -62,7 +62,7 @@ declare -A CHG_SYS_FILES    #Container for system files that needed to be change
 declare -A MNTJRNL MOUNTS
 declare -A SRC2DEST PSRC2PDEST NSRC2NDEST
 
-declare PVS=() VG_DISKS=()
+declare PVS=() VG_DISKS=() CHROOT_MOUNTS=()
 
 # FILLED BY OR BECAUSE OF PROGRAM ARGUMENTS
 #----------------------------------------------------------------------------------------------------------------------
@@ -252,6 +252,26 @@ mount_() { #{{{
     [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} == "$path" ]] && return 0
     { $cmd "$src" "$path" && MNTJRNL["$src"]="$path"; } || return 1
 } #}}}
+
+mount_chroot() {
+    local f
+    local mp="$1"
+
+    umount_chroot
+    for f in sys dev dev/pts proc run; do
+        mount --bind "/$f" "$mp/$f"
+    done
+
+    CHROOT_MOUNTS+=("$mp")
+}
+
+
+umount_chroot() {
+    local f
+    for f in ${CHROOT_MOUNTS[@]}; do
+        umount -Rl "$f"
+    done
+}
 
 umount_() { #{{{
     local OPTIND
@@ -898,17 +918,16 @@ grub_setup() { #{{{
     local has_efi=$2
     local uefi=$3
     local dest="$4"
-    local mp="${MNTPNT}/$d"
+    local mp=
 
-    mount "$d" "$mp"
+    mount_ "$d" 
+    mp=$(get_mount $d) || exit_ 1 "Could not find mount journal entry for $d. Aborting!"
 
     sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*||" "$mp/etc/default/grub"
     sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=n/' "$mp/etc/default/grub"
     sed -i 's/^/#/' "$mp/etc/crypttab"
 
-    for f in sys dev dev/pts proc run; do
-        mount --bind "/$f" "$mp/$f"
-    done
+    mount_chroot "$mp"
 
     for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
         IFS=: read -r ddev rest<<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
@@ -936,7 +955,7 @@ grub_setup() { #{{{
     pkg_install "$mp" "$dest" "$apt_pkgs" || return 1
 
     create_rclocal "$mp"
-    umount -Rl "$mp"
+    umount_chroot 
     return 0
 } #}}}
 
@@ -955,9 +974,7 @@ crypt_setup() { #{{{
 
     mount_ "$d" -p "$mp" || exit_ 1 "Faild to mount $ddev to ${mp}."
 
-    for f in sys dev dev/pts proc run; do
-        mount --bind "/$f" "$mp/$f"
-    done
+    mount_chroot "$mp"
 
     for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
         IFS=: read -r ddev rest<<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
@@ -1012,7 +1029,7 @@ crypt_setup() { #{{{
     pkg_remove "$mp" "$REMOVE_PKGS" || return 1
     pkg_install "$mp" "$dest" "lvm2 cryptsetup keyutils binutils grub2-common grub-pc-bin" || return 1
     create_rclocal "$mp"
-    umount -lR "$mp"
+    umount_chroot
 } #}}}
 
 # $1: <full path>
@@ -1683,9 +1700,7 @@ Main() { #{{{
         echo_ "Creating chroot environment. This might take a while ..."
         { mkdir -p "$SCHROOT_HOME" && tar xf "${SCRIPTPATH}/$F_SCHROOT" -C "$_"; } || exit_ 1 "Faild extracting chroot. See the log $F_LOG for details."
 
-        for f in sys dev dev/pts proc run; do
-            mount_ "/$f" -p "$SCHROOT_HOME/$f" -b
-        done
+        mount_chroot "$SCHROOT_HOME"
 
         [[ -n $DEST_IMG ]] && mount_ "${DEST_IMG%/*}" -p "$SCHROOT_HOME/${DEST_IMG%/*}" -b
         [[ -n $SRC_IMG ]] && mount_ "${$SRC_IMG%/*}" -p "$SCHROOT_HOME/${$SRC_IMG%/*}" -b
@@ -1710,9 +1725,8 @@ Main() { #{{{
         echo_ "Now executing chroot in $SCHROOT_HOME"
         rm "$PIDFILE" && schroot -c bcrm -d /sf_bcrm -- bcrm.sh ${args//--schroot/} #Do not double quote args to avoid wrong interpretation!
 
-        for f in sys dev dev/pts proc run; do
-            umount_ "/$f"
-        done
+        umount_chroot
+
         umount_ "$SCHROOT_HOME/$DEST"
         umount_ "$SCHROOT_HOME/${$SRC_IMG%/*}"
         umount_ "$SCHROOT_HOME/${DEST_IMG%/*}"
@@ -1901,7 +1915,7 @@ Main() { #{{{
             shift 2; continue
             ;;
         '-d' | '--destination')
-            DEST=$(readlink -m "$2") || exit_ 1 "Specified destination $2 does not exist!"
+            DEST=$(readlink -e "$2") || exit_ 1 "Specified destination $2 does not exist!"
             shift 2; continue
             ;;
         '-n' | '--new-vg-name')
@@ -2091,7 +2105,7 @@ Main() { #{{{
 
     if [[ -b $DEST ]]; then
         read pv_name vg_name < <(pvs -o pv_name,vg_name --no-headings | grep "$DEST")
-        [[ -n $pv_name ]] && exit_ 1 "Destination has physical volumes still assigned to VG $vg_name".
+        [[ -n $vg_name ]] && exit_ 1 "Destination has physical volumes still assigned to VG $vg_name".
         unset pv_name vg_name
     fi
 
