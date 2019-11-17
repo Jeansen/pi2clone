@@ -87,7 +87,7 @@ declare SCHROOT=false
 declare IS_CLEANUP=true
 
 declare MIN_RESIZE=2048 #In 1M units
-declare SWAP_SIZE=-1 #Values < 0 mean noch change/ignore
+declare SWAP_SIZE=-1    #Values < 0 mean noch change/ignore
 declare BOOT_SIZE=0
 declare LVM_EXPAND_BY=0 #How much % of free space to use from a VG, e.g. when a dest disk is larger than a src disk.
 
@@ -150,12 +150,12 @@ ctx_init() { #{{{
             done
         }
     else
-    {
-        local f
-        for f in "${!map[@]}"; do
-            CONTEXT[$f]=$(eval echo "\$${map[$f]}") || exit_ 1 "ohno"
-        done
-    }
+        {
+            local f
+            for f in "${!map[@]}"; do
+                CONTEXT[$f]=$(eval echo "\$${map[$f]}") || exit_ 1 "ohno"
+            done
+        }
     fi
 } #}}}
 
@@ -165,47 +165,46 @@ ctx_set() { #{{{
     declare -n v=$1
 
     case "$1" in
-        BOOT_PART)
-            CONTEXT[bootPart]=$v
-            ;;
-        SECTORS_SRC)
-            CONTEXT[sectors]=$v
-            ;;
-        SECTORS_SRC_USED)
-            CONTEXT[sectorsUsed]=$v
-            ;;
-        IS_LVM)
-            CONTEXT[isLvm]=$v
-            ;;
-        IS_CHECKSUM)
-            CONTEXT[isChecksum]=$v
-            ;;
-        HAS_EFI)
-            CONTEXT[hasEfi]=$v
-            ;;
-        *)
-            return 1
-            ;;
-        esac
+    BOOT_PART)
+        CONTEXT[bootPart]=$v
+        ;;
+    SECTORS_SRC)
+        CONTEXT[sectors]=$v
+        ;;
+    SECTORS_SRC_USED)
+        CONTEXT[sectorsUsed]=$v
+        ;;
+    IS_LVM)
+        CONTEXT[isLvm]=$v
+        ;;
+    IS_CHECKSUM)
+        CONTEXT[isChecksum]=$v
+        ;;
+    HAS_EFI)
+        CONTEXT[hasEfi]=$v
+        ;;
+    *)
+        return 1
+        ;;
+    esac
 } #}}}
 
 # Save key/values of context array to file
 ctx_save() { #{{{
-    echo > "$DEST/$F_CONTEXT"
+    echo >"$DEST/$F_CONTEXT"
     local f
     for f in "${!CONTEXT[@]}"; do
-        [[ -n ${CONTEXT[$f]} ]] && echo "$f=${CONTEXT[$f]}" >> "$DEST/$F_CONTEXT"
+        [[ -n ${CONTEXT[$f]} ]] && echo "$f=${CONTEXT[$f]}" >>"$DEST/$F_CONTEXT"
     done
     sed -i '/^\s*$/d' "$DEST/$F_CONTEXT"
-    echo "# Backup date: $(date)" >> "$DEST/$F_CONTEXT"
-    echo "# Version used: $(git log -1 --format="%H")" >> "$DEST/$F_CONTEXT"
+    echo "# Backup date: $(date)" >>"$DEST/$F_CONTEXT"
+    echo "# Version used: $(git log -1 --format="%H")" >>"$DEST/$F_CONTEXT"
 } #}}}
 
 
 #----------------------------------------------------------------------------------------------------------------------
 # PRIVATE - only used by PUBLIC functions
 #----------------------------------------------------------------------------------------------------------------------
-
 
 # By convention methods ending with a '_' wrap shell functions or commands with the same name.
 
@@ -368,7 +367,6 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
     printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
 
-
     printf "\n\nADVANCED OPTIONS"
     printf "\n----------------\n\n"
     printf "  %-3s %-30s %s\n"   "-b," "--boot-size"             "Boot partition size. For instance: 200M or 4G."
@@ -497,12 +495,12 @@ expand_disk() { #{{{
         local part=$1
         local size=$2
 
-        local nv=$( echo "( ${val_parts[$part]} - $(to_sector ${size}K) ) / $n" | bc )
+        local nv=$(echo "( ${val_parts[$part]} - $(to_sector ${size}K) ) / $n" | bc)
         nv=${nv%.*}
 
         local k
         for k in "${!var_parts[@]}"; do
-            (( var_parts[$k]-=nv ))
+            ((var_parts[$k] -= nv))
         done
 
         val_parts[$part]=$(to_sector ${size}K)
@@ -530,14 +528,13 @@ expand_disk() { #{{{
             if [[ (-n $BOOT_PART && $name == "$BOOT_PART") ||
                 (-n $SWAP_PART && $name == "$SWAP_PART") ||
                 (-n $EFI_PART && $name == "$EFI_PART") ]]
-                        then
-                            val_parts[$name]=${size%,*}
-                        else
-                            var_parts[$name]=${size%,*}
-                            ((n++))
+            then
+                val_parts[$name]=${size%,*}
+            else
+                var_parts[$name]=${size%,*}
+                ((n++))
             fi
         done < <(echo "$pdata" | grep '^/' | awk '{print $1,$6}')
-
 
         [[ -n $SWAP_PART && $SWAP_SIZE -ge 0 ]] && _part_size_check $SWAP_PART $SWAP_SIZE
         [[ -n $BOOT_PART && $BOOT_SIZE -gt 0 ]] && _part_size_check $BOOT_PART $BOOT_SIZE
@@ -546,7 +543,7 @@ expand_disk() { #{{{
     {
         local k
         for k in "${!var_parts[@]}"; do
-                local nv=$( echo "${var_parts[$k]} * $expand_factor" | bc )
+            local nv=$(echo "${var_parts[$k]} * $expand_factor" | bc)
             var_parts[$k]=${nv%.*}
         done
     }
@@ -554,18 +551,18 @@ expand_disk() { #{{{
     {
         local j
         for j in "${!val_parts[@]}"; do
-            local nv=$( echo "((${val_parts[$j]} * $expand_factor) - ${val_parts[$j]}) / $n" | bc )
+            local nv=$(echo "((${val_parts[$j]} * $expand_factor) - ${val_parts[$j]}) / $n" | bc)
             nv=${nv%.*}
             for i in "${!var_parts[@]}"; do
-                (( var_parts[$i]+=nv ))
+                ((var_parts[$i] += nv))
             done
         done
     }
 
     {
         while read -r e; do
-                local size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
-                local part=$(echo "$e" | awk '{print $1}')
+            local size=$(echo "$e" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+            local part=$(echo "$e" | awk '{print $1}')
 
             if [[ -n "$size" ]]; then
                 if [[ $part == "$SWAP_PART" || $part == "$BOOT_PART" || $part == "$EFI_PART" ]]; then
@@ -597,14 +594,15 @@ expand_disk() { #{{{
         local p
         for p in ${!TO_LVM[@]}; do
             case $pttype in
-                dos)
-                    pdata=$(sed "\|$p| s/type=\w*/type=8e/" < <(echo "$pdata"))
-                    ;;
-                gpt)
-                    pdata=$(sed "\|$p| s/type=\([[:alnum:]]*-\)*[[:alnum:]]*/type=E6D6D379-F507-44C2-A23C-238F2A3DF928/" < <(echo "$pdata"))
-                    ;;
-                *)
-                    exit_ 1 "Unsupported partition table $pttype."
+            dos)
+                pdata=$(sed "\|$p| s/type=\w*/type=8e/" < <(echo "$pdata"))
+                ;;
+            gpt)
+                pdata=$(sed "\|$p| s/type=\([[:alnum:]]*-\)*[[:alnum:]]*/type=E6D6D379-F507-44C2-A23C-238F2A3DF928/" < <(echo "$pdata"))
+                ;;
+            *)
+                exit_ 1 "Unsupported partition table $pttype."
+                ;;
             esac
         done
     }
@@ -662,7 +660,7 @@ mounts() { #{{{
     for s in "${!SRCS[@]}"; do
         local mpnt=
         local sid=$s
-        IFS=: read -r sdev rest<<<${SRCS[$s]}
+        IFS=: read -r sdev rest <<<${SRCS[$s]}
 
         mount_ "$sdev" && mpnt=${MNTJRNL[$sdev]}
         [[ -z $mpnt ]] && exit_ 1 "Could not mount ${sdev}."
@@ -672,7 +670,7 @@ mounts() { #{{{
             for y in "${!SRCS[@]}"; do
                 sid=$y
                 #using sdev causes strange behaviour instead of devname
-                IFS=: read -r sdevname fs spid ptype type rest<<<${SRCS[$y]}
+                IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
                 local i
                 for ((i = 0; i < ${#f[@]}; i++)); do
                     while read -r e; do
@@ -818,7 +816,7 @@ init_srcs() { #{{{
         read -r used avail <<<$(df -k --output=used,avail "${MNTPNT}/$NAME/" | tail -n -1)
         umount_ "$NAME"
         SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
-    done < <( if [[ -n $file ]]; then cat "$file"; else $LSBLK_CMD "$SRC" ${VG_DISKS[@]}; fi | sort -u | grep -v 'disk')
+    done < <(if [[ -n $file ]]; then cat "$file"; else $LSBLK_CMD "$SRC" ${VG_DISKS[@]}; fi | sort -u | grep -v 'disk')
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -873,10 +871,10 @@ disk_setup() { #{{{
 
         local name kname fstype uuid partuuid type parttype e n=0
         while read -r e; do
-            read -r name kname fstype uuid partuuid type parttype<<<"$e"
+            read -r name kname fstype uuid partuuid type parttype <<<"$e"
             eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype"
 
-            IFS=: read -r sname sfstype<<<${parts[$n]}
+            IFS=: read -r sname sfstype <<<${parts[$n]}
 
             if [[ -n $sname ]] && grep -qE "${sname}" < <(echo "${!TO_LVM[*]}" | tr ' ' '\n'); then
                 pvcreate -ff "$NAME"
@@ -965,7 +963,7 @@ grub_setup() { #{{{
     {
         local m
         for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
-            IFS=: read -r ddev rest<<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
+            IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
             mount_ $ddev -p "$mp/$m"
         done
     }
@@ -1018,7 +1016,7 @@ crypt_setup() { #{{{
     {
         local m
         for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
-            IFS=: read -r ddev rest<<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
+            IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
             mount_ $ddev -p "$mp/$m" || exit_ 1 "Faild to mount $ddev to ${mp/$m}."
         done
     }
@@ -1184,7 +1182,7 @@ sector_to_tbyte() { #{{{
 Cleanup() { #{{{
     {
         umount_
-        if [[ $IS_CLEANUP == true  ]]; then
+        if [[ $IS_CLEANUP == true ]]; then
             [[ $SCHROOT_HOME =~ ^/tmp/ ]] && rm -rf "$SCHROOT_HOME" #TODO add option to overwrite and show warning
             rm "$F_SCHROOT_CONFIG"
         fi
@@ -1226,7 +1224,13 @@ To_file() { #{{{
     pushd "$DEST" >/dev/null || return 1
 
     _save_disk_layout() { #{{{
-        local snp=$(sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role | grep 'snap' | sed -e 's/^\s*//' | awk '{print $1}')
+        local snp=$(
+            sudo lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role \
+                | grep 'snap' \
+                | sed -e 's/^\s*//' \
+                | awk '{print $1}'
+        )
+
         [[ -z $snp ]] && snp="NOSNAPSHOT"
 
         {
@@ -1277,7 +1281,7 @@ To_file() { #{{{
     local s g=0
     for s in ${!SRCS[@]}; do
         local sid=$s
-        IFS=: read -r sdev fs spid ptype type used avail<<<${SRCS[$s]}
+        IFS=: read -r sdev fs spid ptype type used avail <<<${SRCS[$s]}
         local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
         local lv_src_name=$( lvs --noheadings -o lv_name,lv_dm_path \
             | grep "$sdev" \
@@ -1321,7 +1325,7 @@ To_file() { #{{{
             while read -r e; do
                 [[ $e -ge 100 ]] && e=100 #Just a precaution
                 message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
-            done < <(eval "$cmd" 2>&1) #Note that with pv stderr holds the current percentage value!
+            done < <(eval "$cmd" 2>&1)                                              #Note that with pv stderr holds the current percentage value!
             message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
         else
             message -c -t "Creating backup for $sdev"
@@ -1392,7 +1396,7 @@ Clone() { #{{{
         local lvm_data=$([[ $_RMODE == true ]] && cat "$SRC/$F_LVS_LIST" || $lvs_cmd | grep -E "\b$VG_SRC_NAME\b")
 
         local vg_data=$(vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free | grep -E "\b$VG_SRC_NAME\b|\b$VG_SRC_NAME_CLONE\b")
-        [[ $_RMODE == true ]] && vg_data=$( echo -e "$vg_data\n$(cat $SRC/$F_VGS_LIST)")
+        [[ $_RMODE == true ]] && vg_data=$(echo -e "$vg_data\n$(cat $SRC/$F_VGS_LIST)")
 
         if [[ -n $SWAP_PART ]]; then
             local swap_name swap_size
@@ -1416,7 +1420,7 @@ Clone() { #{{{
             done < <(echo "$vg_data")
         }
 
-        scale_factor=$(echo "scale=4; $s2 / $s1"| bc)
+        scale_factor=$(echo "scale=4; $s2 / $s1" | bc)
 
         {
             local lv_name vg_name lv_size vg_size vg_free lv_role lv_dm_path e size
@@ -1440,11 +1444,11 @@ Clone() { #{{{
         {
             local sname fs spid ptype type used avail f size
             for f in ${SRCS[@]}; do
-                IFS=: read -r sname fs spid ptype type used avail<<<$f
+                IFS=: read -r sname fs spid ptype type used avail <<<$f
                 if grep -qE "${sname}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n'); then
                     lv_size=$(to_mbyte $((used + avail))K)
                     if ((s1 < s2)); then
-                        lvcreate --yes -L"${lv_size%%.*}" -n "${TO_LVM[$sname]}"  "$VG_SRC_NAME_CLONE"
+                        lvcreate --yes -L"${lv_size%%.*}" -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
                     else
                         size=$(echo "scale=4; $lv_size * $scale_factor" | bc)
                         lvcreate --yes -L${size%%.*} -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
@@ -1471,7 +1475,7 @@ Clone() { #{{{
                 [[ $dm_path =~ swap ]] && mkswap -f "$dm_path" && continue
                 [[ -z ${src_lfs[$lv_name]} ]] && exit_ 1 "Unexpected Error" #Yes, I know... but has to do for the moment!
                 { [[ "${src_lfs[$lv_name]}" == swap ]] && mkswap -f "$dm_path"; } || mkfs -t "${src_lfs[$lv_name]}" "$dm_path"
-            done < <(lvs --no-headings -o lv_name,dm_path $VG_SRC_NAME_CLONE | awk '{print $1,$2}');
+            done < <(lvs --no-headings -o lv_name,dm_path $VG_SRC_NAME_CLONE | awk '{print $1,$2}')
         }
     } #}}}
 
@@ -1540,7 +1544,7 @@ Clone() { #{{{
         local file
         for file in "${files[@]}"; do
             read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
-            IFS=: read -r ddev dfs dpid dptype dtype davail<<<${DESTS[${SRC2DEST[$uuid]}]}
+            IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$uuid]}]}
 
             MOUNTS[${mnt//_/\/}]="$uuid"
 
@@ -1589,20 +1593,31 @@ Clone() { #{{{
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$s]}]}
 
             local tdev=$sdev
-            local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path | grep $sdev | xargs | awk '{print $1}')
-            local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free | xargs | grep "${VG_SRC_NAME}" | sort -u | awk '{print $2}')
+            local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path \
+                | grep $sdev \
+                | xargs \
+                | awk '{print $1}'
+            )
+
+            local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free \
+                | xargs \
+                | grep "${VG_SRC_NAME}" \
+                | sort -u \
+                | awk '{print $2}'
+            )
 
             [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
 
-                if [[ type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
-                    tdev='snap4clone'
-                    lvremove -q -f "${VG_SRC_NAME}/$tdev"
-                    lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name" &&
-                        sleep 3 &&
-                        mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev" || return 1
-                else
-                    mount_ "$sdev"
-                fi
+            if [[ type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
+                tdev='snap4clone'
+                lvremove -q -f "${VG_SRC_NAME}/$tdev"
+                lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name" \
+                    && sleep 3 \
+                    && mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev" \
+                    || return 1
+            else
+                mount_ "$sdev"
+            fi
 
             mount_ "$ddev"
 
@@ -1678,10 +1693,10 @@ Clone() { #{{{
                 [[ -n ${TO_LVM[$sdev]} ]] && si=$i
                 grep -qE "\b${ddev##*-}\b" < <(echo ${TO_LVM[*]} | tr ' ' '\n') && di=$i
 
-                if (( si != di )); then
+                if ((si != di)); then
                     local v=${dk[$di]}
                     unset dk[$di]
-                    dk=(${dk[@]:0:((i+1))} $v ${dk[@]:((i+2))})
+                    dk=(${dk[@]:0:((i + 1))} $v ${dk[@]:((i + 2))})
                 fi
             done
         }
@@ -1737,7 +1752,7 @@ Clone() { #{{{
     if [[ $HAS_GRUB == true ]]; then
         message -c -t "Installing Grub"
         {
-            IFS=: read -r ddev rest<<<${DESTS[${SRC2DEST[${MOUNTS['/']}]}]}
+            IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS['/']}]}]}
             [[ -z $ddev ]] && exit_ 1 "Unexpected error - empty destination."
             if [[ $ENCRYPT_PWD ]]; then
                 crypt_setup "$ENCRYPT_PWD" $ddev "$DEST" "$LUKS_LVM_NAME" "$ENCRYPT_PART" || return 1
@@ -1753,7 +1768,7 @@ Clone() { #{{{
 
 Main() { #{{{
     local args_count=$# #getop changes the $# value. To be sure we save the original arguments count.
-    local args=$@ #Backup original arguments.
+    local args=$@       #Backup original arguments.
 
     _validate_block_device() { #{{{
         local t=$(lsblk --nodeps --noheadings -o TYPE "$1")
@@ -1802,7 +1817,7 @@ Main() { #{{{
         mount_chroot "$SCHROOT_HOME"
 
         [[ -n $DEST_IMG ]] && mount_ "${DEST_IMG%/*}" -p "$SCHROOT_HOME/${DEST_IMG%/*}" -b
-        [[ -n $SRC_IMG ]] && mount_ "${$SRC_IMG%/*}" -p "$SCHROOT_HOME/${$SRC_IMG%/*}" -b
+        [[ -n $SRC_IMG ]] && mount_ "${SRC_IMG%/*}" -p "$SCHROOT_HOME/${SRC_IMG%/*}" -b
 
         if [[ -d "$SRC" && -b $DEST ]]; then
             { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -p "$SCHROOT_HOME/$SRC" -b; } \
@@ -1812,13 +1827,13 @@ Main() { #{{{
                 || exit_ 1 "Failed preparing chroot for backup creation."
         fi
 
-        echo -n "$( < <(echo -n "
+        echo -n "$(< <(echo -n "
             [bcrm]
             type=plain
             directory=${SCHROOT_HOME}
             profile=desktop
             preserve-environment=true
-        "  ))" |  sed -e '/./,$!d; s/^\s*//' > $F_SCHROOT_CONFIG
+        "))" | sed -e '/./,$!d; s/^\s*//' >$F_SCHROOT_CONFIG
 
         cp -r $(dirname $(readlink -f $0)) "$SCHROOT_HOME"
         echo_ "Now executing chroot in $SCHROOT_HOME"
@@ -1827,7 +1842,7 @@ Main() { #{{{
         umount_chroot
 
         umount_ "$SCHROOT_HOME/$DEST"
-        umount_ "$SCHROOT_HOME/${$SRC_IMG%/*}"
+        umount_ "$SCHROOT_HOME/${SRC_IMG%/*}"
         umount_ "$SCHROOT_HOME/${DEST_IMG%/*}"
     } #}}}
 
@@ -1837,7 +1852,7 @@ Main() { #{{{
         CHG_SYS_FILES["$cf"]=$(md5sum "$cf" | awk '{print $1}')
 
         mkdir -p "${BACKUP_FOLDER}/${cf%/*}" && cp "$cf" "${BACKUP_FOLDER}/${cf}"
-        echo "en_US.UTF-8 UTF-8" > "$cf"
+        echo "en_US.UTF-8 UTF-8" >"$cf"
         locale-gen || return 1
     } #}}}
 
@@ -1868,7 +1883,7 @@ Main() { #{{{
         } #}}}
 
         if [[ $IS_LVM == true ]]; then
-            local parts=$(lsblk -lpo name,fstype | grep "${VG_SRC_NAME//-/--}-"  | grep -v swap | awk '{print $1}')
+            local parts=$(lsblk -lpo name,fstype | grep "${VG_SRC_NAME//-/--}-" | grep -v swap | awk '{print $1}')
             _set "$parts"
         fi
         if [[ -z $boot_part ]]; then
@@ -1885,12 +1900,12 @@ Main() { #{{{
         local dest_size=0
 
         if [[ -d $DEST ]]; then
-            dest_size=$(df --block-size=1M --output=avail $DEST | tail -n 1 )
+            dest_size=$(df --block-size=1M --output=avail $DEST | tail -n 1)
         else
             if [[ $PVALL == true ]]; then
                 local d
                 for d in $(lsblk -po name,type | grep disk | grep -v "$DEST" | awk '{print $1}'); do
-                    dest_size=$(( dest_size + $(blockdev --getsize64 "$d") ))
+                    dest_size=$((dest_size + $(blockdev --getsize64 "$d")))
                 done
             else
                 dest_size=$(blockdev --getsize64 "$DEST")
@@ -1912,7 +1927,7 @@ Main() { #{{{
                     local size=$(swapon --show=size,name --bytes --noheadings | grep $dev | awk '{print $1}') #no swap = 0
                     size=$(to_kbyte ${size:-0})
                 fi
-                src_size=$((size + src_size + $(df -k --output=used $dev | tail -n -1) ))
+                src_size=$((size + src_size + $(df -k --output=used $dev | tail -n -1)))
             fi
         done <<<"$plist"
 
@@ -1966,7 +1981,7 @@ Main() { #{{{
     #Force root
     [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
 
-    echo > "$F_LOG"
+    echo >"$F_LOG"
     { hash pv && INTERACTIVE=true; } || message -i -t "No progress will be shown. Consider installing package: pv"
 
     SYS_HAS_EFI=$([[ -d /sys/firmware/efi ]] && echo true || echo false)
@@ -2139,7 +2154,7 @@ Main() { #{{{
     local packages=()
     #Inform about ALL missing but necessary tools.
     for c in "${PKGS[@]}"; do
-        echo "$c" >> /tmp/f
+        echo "$c" >>/tmp/f
 
         hash "$c" 2>/dev/null || {
             case "$c" in
@@ -2184,7 +2199,6 @@ Main() { #{{{
         { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG" && udevadm settle; } || exit_ 1
         DEST=$DEST_NBD
     fi
-
 
     [[ -z $SRC ]] && exit_ 1 "Missing required parameter -s <source>"
     [[ -z $DEST ]] && exit_ 1 "Missing required parameter -d <destination>"
@@ -2263,7 +2277,14 @@ Main() { #{{{
             fi
 
             local f
-            for f in $(grep -v -i 'swap' "$SRC/$F_PART_LIST" |  grep -o 'MOUNTPOINT=".\+"' | cut -d '=' -f 2 | tr -d '"' | tr -s "/" "_"); do
+            local mnts=$(grep -v -i 'swap' "$SRC/$F_PART_LIST" \
+                | grep -o 'MOUNTPOINT=".\+"' \
+                | cut -d '=' -f 2 \
+                | tr -d '"' \
+                | tr -s "/" "_"
+            ) #TODO What if mount point has spaces?
+
+            for f in $mnts; do
                 grep "$f\$" <(ls "$SRC") || exit_ 2 "$SRC folder missing files."
             done
         fi
