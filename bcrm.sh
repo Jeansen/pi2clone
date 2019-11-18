@@ -130,7 +130,7 @@ ctx_init() { #{{{
     declare -A map
     map[bootPart]=BOOT_PART
     map[sectors]=SECTORS_SRC
-    map[sectorsUsed]=SECORS_USED
+    map[sectorsUsed]=SECTORS_SRC_USED
     map[isLvm]=IS_LVM
     map[isChecksum]=IS_CHECKSUM
     map[hasEfi]=HAS_EFI
@@ -790,7 +790,7 @@ set_dest_uuids() { #{{{
 
         mount_ "$NAME" -t "$FSTYPE"
         local used avail
-        read -r used avail <<<$(df --block-size=1K --output=used,avail "${MNTPNT}/$tdev/" | tail -n -1)
+        read -r used avail <<<$(df --block-size=1K --output=used,avail "$NAME" | tail -n -1)
         umount_ "$NAME"
         DESTS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
 
@@ -811,12 +811,13 @@ init_srcs() { #{{{
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
 
-        mount_ "$NAME" -t "$FSTYPE"
+        mount_ "$NAME"
+        mpnt=$(get_mount $NAME) || exit_ 1 "Could not find mount journal entry for $NAME. Aborting!" #do not use local, $? will be affected!
         local used avail
-        read -r used avail <<<$(df -k --output=used,avail "${MNTPNT}/$NAME/" | tail -n -1)
+        read -r used avail <<<$(df -k --output=used,avail "$mpnt" | tail -n -1)
         umount_ "$NAME"
         SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
-    done < <(if [[ -n $file ]]; then cat "$file"; else $LSBLK_CMD "$SRC" ${VG_DISKS[@]}; fi | sort -u | grep -v 'disk')
+    done < <(echo "$file" | sort -u | grep -v 'disk')
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -832,27 +833,20 @@ disk_setup() { #{{{
 
     #Collect all source paritions and their file systems
     _scan_src_parts() { #{{{
-        if [[ -n $file ]]; then
-            local plist=$( grep 'TYPE="part"' "$file" \
-                | grep -vE 'PARTTYPE="0x5"' \
-                | sort -u
-            )
-        else
-            local plist=$( lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$src" \
-                | grep 'TYPE="part"' \
-                | grep -vE 'PARTTYPE="0x5"' \
-                | sort -u
-            ) #only partitions
-        fi
+        local plist=$( echo "$file" \
+            | grep 'TYPE="part"' \
+            | grep -vE 'PARTTYPE="0x5"' \
+            | sort -u
+        )
 
         local n=0
         while read -r e; do
-            read -r name kname fstype uuid partuuid type parttype <<<"$e"
-            eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype"
+            read -r name kname fstype uuid partuuid type parttype mountpoint <<<"$e"
+            eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype" "$mountpoint"
 
             [[ $SWAP_SIZE -eq 0 && $FSTYPE == swap ]] && continue
 
-            if [[ $TYPE == part && $FSTYPE != LVM2_member && $FSTYPE != crypto_LUKS ]]; then
+            if [[ $TYPE == part && $FSTYPE != crypto_LUKS ]]; then
                 parts[$n]="${NAME}:${FSTYPE}"
                 n=$((n + 1))
             fi
@@ -973,7 +967,7 @@ grub_setup() { #{{{
         read -r name uuid parttype <<<"$(lsblk -pPo name,uuid,parttype "$dest" | grep -i 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b')"
         eval "$name" "$uuid" "$parttype"
         echo -e "UUID=${UUID}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"$mp/etc/fstab"
-        mkdir -p "$mp/boot/efi" && mount "$NAME" "$mp/boot/efi"
+        mkdir -p "$mp/boot/efi" && mount_ "$NAME" -p "$mp/boot/efi"
     fi
 
     {
@@ -1157,22 +1151,22 @@ to_sector() { #{{{
 
 # $1: <sectos> of 512 Bytes
 sector_to_kbyte() { #{{{
-    echo $(($1 / 2 * 2 ** 10))
+    echo $(($1 / 2))
 } #}}}
 
 # $1: <sectos> of 512 Bytes
 sector_to_mbyte() { #{{{
-    echo $(($1 / 2 * 2 ** 20))
+    echo $(($1 / (2 * 2 ** 10)))
 } #}}}
 
 # $1: <sectos> of 512 Bytes
 sector_to_gbyte() { #{{{
-    echo $(($1 / 2 * 2 ** 30))
+    echo $(($1 / (2 * 2 ** 20)))
 } #}}}
 
 # $1: <sectos> of 512 Bytes
 sector_to_tbyte() { #{{{
-    echo $(($1 / 2 * 2 ** 40))
+    echo $(($1 / (2 * 2 ** 30)))
 } #}}}
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -1265,7 +1259,7 @@ To_file() { #{{{
     message -c -t "Creating backup of disk layout"
     {
         logmsg "${lm[0]}" && _save_disk_layout
-        init_srcs
+        init_srcs "$($LSBLK_CMD "$SRC" ${VG_DISKS[@]})"
         mounts
     }
     message -y
@@ -1523,9 +1517,6 @@ Clone() { #{{{
         [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST" "$1"
         [[ ${#PSRC2PDEST[@]} -gt 0 ]] && boot_setup "PSRC2PDEST" "$1"
         [[ ${#NSRC2NDEST[@]} -gt 0 ]] && boot_setup "NSRC2NDEST" "$1"
-
-        umount_ "$sdev"
-        umount_ "$ddev"
     } #}}}
 
     _from_file() { #{{{
@@ -1541,7 +1532,7 @@ Clone() { #{{{
         }
 
         #Now, we are ready to restore files from previous backup images
-        local file
+        local file mpnt
         for file in "${files[@]}"; do
             read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$uuid]}]}
@@ -1549,14 +1540,14 @@ Clone() { #{{{
             MOUNTS[${mnt//_/\/}]="$uuid"
 
             if [[ -n $ddev ]]; then
-                mount_ "$ddev" -t "$fs"
-                pushd "${MNTPNT}/$ddev" >/dev/null || return 1
+                mount_ "$ddev" && { mpnt=$(get_mount $ddev) || exit_ 1 "Could not find mount journal entry for $ddev. Aborting!"; }
+                pushd "$mpnt" >/dev/null || return 1
 
                 [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
 
                 ((davail - sused <= 0)) && exit_ 10 "Require ${sused}K but destination is only ${davail}K"
 
-                local cmd="tar -xf - -C ${MNTPNT}/$ddev"
+                local cmd="tar -xf - -C $mpnt"
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
                 if [[ $INTERACTIVE == true ]]; then
@@ -1565,19 +1556,20 @@ Clone() { #{{{
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     while read -r e; do
                         [[ $e -ge 100 ]] && e=100
-                        message -u -c -t "Restoring $file [ $(printf '%02d%%' $e) ]"
+                        message -u -c -t "Restoring ${dev//_//} (${mnt//_//}) to $ddev [ $(printf '%02d%%' $e) ]"
                         #Note that with pv stderr holds the current percentage value!
                     done < <((eval "$cmd") 2>&1)
-                    message -u -c -t "Restoring $file [ $(printf '%02d%%' 100) ]"
+                    message -u -c -t "Restoring ${dev//_//} (${mnt//_//}) to $ddev [ $(printf '%02d%%' 100) ]"
                 else
-                    message -c -t "Restoring $file"
+                    message -c -t "Restoring ${dev//_//} (${mnt//_//}) to $ddev"
                     cmd="$cmd < ${SRC}/${file}*"
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     eval "$cmd"
                 fi
 
                 popd >/dev/null || return 1
-                _finish "${MNTPNT}/$ddev" 2>/dev/null
+                _finish "$mpnt" 2>/dev/null
+                umount_ "$ddev"
             fi
             message -y
         done
@@ -1652,6 +1644,8 @@ Clone() { #{{{
             [[ type == lvm ]] && lvremove -q -f "${VG_SRC_NAME}/$tdev"
 
             _finish "${MNTPNT}/$ddev"
+            umount_ "$sdev"
+            umount_ "$ddev"
             message -y
         done
 
@@ -1716,10 +1710,22 @@ Clone() { #{{{
 
     message -c -t "Cloning disk layout"
     {
-        local f=$([[ $_RMODE == true ]] && echo "$SRC/$F_PART_LIST")
-        _prepare_disk #First collect what we have in our backup
+        local f=$([[ $_RMODE == true ]] && cat "$SRC/$F_PART_LIST" || $LSBLK_CMD "$SRC" ${VG_DISKS[@]})
+
         init_srcs "$f"
-        if [[ $ENCRYPT_PWD ]]; then
+
+        if [[ -n $ENCRYPT_PWD ]]; then
+            for f in ${SRCS[*]}; do
+                IFS=: read -r name fstype partuuid parttype type used avail <<<"$f"
+                [[ $type == part && ! $parttype =~ c12a7328-f81f-11d2-ba4b-00a0c93ec93b|0xef ]] \
+                    && exit_ 1 "Cannot encrypt disk. All partitions (except for EFI) must be of type 'lvm'."
+            done
+        fi
+
+        _prepare_disk #First collect what we have in our backup
+        sync_block_dev $DEST
+
+        if [[ -n $ENCRYPT_PWD ]]; then
             if [[ $HAS_EFI == true ]]; then
                 local dev type
                 read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $DEST | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
@@ -1927,7 +1933,9 @@ Main() { #{{{
                     local size=$(swapon --show=size,name --bytes --noheadings | grep $dev | awk '{print $1}') #no swap = 0
                     size=$(to_kbyte ${size:-0})
                 fi
+                mount_ "$dev"
                 src_size=$((size + src_size + $(df -k --output=used $dev | tail -n -1)))
+                umount_ "$dev"
             fi
         done <<<"$plist"
 
@@ -2048,6 +2056,7 @@ Main() { #{{{
             ;;
         '-e' | '--encrypt-with-password')
             ENCRYPT_PWD="$2"
+            [[ -z "${ENCRYPT_PWD// }" ]] && exit_ 2 "Invalid password."
             PKGS+=(cryptsetup)
             shift 2; continue
             ;;
