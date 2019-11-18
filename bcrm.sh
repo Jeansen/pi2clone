@@ -790,7 +790,8 @@ set_dest_uuids() { #{{{
 
         mount_ "$NAME" -t "$FSTYPE"
         local used avail
-        read -r used avail <<<$(df --block-size=1K --output=used,avail "$NAME" | tail -n -1)
+        read -r used avail <<<$(df --block-size=1K --output=used,size "$NAME" | tail -n -1)
+        avail=$((avail - used)) #because df keeps 5% for root!
         umount_ "$NAME"
         DESTS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
 
@@ -814,7 +815,8 @@ init_srcs() { #{{{
         mount_ "$NAME"
         mpnt=$(get_mount $NAME) || exit_ 1 "Could not find mount journal entry for $NAME. Aborting!" #do not use local, $? will be affected!
         local used avail
-        read -r used avail <<<$(df -k --output=used,avail "$mpnt" | tail -n -1)
+        read -r used avail <<<$(df -k --output=used,size "$mpnt" | tail -n -1)
+        avail=$((avail - used)) #because df keeps 5% for root!
         umount_ "$NAME"
         SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
     done < <(echo "$file" | sort -u | grep -v 'disk')
@@ -1903,10 +1905,11 @@ Main() { #{{{
     } #}}}
 
     _dest_size() { #{{{
-        local dest_size=0
+        local used size dest_size=0
 
         if [[ -d $DEST ]]; then
-            dest_size=$(df --block-size=1M --output=avail $DEST | tail -n 1)
+            read -r size used <<<$(df --block-size=1M --output=size,used $DEST | tail -n 1)
+            dest_size=$((size - used))
         else
             if [[ $PVALL == true ]]; then
                 local d
@@ -2137,6 +2140,7 @@ Main() { #{{{
             {
                 local k v
                 read -r k v <<<"${2/:/ }"
+                [[ -z $v ]] && exit_ 1 "Missing LV name"
                 if _is_valid_lv_name $v; then
                     [[ -n ${TO_LVM[$k]} ]] && exit_ 1 "$k already specified. Duplicate parameters?"
                     TO_LVM[$k]=$v
