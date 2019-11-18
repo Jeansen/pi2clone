@@ -2294,7 +2294,7 @@ Main() { #{{{
             ) #TODO What if mount point has spaces?
 
             for f in $mnts; do
-                grep "$f\$" <(ls "$SRC") || exit_ 2 "$SRC folder missing files."
+                grep "$f\$" <(ls -A "$SRC") || exit_ 2 "$SRC folder missing files."
             done
         fi
     }
