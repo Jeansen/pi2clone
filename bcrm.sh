@@ -48,6 +48,17 @@ declare SNAP4CLONE='snap4clone'
 declare MNTPNT=/mnt/bcrm #Do not use /tmp! It will be excluded on backups!
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 
+
+declare ID_GPT_LVM=e6d6d379-f507-44c2-a23c-238f2a3df928
+declare ID_GPT_EFI=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+declare ID_GPT_LINUX=0fc63daf-8483-4772-8e79-3d69d8477de4
+declare ID_DOS_EFI=ef
+declare ID_DOS_LVM=8e
+declare ID_DOS_LINUX=83
+declare ID_DOS_FAT32=c
+declare ID_DOS_EXT=5
+
+
 # PREDEFINED COMMAND SEQUENCES
 #----------------------------------------------------------------------------------------------------------------------
 declare LSBLK_CMD='lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT'
@@ -598,7 +609,7 @@ expand_disk() { #{{{
                 pdata=$(sed "\|$p| s/type=\w*/type=8e/" < <(echo "$pdata"))
                 ;;
             gpt)
-                pdata=$(sed "\|$p| s/type=\([[:alnum:]]*-\)*[[:alnum:]]*/type=E6D6D379-F507-44C2-A23C-238F2A3DF928/" < <(echo "$pdata"))
+                pdata=$(sed "\|$p| s/type=\([[:alnum:]]*-\)*[[:alnum:]]*/type=${ID_GPT_LVM^^}/" < <(echo "$pdata"))
                 ;;
             *)
                 exit_ 1 "Unsupported partition table $pttype."
@@ -613,7 +624,6 @@ expand_disk() { #{{{
 
 # $1: <dest-dev>
 mbr2gpt() { #{{{
-    local efisysid='C12A7328-F81F-11D2-BA4B-00A0C93EC93B'
     local dest="$1"
     local overlap=$(echo q | gdisk "$dest" | grep -E '\d*\s*blocks!' | awk '{print $1}')
     local pdata=$(sfdisk -d "$dest")
@@ -630,7 +640,7 @@ mbr2gpt() { #{{{
 
     pdata=$(sfdisk -d "$dest")
     pdata=$(echo "$pdata" | grep 'size=' | sed -e 's/^[^,]*,\s*//; s/uuid=[a-Z0-9-]*,\{,1\}//')
-    pdata=$(echo -e "size=1024000, type=${efisysid}\n${pdata}")
+    pdata=$(echo -e "size=1024000, type=${ID_GPT_EFI^^}\n${pdata}")
     local size=$(echo "$pdata" | grep -o -P 'size=\s*(\d*)' | awk '{print $2}' | tail -n 1)
     pdata=$(echo "$pdata" | sed -e "s/$size/$((size - 1024000))/") #TODO what if n partitions with the same size?
 
@@ -785,7 +795,7 @@ set_dest_uuids() { #{{{
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
         [[ $FSTYPE == swap ]] && continue
-        [[ $UEFI == true && $PARTTYPE == c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && continue
+        [[ $UEFI == true && $PARTTYPE == $ID_GPT_EFI ]] && continue
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
 
         mount_ "$NAME" -t "$FSTYPE"
@@ -877,9 +887,9 @@ disk_setup() { #{{{
             else
                 if [[ $sfstype == swap ]]; then
                     mkswap -f "$NAME"
-                elif [[ ${PARTTYPE} =~ e6d6d379-f507-44c2-a23c-238f2a3df928|0x8e ]]; then #LVM
+                elif [[ ${PARTTYPE} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} ]]; then #LVM
                     pvcreate -ff "$NAME"
-                elif [[ ${PARTTYPE} =~ c12a7328-f81f-11d2-ba4b-00a0c93ec93b|0xef ]]; then #EFI
+                elif [[ ${PARTTYPE} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then #EFI
                     mkfs -t vfat "$NAME"
                 elif [[ -n $sfstype ]]; then
                     mkfs -t "$sfstype" "$NAME"
@@ -966,7 +976,7 @@ grub_setup() { #{{{
 
     if [[ $uefi == true && $has_efi == true ]]; then
         local name uuid parttype
-        read -r name uuid parttype <<<"$(lsblk -pPo name,uuid,parttype "$dest" | grep -i 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b')"
+        read -r name uuid parttype <<<"$(lsblk -pPo name,uuid,parttype "$dest" | grep -i $ID_GPT_EFI)"
         eval "$name" "$uuid" "$parttype"
         echo -e "UUID=${UUID}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"$mp/etc/fstab"
         mkdir -p "$mp/boot/efi" && mount_ "$NAME" -p "$mp/boot/efi"
@@ -1719,7 +1729,7 @@ Clone() { #{{{
         if [[ -n $ENCRYPT_PWD ]]; then
             for f in ${SRCS[*]}; do
                 IFS=: read -r name fstype partuuid parttype type used avail <<<"$f"
-                [[ $type == part && ! $parttype =~ c12a7328-f81f-11d2-ba4b-00a0c93ec93b|0xef ]] \
+                [[ $type == part && ! $parttype =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]] \
                     && exit_ 1 "Cannot encrypt disk. All partitions (except for EFI) must be of type 'lvm'."
             done
         fi
@@ -1807,7 +1817,7 @@ Main() { #{{{
         local name parttype type fstype
         read -r name parttype type fstype <<<$(lsblk -Ppo NAME,PARTTYPE,TYPE,FSTYPE "$part")
         eval "$name" "$parttype" "$type" "$fstype"
-        [[ $TYPE == part && -n $FSTYPE && ! $FSTYPE =~ ^(crypto_LUKS|LVM2_member)$ && $PARTTYPE != c12a7328-f81f-11d2-ba4b-00a0c93ec93b ]] && return 0
+        [[ $TYPE == part && -n $FSTYPE && ! $FSTYPE =~ ^(crypto_LUKS|LVM2_member)$ && $PARTTYPE != $ID_GPT_EFI ]] && return 0
         return 1
     } #}}}
 
@@ -1897,7 +1907,7 @@ Main() { #{{{
         if [[ -z $boot_part ]]; then
             local parts=$(
                 echo "$pdata" \
-                | grep -E 'type=(0FC63DAF-8483-4772-8E79-3D69D8477DE4|83|933AC7E1-2EB4-4F13-B844-0E14E2AEF915|c)' \
+                | grep -E "type=(${ID_GPT_LINUX^^}|$ID_DOS_LINUX|$ID_DOS_FAT32)" \
                 | awk '{print $1}'
             )
             _set "$parts"
@@ -2401,9 +2411,9 @@ Main() { #{{{
     fi)
 
     EFI_PART=$(if [[ -d $SRC ]]; then
-        grep 'C12A7328-F81F-11D2-BA4B-00A0C93EC93B' "$SRC/$F_PART_TABLE" | awk '{print $1}'
+        grep "${ID_GPT_EFI^^}" "$SRC/$F_PART_TABLE" | awk '{print $1}'
     else
-        sfdisk -d $SRC | grep 'C12A7328-F81F-11D2-BA4B-00A0C93EC93B' | awk '{print $1}'
+        sfdisk -d $SRC | grep "${ID_GPT_EFI^^}" | awk '{print $1}'
     fi)
 
     #Context already initialized, only when source is a disk is of interest here
