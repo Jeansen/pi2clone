@@ -48,7 +48,6 @@ declare SNAP4CLONE='snap4clone'
 declare MNTPNT=/mnt/bcrm #Do not use /tmp! It will be excluded on backups!
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 
-
 declare ID_GPT_LVM=e6d6d379-f507-44c2-a23c-238f2a3df928
 declare ID_GPT_EFI=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
 declare ID_GPT_LINUX=0fc63daf-8483-4772-8e79-3d69d8477de4
@@ -157,14 +156,14 @@ ctx_init() { #{{{
         {
             local f
             for f in $keys; do
-                [[ -n ${CONTEXT[$f]} ]] && eval "${map[$f]}"="${CONTEXT[$f]}" || exit_ 1 "ohno"
+                [[ -n ${CONTEXT[$f]} ]] && eval "${map[$f]}"="${CONTEXT[$f]}" || exit_ 1 "Could not init context."
             done
         }
     else
         {
             local f
             for f in "${!map[@]}"; do
-                CONTEXT[$f]=$(eval echo "\$${map[$f]}") || exit_ 1 "ohno"
+                CONTEXT[$f]=$(eval echo "\$${map[$f]}") || exit_ 1 "Could not init context."
             done
         }
     fi
@@ -882,22 +881,18 @@ disk_setup() { #{{{
 
             IFS=: read -r sname sfstype <<<${parts[$n]}
 
-            if [[ -n $sname ]] && grep -qE "${sname}" < <(echo "${!TO_LVM[*]}" | tr ' ' '\n'); then
+            if [[ $sfstype == swap ]]; then
+                mkswap -f "$NAME" && continue
+            elif [[ ${PARTTYPE} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} ]]; then #LVM
                 pvcreate -ff "$NAME"
+            elif [[ ${PARTTYPE} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then #EFI
+                mkfs -t $sfstype "$NAME"
+            elif [[ -n $sfstype ]]; then
+                mkfs -t "$sfstype" "$NAME"
             else
-                if [[ $sfstype == swap ]]; then
-                    mkswap -f "$NAME"
-                elif [[ ${PARTTYPE} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} ]]; then #LVM
-                    pvcreate -ff "$NAME"
-                elif [[ ${PARTTYPE} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then #EFI
-                    mkfs -t vfat "$NAME"
-                elif [[ -n $sfstype ]]; then
-                    mkfs -t "$sfstype" "$NAME"
-                    n=$((n + 1))
-                else
-                    return 1
-                fi
+                return 1
             fi
+            n=$((n + 1))
         done < <(echo "$plist")
         sync_block_dev $DEST
     } #}}}
@@ -1936,12 +1931,12 @@ Main() { #{{{
 
     _src_size() { #{{{
         local src_size=0
-        local plist=$(lsblk -nlpo fstype,type,kname "$SRC" | grep '^\S' | grep -v LVM2_member | awk '{print $1,$3}')
+        local plist=$(lsblk -nlpo fstype,type,kname,name "$SRC" | grep '^\S' | grep -v LVM2_member | awk '{print $1,$3,$4}')
         local lvs_list=$(lvs -o lv_dmpath,lv_role)
 
-        local fs dev
-        while read -r fs dev; do
-            if [[ ! $(grep "$dev" <<<"$lvs_list" | grep -q "snapshot") ]]; then
+        local fs dev name
+        while read -r fs dev name; do
+            if ! grep "$name" <<<"$lvs_list" | grep -q "snapshot"; then
                 if [[ $SWAP_SIZE -lt 0 ]]; then
                     local size=$(swapon --show=size,name --bytes --noheadings | grep $dev | awk '{print $1}') #no swap = 0
                     size=$(to_kbyte ${size:-0})
