@@ -240,7 +240,9 @@ mount_() { #{{{
     local cmd="mount"
     local OPTIND
     local src=$(realpath -s "$1")
-    local path=$(realpath -s "${MNTPNT}/$src")
+    local path
+
+    mkdir -p "${MNTPNT}/$src" && path=$(realpath -s "${MNTPNT}/$src")
 
     shift
     while getopts ':p:t:b' option; do
@@ -264,7 +266,6 @@ mount_() { #{{{
     done
     shift $((OPTIND - 1))
 
-    [[ ! -d "$path" ]] && mkdir -p "$path"
     [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} != "$path" ]] && return 1
     [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} == "$path" ]] && return 0
     { $cmd "$src" "$path" && MNTJRNL["$src"]="$path"; } || return 1
@@ -821,12 +822,15 @@ init_srcs() { #{{{
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
         [[ $NAME =~ real$|cow$ ]] && continue
 
-        mount_ "$NAME"
-        mpnt=$(get_mount $NAME) || exit_ 1 "Could not find mount journal entry for $NAME. Aborting!" #do not use local, $? will be affected!
-        local used avail
-        read -r used avail <<<$(df -k --output=used,size "$mpnt" | tail -n -1)
-        avail=$((avail - used)) #because df keeps 5% for root!
-        umount_ "$NAME"
+        if [[ $_RMODE == false ]]; then
+            mount_ "$NAME"
+            mpnt=$(get_mount $NAME) || exit_ 1 "Could not find mount journal entry for $NAME. Aborting!" #do not use local, $? will be affected!
+            local used avail
+            read -r used avail <<<$(df -k --output=used,size "$mpnt" | tail -n -1)
+            avail=$((avail - used)) #because df keeps 5% for root!
+            umount_ "$NAME"
+        fi
+
         SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
     done < <(echo "$file" | sort -u | grep -v 'disk')
 } #}}}
@@ -850,7 +854,6 @@ disk_setup() { #{{{
             | sort -u
         )
 
-        local n=0
         while read -r e; do
             read -r name kname fstype uuid partuuid type parttype mountpoint <<<"$e"
             eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype" "$mountpoint"
@@ -858,8 +861,7 @@ disk_setup() { #{{{
             [[ $SWAP_SIZE -eq 0 && $FSTYPE == swap ]] && continue
 
             if [[ $TYPE == part && $FSTYPE != crypto_LUKS ]]; then
-                parts[$n]="${NAME}:${FSTYPE}"
-                n=$((n + 1))
+                parts+=("${NAME}:${FSTYPE}")
             fi
         done < <(echo "$plist")
     } #}}}
@@ -886,7 +888,8 @@ disk_setup() { #{{{
             elif [[ ${PARTTYPE} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} ]]; then #LVM
                 pvcreate -ff "$NAME"
             elif [[ ${PARTTYPE} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then #EFI
-                mkfs -t $sfstype "$NAME"
+                mkfs -t vfat "$NAME"
+                [[ $UEFI == true ]] && continue
             elif [[ -n $sfstype ]]; then
                 mkfs -t "$sfstype" "$NAME"
             else
