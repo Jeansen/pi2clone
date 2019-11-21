@@ -45,7 +45,6 @@ declare SRC_NBD=/dev/nbd0
 declare DEST_NBD=/dev/nbd1
 declare CLONE_DATE=$(date '+%d%m%y')
 declare SNAP4CLONE='snap4clone'
-declare MNTPNT=/mnt/bcrm #Do not use /tmp! It will be excluded on backups!
 declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
 
 declare ID_GPT_LVM=e6d6d379-f507-44c2-a23c-238f2a3df928
@@ -56,6 +55,7 @@ declare ID_DOS_LVM=8e
 declare ID_DOS_LINUX=83
 declare ID_DOS_FAT32=c
 declare ID_DOS_EXT=5
+declare _RMODE=false
 
 
 # PREDEFINED COMMAND SEQUENCES
@@ -109,6 +109,7 @@ declare VG_SRC_NAME=""
 declare BOOT_PART=""
 declare SWAP_PART=""
 declare EFI_PART=""
+declare MNTPNT=""
 
 declare INTERACTIVE=false
 declare HAS_GRUB=false
@@ -1195,6 +1196,8 @@ Cleanup() { #{{{
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $SRC_NBD
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
+        # find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
+        # rmdir "$MNTPNT"
     } &>/dev/null
 
     if [[ -t 3 ]]; then
@@ -1369,7 +1372,6 @@ To_file() { #{{{
 
 Clone() { #{{{
     local OPTIND
-    local _RMODE=false
 
     while getopts ':r' option; do
         case "$option" in
@@ -2016,6 +2018,9 @@ Main() { #{{{
     flock -n 200 || exit_ 1 "Another instance with PID $pid is already running!"
     pid=$$
     echo $pid 1>&200
+
+    #Do not use /tmp! It will be excluded on backups!
+    MNTPNT=$(mktemp -d -p /mnt) || exit_ 1 "Could not set temporary mountpoint."
 
     PKGS=()
     while true; do
