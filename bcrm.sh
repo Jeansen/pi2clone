@@ -1285,35 +1285,37 @@ To_file() { #{{{
     fi
 
     #TODO remove this extra counter and do a simpler loop
-    local s g=0
+    local lvs_data=$(lvs --noheadings -o lv_name,lv_dm_path,vg_name \
+        | grep "\b${VG_SRC_NAME}\b"
+    )
+
+    local src_vg_free=$( vgs --noheadings --units m --nosuffix -o vg_name,vg_free \
+        | grep "\b${VG_SRC_NAME}\b" \
+        | awk '{print $2}'
+    )
+
+    local s g=0 mpnt
     for s in ${!SRCS[@]}; do
         local sid=$s
         IFS=: read -r sdev fs spid ptype type used avail <<<${SRCS[$s]}
         local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
-        local lv_src_name=$( lvs --noheadings -o lv_name,lv_dm_path \
-            | grep "$sdev" \
-            | xargs \
-            | awk '{print $1}'
-        )
-        local src_vg_free=$( lvs --noheadings --units m --nosuffix -o vg_name,vg_free \
-            | xargs \
-            | grep "${VG_SRC_NAME}" \
-            | sort -ru \
-            | awk '{print $2}'
-        )
-        local tdev=$sdev
 
-        if [[ type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
-            local tdev=$SNAP4CLONE
-            lvremove -f "${VG_SRC_NAME}/$tdev"
-            lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name"
-            sleep 3
-            mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev"
-        else
-            mount_ "$tdev" -t $fs
+        if [[ $type == lvm ]]; then
+            local lv_src_name=$(grep $sdev <<<"$lvs_data" | awk '{print $1}')
         fi
 
-        local cmd="tar --warning=none --atime-preserve --numeric-owner --xattrs --directory=${MNTPNT}/$tdev \
+        if [[ $type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
+            local tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
+            lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" 2>/dev/null #Just to be sure
+            lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
+        else
+            local tdev=$sdev
+        fi
+
+        mount_ "$tdev"
+        mpnt=$(get_mount "$tdev") || return 1
+
+        local cmd="tar --warning=none --atime-preserve --numeric-owner --xattrs --directory=$mpnt \
             --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*"
         local file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${used}.${sdev//\//_}.${mount//\//_} "
 
@@ -1321,7 +1323,7 @@ To_file() { #{{{
 
         if [[ $INTERACTIVE == true ]]; then
             message -u -c -t "Creating backup for $sdev [ scan ]"
-            local size=$(du --bytes --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s ${MNTPNT}/$tdev | awk '{print $1}')
+            local size=$(du --bytes --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s $mpnt | awk '{print $1}')
             if [[ $SPLIT == true ]]; then
                 cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
             else
@@ -1344,8 +1346,9 @@ To_file() { #{{{
             eval "$cmd"
         fi
 
-        umount_ "${MNTJRNL[$tdev]}"
-        [[ $tdev == $SNAP4CLONE ]] && lvremove -f "${VG_SRC_NAME}/$tdev"
+        umount_ "$tdev"
+        lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
+
         message -y
         g=$((g + 1))
 
@@ -1591,50 +1594,48 @@ Clone() { #{{{
     } #}}}
 
     _clone() { #{{{
+        local lvs_data=$(lvs --noheadings -o lv_name,lv_dm_path,vg_name \
+            | grep "\b${VG_SRC_NAME}\b"
+        )
+
+        local src_vg_free=$( vgs --noheadings --units m --nosuffix -o vg_name,vg_free \
+            | grep "\b${VG_SRC_NAME}\b" \
+            | awk '{print $2}'
+        )
+
+        local s smpnt dmpnt
         for s in ${!SRCS[@]}; do
             local sid=$s
             IFS=: read -r sdev sfs spid sptype stype sused savail <<<${SRCS[$s]}
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$s]}]}
 
-            local tdev=$sdev
-            local lv_src_name=$(lvs --noheadings -o lv_name,lv_dm_path \
-                | grep $sdev \
-                | xargs \
-                | awk '{print $1}'
-            )
+            [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] \
+                && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
 
-            local src_vg_free=$(lvs --noheadings --units m --nosuffix -o vg_name,vg_free \
-                | xargs \
-                | grep "${VG_SRC_NAME}" \
-                | sort -u \
-                | awk '{print $2}'
-            )
-
-            [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
-
-            if [[ type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
-                tdev='snap4clone'
-                lvremove -q -f "${VG_SRC_NAME}/$tdev"
-                lvcreate -l100%FREE -s -n snap4clone "${VG_SRC_NAME}/$lv_src_name" \
-                    && sleep 3 \
-                    && mount_ "/dev/${VG_SRC_NAME}/$tdev" -p "${MNTPNT}/$tdev" \
-                    || return 1
-            else
-                mount_ "$sdev"
+            if [[ $stype == lvm ]]; then
+                local lv_src_name=$(grep $sdev <<<"$lvs_data" | awk '{print $1}')
             fi
 
-            mount_ "$ddev"
+            if [[ $stype == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
+                local tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
+                lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" 2>/dev/null #Just to be sure
+                lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
+            else
+                local tdev=$sdev
+            fi
+
+            mount_ "$tdev" && smpnt=$(get_mount "$tdev") || return 1
+            mount_ "$ddev" && dmpnt=$(get_mount "$ddev") || return 1
 
             ((davail - sused <= 0)) && exit_ 10 "Require ${sused}K but $ddev is only ${davail}K"
 
             if [[ $INTERACTIVE == true ]]; then
                 message -u -c -t "Cloning $sdev to $ddev [ scan ]"
-                local size=$(
-                    rsync -aSXxH --stats --dry-run "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev" \
-                        | grep -oP 'Number of files: \d*(,\d*)*' \
-                        | cut -d ':' -f2 \
-                        | tr -d ' ' \
-                        | sed -e 's/,//g'
+                local size=$(rsync -aSXxH --stats --dry-run "$smpnt/" "$dmpnt" \
+                    | grep -oP 'Number of files: \d*(,\d*)*' \
+                    | cut -d ':' -f2 \
+                    | tr -d ' ' \
+                    | sed -e 's/,//g'
                 )
 
                 {
@@ -1642,22 +1643,19 @@ Clone() { #{{{
                     while read -r e; do
                         [[ $e -ge 100 ]] && e=100
                         message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
-                    done < <((rsync -vaSXxH "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
+                    done < <((rsync -vaSXxH "$smpnt/" "$dmpnt" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
                 }
                 message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' 100) ]"
             else
                 message -c -t "Cloning $sdev to $ddev"
-                rsync -aSXxH "${MNTPNT}/$tdev/" "${MNTPNT}/$ddev"
+                rsync -aSXxH "$smpnt/" "$dmpnt"
             fi
 
-            sleep 3
-
-            [[ $tdev == 'snap4clone' ]] && umount_ "/dev/${VG_SRC_NAME}/$tdev"
-            [[ type == lvm ]] && lvremove -q -f "${VG_SRC_NAME}/$tdev"
-
-            _finish "${MNTPNT}/$ddev"
-            umount_ "$sdev"
+            _finish "$dmpnt"
+            umount_ "$tdev"
             umount_ "$ddev"
+            lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
+
             message -y
         done
 
