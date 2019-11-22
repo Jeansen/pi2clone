@@ -903,8 +903,6 @@ disk_setup() { #{{{
 
     _scan_src_parts
     _create_dests
-
-    sleep 3
 } #}}}
 
 # $1: <Ref.>
@@ -1196,8 +1194,8 @@ Cleanup() { #{{{
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $SRC_NBD
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
-        # find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
-        # rmdir "$MNTPNT"
+        find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
+        rmdir "$MNTPNT"
     } &>/dev/null
 
     if [[ -t 3 ]]; then
