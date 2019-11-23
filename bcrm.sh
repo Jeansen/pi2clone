@@ -242,7 +242,7 @@ echo_() { #{{{
 } #}}}
 
 logmsg() { #{{{
-    printf "===> $1"
+    printf "$(date --rfc-3339=seconds)\t$1"
 } #}}}
 
 usage() { #{{{
@@ -792,7 +792,7 @@ expand_disk() { #{{{
                 if [[ $part == "$SWAP_PART" || $part == "$BOOT_PART" || $part == "$EFI_PART" ]]; then
                     pdata=$(sed "s/$size/${val_parts[$part]}/" < <(echo "$pdata"))
                 else
-                    [[ $(sector_to_mbyte $size) -le "$MIN_RESIZE" ]] && continue #MIN_RESIZE is in MB; TODO still valid?
+                    [[ $(sector_to_mbyte $size) -le "$MIN_RESIZE" ]] && continue
                     pdata=$(sed "s/$size/${var_parts[$part]}/" < <(echo "$pdata"))
                 fi
             fi
@@ -859,7 +859,6 @@ mbr2gpt() { #{{{
 
     flock "$dest" sfdisk "$dest" < <(echo "$pdata")
     sync_block_dev "$dest"
-    HAS_EFI=true
 } #}}}
 
 # $1: <file with lsblk dump>
@@ -1244,11 +1243,6 @@ Cleanup() { #{{{
 } #}}}
 
 To_file() { #{{{
-    #TODO move messages here
-    local lm=(
-        "Saving disk layout"
-    )
-
     if [ -n "$(ls -A "$DEST")" ]; then return 1; fi
 
     pushd "$DEST" >/dev/null || return 1
@@ -1294,7 +1288,7 @@ To_file() { #{{{
 
     message -c -t "Creating backup of disk layout"
     {
-        logmsg "${lm[0]}" && _save_disk_layout
+        _save_disk_layout
         init_srcs "$($LSBLK_CMD "$SRC" ${VG_DISKS[@]})"
         mounts
     }
@@ -1307,7 +1301,6 @@ To_file() { #{{{
         done < <(pvs --noheadings -o pv_name,vg_name | xargs)
     fi
 
-    #TODO remove this extra counter and do a simpler loop
     local lvs_data=$(lvs --noheadings -o lv_name,lv_dm_path,vg_name \
         | grep "\b${VG_SRC_NAME}\b"
     )
@@ -1421,7 +1414,7 @@ Clone() { #{{{
         local dest=$1
         declare -A src_lfs
 
-        vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name | grep "$dest" | tr -d ' ') #TODO optimize, check for better solution
+        vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name | grep "$dest" | tr -d ' ')
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE" "$SRC" "$DEST"
 
         local lvs_cmd='lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path'
@@ -1546,7 +1539,7 @@ Clone() { #{{{
         fi
         partprobe "$DEST"
 
-        [[ $UEFI == true ]] && mbr2gpt $DEST
+        [[ $UEFI == true ]] && mbr2gpt $DEST && HAS_EFI=true
     } #}}}
 
     _finish() { #{{{
@@ -1765,7 +1758,7 @@ Clone() { #{{{
                 mkfs -t vfat "$dev"
             fi
             pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
-            _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle #TODO check how dest is used in lvm_setup for crypt
+            _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
         else
             disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
             if echo "${SRCS[*]}" | grep -q 'lvm'; then
@@ -1970,7 +1963,7 @@ Main() { #{{{
                     local size=$(swapon --show=size,name --bytes --noheadings | grep $dev | awk '{print $1}') #no swap = 0
                     size=$(to_kbyte ${size:-0})
                 fi
-                mount_ "$dev" -o ro 
+                mount_ "$dev" -o ro
                 src_size=$((size + src_size + $(df -k --output=used $dev | tail -n -1)))
                 umount_ "$dev"
             fi
