@@ -392,7 +392,7 @@ mount_() { #{{{
     mkdir -p "${MNTPNT}/$src" && path=$(realpath -s "${MNTPNT}/$src")
 
     shift
-    while getopts ':p:t:b' option; do
+    while getopts ':p:t:o:b' option; do
         case "$option" in
         t)
             cmd+=" -t $OPTARG"
@@ -402,6 +402,9 @@ mount_() { #{{{
             ;;
         b)
             cmd+=" --bind"
+            ;;
+        o)
+            cmd+=" -o $OPTARG"
             ;;
         :)
             printf "missing argument for -%s\n" "$OPTARG" >&2
@@ -530,7 +533,7 @@ mounts() { #{{{
         local sid=$s
         IFS=: read -r sdev rest <<<${SRCS[$s]}
 
-        mount_ "$sdev" && mpnt=${MNTJRNL[$sdev]}
+        mount_ "$sdev" -o ro && mpnt=${MNTJRNL[$sdev]}
         [[ -z $mpnt ]] && exit_ 1 "Could not mount ${sdev}."
 
         if [[ -f $mpnt/etc/fstab ]]; then
@@ -598,7 +601,7 @@ init_srcs() { #{{{
         [[ $NAME =~ real$|cow$ ]] && continue
 
         if [[ $_RMODE == false ]]; then
-            mount_ "$NAME"
+            mount_ "$NAME" -o ro
             mpnt=$(get_mount $NAME) || exit_ 1 "Could not find mount journal entry for $NAME. Aborting!" #do not use local, $? will be affected!
             local used avail
             read -r used avail <<<$(df -k --output=used,size "$mpnt" | tail -n -1)
@@ -1332,7 +1335,7 @@ To_file() { #{{{
             local tdev=$sdev
         fi
 
-        mount_ "$tdev"
+        mount_ "$tdev" -o ro
         mpnt=$(get_mount "$tdev") || return 1
 
         local cmd="tar --warning=none --atime-preserve --numeric-owner --xattrs --directory=$mpnt \
@@ -1644,7 +1647,7 @@ Clone() { #{{{
                 local tdev=$sdev
             fi
 
-            mount_ "$tdev" && smpnt=$(get_mount "$tdev") || return 1
+            mount_ "$tdev" -o ro && smpnt=$(get_mount "$tdev") || return 1
             mount_ "$ddev" && dmpnt=$(get_mount "$ddev") || return 1
 
             ((davail - sused <= 0)) && exit_ 10 "Require ${sused}K but $ddev is only ${davail}K"
@@ -1856,10 +1859,10 @@ Main() { #{{{
         mount_chroot "$SCHROOT_HOME"
 
         [[ -n $DEST_IMG ]] && mount_ "${DEST_IMG%/*}" -p "$SCHROOT_HOME/${DEST_IMG%/*}" -b
-        [[ -n $SRC_IMG ]] && mount_ "${SRC_IMG%/*}" -p "$SCHROOT_HOME/${SRC_IMG%/*}" -b
+        [[ -n $SRC_IMG ]] && mount_ "${SRC_IMG%/*}" -o ro -p "$SCHROOT_HOME/${SRC_IMG%/*}" -b
 
         if [[ -d "$SRC" && -b $DEST ]]; then
-            { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -p "$SCHROOT_HOME/$SRC" -b; } \
+            { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -o ro -p "$SCHROOT_HOME/$SRC" -b; } \
                 || exit_ 1 "Failed preparing chroot for restoring from backup."
         elif [[ -b "$SRC" && -d $DEST ]]; then
             { mkdir -p "$SCHROOT_HOME/$DEST" && mount_ "$DEST" -p "$SCHROOT_HOME/$DEST" -b; } \
@@ -1907,7 +1910,7 @@ Main() { #{{{
 
             local f
             for f in $1; do
-                mount_ "$f" && { mpnt=$(get_mount $f) || exit_ 1 "Could not find mount journal entry for $f. Aborting!"; }
+                mount_ "$f" -o ro && { mpnt=$(get_mount $f) || exit_ 1 "Could not find mount journal entry for $f. Aborting!"; }
                 if [[ -e ${mpnt}/etc/fstab ]]; then
                     local part=$(awk '$1 ~ /^[^;#]/' "${mpnt}/etc/fstab" | grep -E "\s+/boot\s+" | awk '{print $1}')
                     if [[ -n $part ]]; then
@@ -1967,7 +1970,7 @@ Main() { #{{{
                     local size=$(swapon --show=size,name --bytes --noheadings | grep $dev | awk '{print $1}') #no swap = 0
                     size=$(to_kbyte ${size:-0})
                 fi
-                mount_ "$dev"
+                mount_ "$dev" -o ro 
                 src_size=$((size + src_size + $(df -k --output=used $dev | tail -n -1)))
                 umount_ "$dev"
             fi
