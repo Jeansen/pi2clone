@@ -140,109 +140,17 @@ printarr() { #{{{
 
 # PRIVATE - Only used by PUBLIC functions -----------------------------------------------------------------------------{{{
 
-#--- Context ---{{{
-
-# Intitializes the CONTEXT array during backup and restore with sane values.
-ctx_init() { #{{{
-    declare -A map
-    map[bootPart]=BOOT_PART
-    map[sectors]=SECTORS_SRC
-    map[sectorsUsed]=SECTORS_SRC_USED
-    map[isLvm]=IS_LVM
-    map[isChecksum]=IS_CHECKSUM
-    map[hasEfi]=HAS_EFI
-
-    if [[ -d "$SRC" && -e "$SRC/$F_CONTEXT" ]]; then
-        local IFS='='
-        while read -r k v; do
-            CONTEXT["$k"]="$v"
-        done < <(sed '/^#/d; /^$/d' "$SRC/$F_CONTEXT")
-
-        local keys=$(echo "${!map[*]} ${!CONTEXT[*]}" | tr -s " " $'\n' | sort | uniq -d)
-
-        {
-            local f
-            for f in $keys; do
-                [[ -n ${CONTEXT[$f]} ]] && eval "${map[$f]}"="${CONTEXT[$f]}" || exit_ 1 "Could not init context."
-            done
-        }
-    else
-        {
-            local f
-            for f in "${!map[@]}"; do
-                CONTEXT[$f]=$(eval echo "\$${map[$f]}") || exit_ 1 "Could not init context."
-            done
-        }
-    fi
-} #}}}
-
-# Set a single context value
-ctx_set() { #{{{
-    declare -A map
-    declare -n v=$1
-
-    case "$1" in
-    BOOT_PART)
-        CONTEXT[bootPart]=$v
-        ;;
-    SECTORS_SRC)
-        CONTEXT[sectors]=$v
-        ;;
-    SECTORS_SRC_USED)
-        CONTEXT[sectorsUsed]=$v
-        ;;
-    IS_LVM)
-        CONTEXT[isLvm]=$v
-        ;;
-    IS_CHECKSUM)
-        CONTEXT[isChecksum]=$v
-        ;;
-    HAS_EFI)
-        CONTEXT[hasEfi]=$v
-        ;;
-    *)
-        return 1
-        ;;
-    esac
-} #}}}
-
-# Save key/values of context array to file
-ctx_save() { #{{{
-    echo >"$DEST/$F_CONTEXT"
-    local f
-    for f in "${!CONTEXT[@]}"; do
-        [[ -n ${CONTEXT[$f]} ]] && echo "$f=${CONTEXT[$f]}" >>"$DEST/$F_CONTEXT"
-    done
-    sed -i '/^\s*$/d' "$DEST/$F_CONTEXT"
-    echo "# Backup date: $(date)" >>"$DEST/$F_CONTEXT"
-    echo "# Version used: $(git log -1 --format="%H")" >>"$DEST/$F_CONTEXT"
-} #}}}
-#}}}
-
-#--- Wrappers ---- {{{
-
-# By convention methods ending with a '_' wrap shell functions or commands with the same name.
-
-# $1: <exit code>
-# $2: <message>
-exit_() { #{{{
-    [[ -n $2 ]] && message -n -t "$2"
-    EXIT=${1:-0}
-    exit $EXIT
-} #}}}
-#}}}
-
 #--- Display ---{{{
 
 echo_() { #{{{
     exec 1>&3 #restore stdout
     echo "$1"
     exec 3>&1         #save stdout
-    exec >$F_LOG 2>&1 #again all to the log
+    exec >>$F_LOG 2>&1 #again all to the log
 } #}}}
 
 logmsg() { #{{{
-    printf "$(date --rfc-3339=seconds)\t$1"
+    printf "\n[BCRM] $(date --rfc-3339=seconds)\t$1\n\n" >> $F_LOG
 } #}}}
 
 usage() { #{{{
@@ -381,6 +289,101 @@ message() { #{{{
 } #}}}
 #}}}
 
+#--- Context ---{{{
+
+# Intitializes the CONTEXT array during backup and restore with sane values.
+ctx_init() { #{{{
+    logmsg "ctx_init"
+    declare -A map
+    map[bootPart]=BOOT_PART
+    map[sectors]=SECTORS_SRC
+    map[sectorsUsed]=SECTORS_SRC_USED
+    map[isLvm]=IS_LVM
+    map[isChecksum]=IS_CHECKSUM
+    map[hasEfi]=HAS_EFI
+
+    if [[ -d "$SRC" && -e "$SRC/$F_CONTEXT" ]]; then
+        local IFS='='
+        while read -r k v; do
+            CONTEXT["$k"]="$v"
+        done < <(sed '/^#/d; /^$/d' "$SRC/$F_CONTEXT")
+
+        local keys=$(echo "${!map[*]} ${!CONTEXT[*]}" | tr -s " " $'\n' | sort | uniq -d)
+
+        {
+            local f
+            for f in $keys; do
+                [[ -n ${CONTEXT[$f]} ]] && eval "${map[$f]}"="${CONTEXT[$f]}" || exit_ 1 "Could not init context."
+            done
+        }
+    else
+        {
+            local f
+            for f in "${!map[@]}"; do
+                CONTEXT[$f]=$(eval echo "\$${map[$f]}") || exit_ 1 "Could not init context."
+            done
+        }
+    fi
+} #}}}
+
+# Set a single context value
+ctx_set() { #{{{
+    logmsg "ctx_set"
+    declare -A map
+    declare -n v=$1
+
+    case "$1" in
+    BOOT_PART)
+        CONTEXT[bootPart]=$v
+        ;;
+    SECTORS_SRC)
+        CONTEXT[sectors]=$v
+        ;;
+    SECTORS_SRC_USED)
+        CONTEXT[sectorsUsed]=$v
+        ;;
+    IS_LVM)
+        CONTEXT[isLvm]=$v
+        ;;
+    IS_CHECKSUM)
+        CONTEXT[isChecksum]=$v
+        ;;
+    HAS_EFI)
+        CONTEXT[hasEfi]=$v
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+} #}}}
+
+# Save key/values of context array to file
+ctx_save() { #{{{
+    logmsg "ctx_save"
+    echo >"$DEST/$F_CONTEXT"
+    local f
+    for f in "${!CONTEXT[@]}"; do
+        [[ -n ${CONTEXT[$f]} ]] && echo "$f=${CONTEXT[$f]}" >>"$DEST/$F_CONTEXT"
+    done
+    sed -i '/^\s*$/d' "$DEST/$F_CONTEXT"
+    echo "# Backup date: $(date)" >>"$DEST/$F_CONTEXT"
+    echo "# Version used: $(git log -1 --format="%H")" >>"$DEST/$F_CONTEXT"
+} #}}}
+#}}}
+
+#--- Wrappers ---- {{{
+
+# By convention methods ending with a '_' wrap shell functions or commands with the same name.
+
+# $1: <exit code>
+# $2: <message>
+exit_() { #{{{
+    [[ -n $2 ]] && message -n -t "$2"
+    EXIT=${1:-0}
+    exit $EXIT
+} #}}}
+#}}}
+
 #--- Mounting ---{{{
 
 mount_() { #{{{
@@ -416,6 +419,7 @@ mount_() { #{{{
     done
     shift $((OPTIND - 1))
 
+    logmsg "$cmd $src $path"
     [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} != "$path" ]] && return 1
     [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} == "$path" ]] && return 0
     { $cmd "$src" "$path" && MNTJRNL["$src"]="$path"; } || return 1
@@ -447,6 +451,7 @@ umount_() { #{{{
         return 0
     fi
 
+    logmsg "$cmd ${MNTJRNL[$mnt]}"
     if [[ -n ${MNTJRNL[$mnt]} ]]; then
         { $cmd ${MNTJRNL[$mnt]} && unset MNTJRNL[$mnt]; } || exit_ 1
     fi
@@ -460,6 +465,7 @@ get_mount() { #{{{
 } #}}}
 
 mount_chroot() { #{{{
+    logmsg "mount_chroot"
     local mp="$1"
 
     umount_chroot
@@ -473,6 +479,7 @@ mount_chroot() { #{{{
 } #}}}
 
 umount_chroot() { #{{{
+    logmsg "umount_chroot"
     local f
     for f in ${CHROOT_MOUNTS[@]}; do
         umount -Rl "$f"
@@ -486,6 +493,7 @@ umount_chroot() { #{{{
 # $2: <src-dev>
 # $3: <dest-dev>
 vg_extend() { #{{{
+    logmsg "vg_extend"
     local vg_name="$1"
     local src="$2"
     local dest="$3"
@@ -509,6 +517,7 @@ vg_extend() { #{{{
 # $1: <vg-name>
 # $2: <Ref. to GLOABAL array holding VG disks>
 vg_disks() { #{{{
+    logmsg "vg_disks"
     local name=$1
     declare -n disks=$2
 
@@ -523,6 +532,7 @@ vg_disks() { #{{{
 #--- Registration ---{{{
 
 mounts() { #{{{
+    logmsg "mounts"
     f[0]='cat $mpnt/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
     f[1]='cat $mpnt/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
     f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
@@ -562,6 +572,7 @@ mounts() { #{{{
 } #}}}
 
 set_dest_uuids() { #{{{
+    logmsg "set_dest_uuids"
     if [[ -b $DEST ]]; then
         [[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
         [[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
@@ -620,6 +631,7 @@ init_srcs() { #{{{
 # $2: "<dest-dev>"
 # $3: ["<list of packages to install>"]
 pkg_install() { #{{{
+    logmsg "pkg_install"
     chroot "$1" sh -c "
         apt-get install -y $3 &&
         grub-install $2 &&
@@ -630,11 +642,13 @@ pkg_install() { #{{{
 # $1: <mount point>
 # $2: ["<list of packages to install>"]
 pkg_remove() { #{{{
+    logmsg "pkg_remove"
     chroot "$1" sh -c "apt-get remove -y $2" || return 1
 } #}}}
 
 # $1: <mount point>
 create_rclocal() { #{{{
+    logmsg "create_rclocal"
     mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
     printf '%s' '#! /usr/bin/env bash
     update-grub
@@ -652,6 +666,7 @@ create_rclocal() { #{{{
 # $1: <dest-dev>
 # $2: <checksum file>
 create_m5dsums() { #{{{
+    logmsg "create_m5dsums"
     local dest="$1"
     local file="$2"
     # find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
@@ -664,6 +679,7 @@ create_m5dsums() { #{{{
 # $1: <src-dev>
 # $2: <checksum file>
 validate_m5dsums() { #{{{
+    logmsg "validate_m5dsums"
     local src="$1"
     local file="$2"
     pushd "$src" || return 1
@@ -676,6 +692,7 @@ validate_m5dsums() { #{{{
 #--- Disk and partition setup ---{{{
 
 sync_block_dev() { #{{{
+    logmsg "sync_block_dev"
     udevadm settle && blockdev --rereadpt "$1" && udevadm settle
 } #}}}
 
@@ -683,6 +700,7 @@ sync_block_dev() { #{{{
 # $2: <dest-dev>
 # $3: <luks lvm name>
 encrypt() { #{{{
+    logmsg "encrypt"
     local passwd="$1"
     local dest="$2"
     local name="$3"
@@ -706,6 +724,7 @@ encrypt() { #{{{
 # $3: <file with partition table dump>
 # $4: <REF for result data>
 expand_disk() { #{{{
+    logmsg "expand_disk"
     local src_size=$1
     local dest_size=$2
     local size
@@ -837,6 +856,7 @@ expand_disk() { #{{{
 
 # $1: <dest-dev>
 mbr2gpt() { #{{{
+    logmsg "mbr2gpt"
     local dest="$1"
     local overlap=$(echo q | gdisk "$dest" | grep -E '\d*\s*blocks!' | awk '{print $1}')
     local pdata=$(sfdisk -d "$dest")
@@ -865,6 +885,7 @@ mbr2gpt() { #{{{
 # $2: <src-dev>
 # $3: <dest-dev>
 disk_setup() { #{{{
+    logmsg "disk_setup"
     declare parts=() pvs_parts=()
     local file="$1"
     local src="$2"
@@ -931,6 +952,7 @@ disk_setup() { #{{{
 # $1: <Ref.>
 # $2: <dest-mount>
 boot_setup() { #{{{
+    logmsg "boot_setup"
     declare -n sd="$1"
     declare dmnt="$2"
 
@@ -971,6 +993,7 @@ boot_setup() { #{{{
 # $3: <add efi partition to fstab> true|false
 # $4: <dest-dev>
 grub_setup() { #{{{
+    logmsg "grub_setup"
     local d="$1"
     local has_efi=$2
     local uefi=$3
@@ -1029,6 +1052,7 @@ grub_setup() { #{{{
 # $4: <luks_lvm_name>
 # $5: <encrypt_part>
 crypt_setup() { #{{{
+    logmsg "crypt_setup"
     local passwd="$1"
     local d="$2"
     local dest="$3"
@@ -1102,6 +1126,7 @@ crypt_setup() { #{{{
 # $2: <type>
 # $3: <size>
 create_image() { #{{{
+    logmsg "create_image"
     local img="$1"
     local type="$2"
     local size="$3"
@@ -1208,6 +1233,7 @@ sector_to_tbyte() { #{{{
 
 Cleanup() { #{{{
     {
+        logmsg "Cleanup"
         umount_
         if [[ $IS_CLEANUP == true ]]; then
             [[ $SCHROOT_HOME =~ ^/tmp/ ]] && rm -rf "$SCHROOT_HOME" #TODO add option to overwrite and show warning
@@ -1217,7 +1243,7 @@ Cleanup() { #{{{
         [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
         [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $SRC_NBD
-        lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
+        lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
         find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
         rmdir "$MNTPNT"
     } &>/dev/null
@@ -1243,6 +1269,7 @@ Cleanup() { #{{{
 } #}}}
 
 To_file() { #{{{
+    logmsg "To_file"
     if [ -n "$(ls -A "$DEST")" ]; then return 1; fi
 
     pushd "$DEST" >/dev/null || return 1
@@ -1322,7 +1349,7 @@ To_file() { #{{{
 
         if [[ $type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
             local tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
-            lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" 2>/dev/null #Just to be sure
+            lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
             lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
         else
             local tdev=$sdev
@@ -1363,7 +1390,7 @@ To_file() { #{{{
         fi
 
         umount_ "$tdev"
-        lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
+        [[ $type == lvm ]] && lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
 
         message -y
         g=$((g + 1))
@@ -1390,6 +1417,7 @@ To_file() { #{{{
 } #}}}
 
 Clone() { #{{{
+    logmsg "Clone"
     local OPTIND
 
     while getopts ':r' option; do
@@ -1410,6 +1438,7 @@ Clone() { #{{{
     shift $((OPTIND - 1))
 
     _lvm_setup() { #{{{
+        logmsg "[ Clone ] _lvm_setup"
         local s1 s2
         local dest=$1
         declare -A src_lfs
@@ -1505,6 +1534,7 @@ Clone() { #{{{
     } #}}}
 
     _prepare_disk() { #{{{
+        logmsg "[ Clone ] _prepare_disk"
         if hash lvm 2>/dev/null; then
             # local vgname=$(vgs -o pv_name,vg_name | eval grep "'${DEST}|${VG_DISKS/ /|}'" | awk '{print $2}')
             local vgname=$(vgs -o pv_name,vg_name | grep "${DEST}" | awk '{print $2}')
@@ -1543,6 +1573,7 @@ Clone() { #{{{
     } #}}}
 
     _finish() { #{{{
+        logmsg "[ Clone ] _finish"
         [[ -f "$1/etc/hostname" && -n $HOST_NAME ]] && echo "$HOST_NAME" >"$1/etc/hostname"
         [[ -f $1/grub/grub.cfg || -f $1/grub.cfg || -f $1/boot/grub/grub.cfg ]] && HAS_GRUB=true
         [[ ${#SRC2DEST[@]} -gt 0 ]] && boot_setup "SRC2DEST" "$1"
@@ -1551,6 +1582,7 @@ Clone() { #{{{
     } #}}}
 
     _from_file() { #{{{
+        logmsg "[ Clone ] _from_file"
         local files=()
         pushd "$SRC" >/dev/null || return 1
 
@@ -1610,6 +1642,7 @@ Clone() { #{{{
     } #}}}
 
     _clone() { #{{{
+        logmsg "[ Clone ] _clone"
         local lvs_data=$(lvs --noheadings -o lv_name,lv_dm_path,vg_name \
             | grep "\b${VG_SRC_NAME}\b"
         )
@@ -1634,7 +1667,7 @@ Clone() { #{{{
 
             if [[ $stype == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
                 local tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
-                lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" 2>/dev/null #Just to be sure
+                lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
                 lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
             else
                 local tdev=$sdev
@@ -1670,7 +1703,7 @@ Clone() { #{{{
             _finish "$dmpnt"
             umount_ "$tdev"
             umount_ "$ddev"
-            lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
+            [[ $stype == lvm ]] && lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
 
             message -y
         done
@@ -1679,6 +1712,7 @@ Clone() { #{{{
     } #}}}
 
     _src2dest() { #{{{
+        logmsg "[ Clone ] _src2dest"
         declare -A s d
         declare sk dk
 
@@ -2224,7 +2258,6 @@ Main() { #{{{
 
     if [[ $SCHROOT == true ]]; then
         _run_schroot
-        Cleanup
         exit_ 0
     fi
 
