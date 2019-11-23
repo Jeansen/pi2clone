@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 # shellcheck disable=SC2155,SC2153,SC2015,SC2094,SC2016,SC2034
 
-# Copyright (C) 2017-2019 Marcel Lautenbach
+# Copyright (C) 2017-2019 Marcel Lautenbach {{{
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License asublished by
@@ -15,16 +15,16 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with thisrogram.  If not, see <http://www.gnu.org/licenses/>.
+#}}}
 
+# OPTIONS -------------------------------------------------------------------------------------------------------------{{{
 unset IFS #Make sure IFS is not overwritten from the outside
 export LC_ALL=en_US.UTF-8
 export LVM_SUPPRESS_FD_WARNINGS=true
 export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Main()
+#}}}
 
-# CONSTANTS
-#----------------------------------------------------------------------------------------------------------------------
-declare -A SRCS
-declare -A DESTS
+# CONSTANTS -----------------------------------------------------------------------------------------------------------{{{
 declare F_SCHROOT_CONFIG='/etc/schroot/chroot.d/bcrm'
 declare F_SCHROOT='bcrm.stretch.tar.xz'
 declare F_PART_LIST='part_list'
@@ -56,14 +56,17 @@ declare ID_DOS_LINUX=83
 declare ID_DOS_FAT32=c
 declare ID_DOS_EXT=5
 declare _RMODE=false
+#}}}
 
-
-# PREDEFINED COMMAND SEQUENCES
-#----------------------------------------------------------------------------------------------------------------------
+# PREDEFINED COMMAND SEQUENCES ----------------------------------------------------------------------------------------{{{
 declare LSBLK_CMD='lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE,MOUNTPOINT'
+#}}}
 
-# GLOBALS
-#----------------------------------------------------------------------------------------------------------------------
+# VARIABLES -----------------------------------------------------------------------------------------------------------{{{
+
+# GLOBALS -------------------------------------------------------------------------------------------------------------{{{
+declare -A SRCS
+declare -A DESTS
 declare -A CONTEXT          #Values needed for backup/restore
 
 declare -A CHG_SYS_FILES    #Container for system files that needed to be changed during execution
@@ -73,9 +76,9 @@ declare -A MNTJRNL MOUNTS
 declare -A SRC2DEST PSRC2PDEST NSRC2NDEST
 
 declare PVS=() VG_DISKS=() CHROOT_MOUNTS=()
+#}}}
 
-# FILLED BY OR BECAUSE OF PROGRAM ARGUMENTS
-#----------------------------------------------------------------------------------------------------------------------
+# FILLED BY OR BECAUSE OF PROGRAM ARGUMENTS ---------------------------------------------------------------------------{{{
 declare PKGS=() #Will be filled with a list of packages that will be needed, depending on given arguments
 
 declare DEST_IMG=""
@@ -100,9 +103,9 @@ declare MIN_RESIZE=2048 #In 1M units
 declare SWAP_SIZE=-1    #Values < 0 mean noch change/ignore
 declare BOOT_SIZE=0
 declare LVM_EXPAND_BY=0 #How much % of free space to use from a VG, e.g. when a dest disk is larger than a src disk.
+#}}}
 
-# CHECKS FILLED BY MAIN
-#----------------------------------------------------------------------------------------------------------------------
+# CHECKS FILLED BY MAIN -----------------------------------------------------------------------------------------------{{{
 declare DISABLED_MOUNTS=()
 declare -A TO_LVM=()
 declare VG_SRC_NAME=""
@@ -122,19 +125,22 @@ declare SECTORS_SRC=0
 declare SECTORS_DEST=0
 declare SECTORS_SRC_USED=0
 declare VG_FREE_SIZE=0
+#}}}
 
-# DEBUG ONLY
-#----------------------------------------------------------------------------------------------------------------------
+#}}}
 
+# DEBUG ONLY ----------------------------------------------------------------------------------------------------------{{{
 printarr() { #{{{
     local k
     declare -n __p="$1"
     for k in "${!__p[@]}"; do printf "%s=%s\n" "$k" "${__p[$k]}"; done
 } #}}}
+#}}}
 
 
-# CONTEXT
-#----------------------------------------------------------------------------------------------------------------------
+# PRIVATE - Only used by PUBLIC functions -----------------------------------------------------------------------------{{{
+
+#--- Context ---{{{
 
 # Intitializes the CONTEXT array during backup and restore with sane values.
 ctx_init() { #{{{
@@ -211,117 +217,11 @@ ctx_save() { #{{{
     echo "# Backup date: $(date)" >>"$DEST/$F_CONTEXT"
     echo "# Version used: $(git log -1 --format="%H")" >>"$DEST/$F_CONTEXT"
 } #}}}
+#}}}
 
-
-#----------------------------------------------------------------------------------------------------------------------
-# PRIVATE - only used by PUBLIC functions
-#----------------------------------------------------------------------------------------------------------------------
+#--- Wrappers ---- {{{
 
 # By convention methods ending with a '_' wrap shell functions or commands with the same name.
-
-sync_block_dev() { #{{{
-    udevadm settle && blockdev --rereadpt "$1" && udevadm settle
-} #}}}
-
-echo_() { #{{{
-    exec 1>&3 #restore stdout
-    echo "$1"
-    exec 3>&1         #save stdout
-    exec >$F_LOG 2>&1 #again all to the log
-} #}}}
-
-get_mount() { #{{{
-    local k=$(realpath -s "$1")
-    [[ -z $k || -z ${MNTJRNL[$k]} ]] && return 1
-    echo ${MNTJRNL[$k]}
-    return 0
-} #}}}
-
-mount_() { #{{{
-    local cmd="mount"
-    local OPTIND
-    local src=$(realpath -s "$1")
-    local path
-
-    mkdir -p "${MNTPNT}/$src" && path=$(realpath -s "${MNTPNT}/$src")
-
-    shift
-    while getopts ':p:t:b' option; do
-        case "$option" in
-        t)
-            cmd+=" -t $OPTARG"
-            ;;
-        p)
-            path=$(realpath -s "$OPTARG")
-            ;;
-        b)
-            cmd+=" --bind"
-            ;;
-        :)
-            printf "missing argument for -%s\n" "$OPTARG" >&2
-            ;;
-        ?)
-            printf "illegal option: -%s\n" "$OPTARG" >&2
-            ;;
-        esac
-    done
-    shift $((OPTIND - 1))
-
-    [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} != "$path" ]] && return 1
-    [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} == "$path" ]] && return 0
-    { $cmd "$src" "$path" && MNTJRNL["$src"]="$path"; } || return 1
-} #}}}
-
-mount_chroot() { #{{{
-    local mp="$1"
-
-    umount_chroot
-
-    local f
-    for f in sys dev dev/pts proc run; do
-        mount --bind "/$f" "$mp/$f"
-    done
-
-    CHROOT_MOUNTS+=("$mp")
-} #}}}
-
-umount_chroot() { #{{{
-    local f
-    for f in ${CHROOT_MOUNTS[@]}; do
-        umount -Rl "$f"
-    done
-} #}}}
-
-umount_() { #{{{
-    local OPTIND
-    local cmd="umount -l"
-    local mnt=$(realpath -s "$1")
-
-    while getopts ':R' option; do
-        case "$option" in
-        R)
-            cmd+=" -R"
-            ;;
-        :)
-            printf "missing argument for -%s\n" "$OPTARG" >&2
-            ;;
-        \?)
-            printf "illegal option: -%s\n" "$OPTARG" >&2
-            ;;
-        esac
-    done
-    shift $((OPTIND - 1))
-
-    if [[ $# -eq 0 ]]; then
-        local m
-        for m in "${MNTJRNL[@]}"; do $cmd -l "$m"; done
-        return 0
-    fi
-
-    if [[ -n ${MNTJRNL[$mnt]} ]]; then
-        { $cmd ${MNTJRNL[$mnt]} && unset MNTJRNL[$mnt]; } || exit_ 1
-    fi
-} #}}}
 
 # $1: <exit code>
 # $2: <message>
@@ -330,8 +230,16 @@ exit_() { #{{{
     EXIT=${1:-0}
     exit $EXIT
 } #}}}
+#}}}
 
-#----------------------------------------------------------------------------------------------------------------------
+#--- Display ---{{{
+
+echo_() { #{{{
+    exec 1>&3 #restore stdout
+    echo "$1"
+    exec 3>&1         #save stdout
+    exec >$F_LOG 2>&1 #again all to the log
+} #}}}
 
 logmsg() { #{{{
     printf "===> $1"
@@ -471,6 +379,239 @@ message() { #{{{
     exec 3>&1          #save stdout
     exec >>$F_LOG 2>&1 #again all to the log
 } #}}}
+#}}}
+
+#--- Mounting ---{{{
+
+mount_() { #{{{
+    local cmd="mount"
+    local OPTIND
+    local src=$(realpath -s "$1")
+    local path
+
+    mkdir -p "${MNTPNT}/$src" && path=$(realpath -s "${MNTPNT}/$src")
+
+    shift
+    while getopts ':p:t:b' option; do
+        case "$option" in
+        t)
+            cmd+=" -t $OPTARG"
+            ;;
+        p)
+            path=$(realpath -s "$OPTARG")
+            ;;
+        b)
+            cmd+=" --bind"
+            ;;
+        :)
+            printf "missing argument for -%s\n" "$OPTARG" >&2
+            ;;
+        ?)
+            printf "illegal option: -%s\n" "$OPTARG" >&2
+            ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} != "$path" ]] && return 1
+    [[ -n ${MNTJRNL["$src"]} && ${MNTJRNL["$src"]} == "$path" ]] && return 0
+    { $cmd "$src" "$path" && MNTJRNL["$src"]="$path"; } || return 1
+} #}}}
+
+umount_() { #{{{
+    local OPTIND
+    local cmd="umount -l"
+    local mnt=$(realpath -s "$1")
+
+    while getopts ':R' option; do
+        case "$option" in
+        R)
+            cmd+=" -R"
+            ;;
+        :)
+            printf "missing argument for -%s\n" "$OPTARG" >&2
+            ;;
+        \?)
+            printf "illegal option: -%s\n" "$OPTARG" >&2
+            ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    if [[ $# -eq 0 ]]; then
+        local m
+        for m in "${MNTJRNL[@]}"; do $cmd -l "$m"; done
+        return 0
+    fi
+
+    if [[ -n ${MNTJRNL[$mnt]} ]]; then
+        { $cmd ${MNTJRNL[$mnt]} && unset MNTJRNL[$mnt]; } || exit_ 1
+    fi
+} #}}}
+
+get_mount() { #{{{
+    local k=$(realpath -s "$1")
+    [[ -z $k || -z ${MNTJRNL[$k]} ]] && return 1
+    echo ${MNTJRNL[$k]}
+    return 0
+} #}}}
+
+mount_chroot() { #{{{
+    local mp="$1"
+
+    umount_chroot
+
+    local f
+    for f in sys dev dev/pts proc run; do
+        mount --bind "/$f" "$mp/$f"
+    done
+
+    CHROOT_MOUNTS+=("$mp")
+} #}}}
+
+umount_chroot() { #{{{
+    local f
+    for f in ${CHROOT_MOUNTS[@]}; do
+        umount -Rl "$f"
+    done
+} #}}}
+
+#}}}
+
+#--- LVM related --{{{
+# $1: <vg-name>
+# $2: <src-dev>
+# $3: <dest-dev>
+vg_extend() { #{{{
+    local vg_name="$1"
+    local src="$2"
+    local dest="$3"
+    PVS=()
+
+    if [[ -d $src ]]; then
+        src=$(df -P "$src" | tail -1 | awk '{print $1}')
+    fi
+
+    while read -r e; do
+        local name type
+        read -r name type <<<"$e"
+        [[ -n $(lsblk -no mountpoint "$name" 2>/dev/null) ]] && continue
+        echo ';' | flock "$name" sfdisk -q "$name" && sfdisk "$name" -Vq
+        local part=$(lsblk "$name" -lnpo name,type | grep part | awk '{print $1}')
+        pvcreate -ff "$part" && vgextend "$vg_name" "$part"
+        PVS+=("$part")
+    done < <(lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
+} #}}}
+
+# $1: <vg-name>
+# $2: <Ref. to GLOABAL array holding VG disks>
+vg_disks() { #{{{
+    local name=$1
+    declare -n disks=$2
+
+    local f
+    for f in $(pvs --no-headings -o pv_name,lv_dm_path | grep -E "${name}\-\w+" | awk '{print $1}' | sort -u); do
+        disks+=($(lsblk -pnls $f | grep disk | awk '{print $1}'))
+    done
+} #}}}
+
+#}}}
+
+#--- Registration ---{{{
+
+mounts() { #{{{
+    f[0]='cat $mpnt/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
+    f[1]='cat $mpnt/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
+    f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
+
+    local s
+    for s in "${!SRCS[@]}"; do
+        local mpnt=
+        local sid=$s
+        IFS=: read -r sdev rest <<<${SRCS[$s]}
+
+        mount_ "$sdev" && mpnt=${MNTJRNL[$sdev]}
+        [[ -z $mpnt ]] && exit_ 1 "Could not mount ${sdev}."
+
+        if [[ -f $mpnt/etc/fstab ]]; then
+            local y
+            for y in "${!SRCS[@]}"; do
+                sid=$y
+                #using sdev causes strange behaviour instead of devname
+                IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
+                local i
+                for ((i = 0; i < ${#f[@]}; i++)); do
+                    while read -r e; do
+                        read -r dev mnt <<<"$e"
+                        if [[ $dev == $sdevname || $dev == $spid || $dev == $sid ]]; then
+                            MOUNTS[$mnt]="$y"
+                            [[ -n $dev ]] && MOUNTS[$dev]="$mnt"
+                            [[ -n $sid ]] && MOUNTS[$sid]="$mnt"
+                            [[ -n $spid ]] && MOUNTS[$spid]="$mnt"
+                        fi
+                    done < <(eval "${f[$i]}")
+                done
+            done
+        fi
+
+        umount_ "$sdev"
+    done
+} #}}}
+
+set_dest_uuids() { #{{{
+    if [[ -b $DEST ]]; then
+        [[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
+        [[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
+        udevadm settle
+    fi
+
+    local name kdev fstype uuid puuid type parttype mountpoint e
+    while read -r e; do
+        read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
+        eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+        [[ $FSTYPE == swap ]] && continue
+        [[ $UEFI == true && $PARTTYPE == $ID_GPT_EFI ]] && continue
+        [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
+
+        mount_ "$NAME" -t "$FSTYPE"
+        local used avail
+        read -r used avail <<<$(df --block-size=1K --output=used,size "$NAME" | tail -n -1)
+        avail=$((avail - used)) #because df keeps 5% for root!
+        umount_ "$NAME"
+        DESTS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
+
+        # [[ ${PVS[@]} =~ $NAME ]] && continue
+    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -u | grep -vE '\bdisk|\bUUID="".*\bPARTUUID=""')
+} #}}}
+
+# $2: <File with lsblk dump>
+init_srcs() { #{{{
+    declare file="$1"
+
+    local name kdev fstype uuid puuid type parttype mountpoint e
+    while read -r e; do
+        read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
+        eval declare "$name" "$kdev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+
+        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
+        lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
+        [[ $NAME =~ real$|cow$ ]] && continue
+
+        if [[ $_RMODE == false ]]; then
+            mount_ "$NAME"
+            mpnt=$(get_mount $NAME) || exit_ 1 "Could not find mount journal entry for $NAME. Aborting!" #do not use local, $? will be affected!
+            local used avail
+            read -r used avail <<<$(df -k --output=used,size "$mpnt" | tail -n -1)
+            avail=$((avail - used)) #because df keeps 5% for root!
+            umount_ "$NAME"
+        fi
+
+        SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
+    done < <(echo "$file" | sort -u | grep -v 'disk')
+} #}}}
+#}}}
+
+#--- Post cloning ---{{{
 
 # $1: <mount point>
 # $2: "<dest-dev>"
@@ -487,6 +628,74 @@ pkg_install() { #{{{
 # $2: ["<list of packages to install>"]
 pkg_remove() { #{{{
     chroot "$1" sh -c "apt-get remove -y $2" || return 1
+} #}}}
+
+# $1: <mount point>
+create_rclocal() { #{{{
+    mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
+    printf '%s' '#! /usr/bin/env bash
+    update-grub
+    rm /etc/rc.local
+    mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
+    sleep 10
+    reboot' >"$1/etc/rc.local"
+    chmod +x "$1/etc/rc.local"
+} #}}}
+
+#}}}
+
+#--- Validation ---{{{
+
+# $1: <dest-dev>
+# $2: <checksum file>
+create_m5dsums() { #{{{
+    local dest="$1"
+    local file="$2"
+    # find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
+    pushd "$dest" || return 1
+    find . -type f \! -name '*.md5' -print0 | parallel --no-notice -0 md5sum -b >"$file"
+    popd || return 1
+    validate_m5dsums "$dest" "$file" || return 1
+} #}}}
+
+# $1: <src-dev>
+# $2: <checksum file>
+validate_m5dsums() { #{{{
+    local src="$1"
+    local file="$2"
+    pushd "$src" || return 1
+    md5sum -c "$file" --quiet || return 1
+    popd || return 1
+} #}}}
+
+#}}}
+
+#--- Disk and partition setup ---{{{
+
+sync_block_dev() { #{{{
+    udevadm settle && blockdev --rereadpt "$1" && udevadm settle
+} #}}}
+
+# $1: <password>
+# $2: <dest-dev>
+# $3: <luks lvm name>
+encrypt() { #{{{
+    local passwd="$1"
+    local dest="$2"
+    local name="$3"
+
+    if [[ $HAS_EFI == true ]]; then
+        local size type
+        read -r size type <<<$(sfdisk -l -o Size,Type-UUID $SRC | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
+        { echo -e "size=$size, type=$type\n;" | sfdisk --label gpt "$dest"; } || return 1
+    else
+        { echo ';' | sfdisk "$dest"; } || return 1 #delete all partitions and create one for the whole disk.
+    fi
+
+    sleep 3
+    ENCRYPT_PART=$(sfdisk -qlo device "$dest" | tail -n 1)
+    echo -n "$passwd" | cryptsetup luksFormat "$ENCRYPT_PART" --type luks1 -
+    echo -n "$passwd" | cryptsetup open "$ENCRYPT_PART" "$name" --type luks1 -
 } #}}}
 
 # $1: <src-sectors>
@@ -649,194 +858,6 @@ mbr2gpt() { #{{{
     sync_block_dev "$dest"
     HAS_EFI=true
 } #}}}
-
-# $1: <mount point>
-create_rclocal() { #{{{
-    mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
-    printf '%s' '#! /usr/bin/env bash
-    update-grub
-    rm /etc/rc.local
-    mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
-    sleep 10
-    reboot' >"$1/etc/rc.local"
-    chmod +x "$1/etc/rc.local"
-} #}}}
-
-mounts() { #{{{
-    f[0]='cat $mpnt/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
-    f[1]='cat $mpnt/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
-    f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
-
-    local s
-    for s in "${!SRCS[@]}"; do
-        local mpnt=
-        local sid=$s
-        IFS=: read -r sdev rest <<<${SRCS[$s]}
-
-        mount_ "$sdev" && mpnt=${MNTJRNL[$sdev]}
-        [[ -z $mpnt ]] && exit_ 1 "Could not mount ${sdev}."
-
-        if [[ -f $mpnt/etc/fstab ]]; then
-            local y
-            for y in "${!SRCS[@]}"; do
-                sid=$y
-                #using sdev causes strange behaviour instead of devname
-                IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
-                local i
-                for ((i = 0; i < ${#f[@]}; i++)); do
-                    while read -r e; do
-                        read -r dev mnt <<<"$e"
-                        if [[ $dev == $sdevname || $dev == $spid || $dev == $sid ]]; then
-                            MOUNTS[$mnt]="$y"
-                            [[ -n $dev ]] && MOUNTS[$dev]="$mnt"
-                            [[ -n $sid ]] && MOUNTS[$sid]="$mnt"
-                            [[ -n $spid ]] && MOUNTS[$spid]="$mnt"
-                        fi
-                    done < <(eval "${f[$i]}")
-                done
-            done
-        fi
-
-        umount_ "$sdev"
-    done
-} #}}}
-
-# $1: <password>
-# $2: <dest-dev>
-# $3: <luks lvm name>
-encrypt() { #{{{
-    local passwd="$1"
-    local dest="$2"
-    local name="$3"
-
-    if [[ $HAS_EFI == true ]]; then
-        local size type
-        read -r size type <<<$(sfdisk -l -o Size,Type-UUID $SRC | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
-        { echo -e "size=$size, type=$type\n;" | sfdisk --label gpt "$dest"; } || return 1
-    else
-        { echo ';' | sfdisk "$dest"; } || return 1 #delete all partitions and create one for the whole disk.
-    fi
-
-    sleep 3
-    ENCRYPT_PART=$(sfdisk -qlo device "$dest" | tail -n 1)
-    echo -n "$passwd" | cryptsetup luksFormat "$ENCRYPT_PART" --type luks1 -
-    echo -n "$passwd" | cryptsetup open "$ENCRYPT_PART" "$name" --type luks1 -
-} #}}}
-
-#----------------------------------------------------------------------------------------------------------------------
-# $1: <vg-name>
-# $2: <src-dev>
-# $3: <dest-dev>
-vg_extend() { #{{{
-    local vg_name="$1"
-    local src="$2"
-    local dest="$3"
-    PVS=()
-
-    if [[ -d $src ]]; then
-        src=$(df -P "$src" | tail -1 | awk '{print $1}')
-    fi
-
-    while read -r e; do
-        local name type
-        read -r name type <<<"$e"
-        [[ -n $(lsblk -no mountpoint "$name" 2>/dev/null) ]] && continue
-        echo ';' | flock "$name" sfdisk -q "$name" && sfdisk "$name" -Vq
-        local part=$(lsblk "$name" -lnpo name,type | grep part | awk '{print $1}')
-        pvcreate -ff "$part" && vgextend "$vg_name" "$part"
-        PVS+=("$part")
-    done < <(lsblk -po name,type | grep disk | grep -Ev "$dest|$src")
-} #}}}
-
-# $1: <vg-name>
-# $2: <Ref. to GLOABAL array holding VG disks>
-vg_disks() { #{{{
-    local name=$1
-    declare -n disks=$2
-
-    local f
-    for f in $(pvs --no-headings -o pv_name,lv_dm_path | grep -E "${name}\-\w+" | awk '{print $1}' | sort -u); do
-        disks+=($(lsblk -pnls $f | grep disk | awk '{print $1}'))
-    done
-} #}}}
-
-# $1: <dest-dev>
-# $2: <checksum file>
-create_m5dsums() { #{{{
-    local dest="$1"
-    local file="$2"
-    # find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
-    pushd "$dest" || return 1
-    find . -type f \! -name '*.md5' -print0 | parallel --no-notice -0 md5sum -b >"$file"
-    popd || return 1
-    validate_m5dsums "$dest" "$file" || return 1
-} #}}}
-
-# $1: <src-dev>
-# $2: <checksum file>
-validate_m5dsums() { #{{{
-    local src="$1"
-    local file="$2"
-    pushd "$src" || return 1
-    md5sum -c "$file" --quiet || return 1
-    popd || return 1
-} #}}}
-
-#----------------------------------------------------------------------------------------------------------------------
-
-set_dest_uuids() { #{{{
-    if [[ -b $DEST ]]; then
-        [[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
-        [[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
-        udevadm settle
-    fi
-
-    local name kdev fstype uuid puuid type parttype mountpoint e
-    while read -r e; do
-        read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
-        eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-        [[ $FSTYPE == swap ]] && continue
-        [[ $UEFI == true && $PARTTYPE == $ID_GPT_EFI ]] && continue
-        [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
-
-        mount_ "$NAME" -t "$FSTYPE"
-        local used avail
-        read -r used avail <<<$(df --block-size=1K --output=used,size "$NAME" | tail -n -1)
-        avail=$((avail - used)) #because df keeps 5% for root!
-        umount_ "$NAME"
-        DESTS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
-
-        # [[ ${PVS[@]} =~ $NAME ]] && continue
-    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -u | grep -vE '\bdisk|\bUUID="".*\bPARTUUID=""')
-} #}}}
-
-# $2: <File with lsblk dump>
-init_srcs() { #{{{
-    declare file="$1"
-
-    local name kdev fstype uuid puuid type parttype mountpoint e
-    while read -r e; do
-        read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
-        eval declare "$name" "$kdev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-
-        [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
-        lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
-        [[ $NAME =~ real$|cow$ ]] && continue
-
-        if [[ $_RMODE == false ]]; then
-            mount_ "$NAME"
-            mpnt=$(get_mount $NAME) || exit_ 1 "Could not find mount journal entry for $NAME. Aborting!" #do not use local, $? will be affected!
-            local used avail
-            read -r used avail <<<$(df -k --output=used,size "$mpnt" | tail -n -1)
-            avail=$((avail - used)) #because df keeps 5% for root!
-            umount_ "$NAME"
-        fi
-
-        SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
-    done < <(echo "$file" | sort -u | grep -v 'disk')
-} #}}}
-
-#----------------------------------------------------------------------------------------------------------------------
 
 # $1: <file with lsblk dump>
 # $2: <src-dev>
@@ -1085,8 +1106,9 @@ create_image() { #{{{
 
     qemu-img create -f "$type" "$img" "$size" || return 1
 } #}}}
+#}}}
 
-#----------------------------------------------------------------------------------------------------------------------
+#--- Value conversion and calculation --- {{{
 
 # $1: <bytes>
 to_readable_size() { #{{{
@@ -1177,10 +1199,10 @@ sector_to_gbyte() { #{{{
 sector_to_tbyte() { #{{{
     echo $(($1 / (2 * 2 ** 30)))
 } #}}}
+#}}}
+#}}}
 
-#----------------------------------------------------------------------------------------------------------------------
-# PUBLIC - To be used in Main() only
-#----------------------------------------------------------------------------------------------------------------------
+# PUBLIC - To be used in Main() only ----------------------------------------------------------------------------------{{{
 
 Cleanup() { #{{{
     {
@@ -1779,6 +1801,9 @@ Clone() { #{{{
     fi
     return 0
 } #}}}
+
+#}}}
+
 
 Main() { #{{{
     local args_count=$# #getop changes the $# value. To be sure we save the original arguments count.
