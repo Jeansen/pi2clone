@@ -113,6 +113,7 @@ declare BOOT_PART=""
 declare SWAP_PART=""
 declare EFI_PART=""
 declare MNTPNT=""
+declare PART_TABLE=""
 
 declare INTERACTIVE=false
 declare HAS_GRUB=false
@@ -296,11 +297,13 @@ ctx_init() { #{{{
     logmsg "ctx_init"
     declare -A map
     map[bootPart]=BOOT_PART
+    map[hasGrub]=HAS_GRUB
     map[sectors]=SECTORS_SRC
     map[sectorsUsed]=SECTORS_SRC_USED
     map[isLvm]=IS_LVM
     map[isChecksum]=IS_CHECKSUM
     map[hasEfi]=HAS_EFI
+    map[partTable]=PART_TABLE
 
     if [[ -d "$SRC" && -e "$SRC/$F_CONTEXT" ]]; then
         local IFS='='
@@ -350,6 +353,12 @@ ctx_set() { #{{{
         ;;
     HAS_EFI)
         CONTEXT[hasEfi]=$v
+        ;;
+    PART_TABLE)
+        CONTEXT[partTable]=$v
+        ;;
+    HAS_GRUB)
+        CONTEXT[hasGrub]=$v
         ;;
     *)
         return 1
@@ -854,11 +863,10 @@ expand_disk() { #{{{
     #Finally remove some headers
     pdata=$(sed '/last-lba:/d' < <(echo "$pdata"))
 
-    local pttype=$(blkid -o value -s PTTYPE $SRC)
     {
         local p
         for p in ${!TO_LVM[@]}; do
-            case $pttype in
+            case $PART_TABLE in
             dos)
                 pdata=$(sed "\|$p| s/type=\w*/type=8e/" < <(echo "$pdata"))
                 ;;
@@ -866,7 +874,7 @@ expand_disk() { #{{{
                 pdata=$(sed "\|$p| s/type=\([[:alnum:]]*-\)*[[:alnum:]]*/type=${ID_GPT_LVM^^}/" < <(echo "$pdata"))
                 ;;
             *)
-                exit_ 1 "Unsupported partition table $pttype."
+                exit_ 1 "Unsupported partition table $PART_TABLE."
                 ;;
             esac
         done
@@ -1432,6 +1440,7 @@ To_file() { #{{{
             eval "$cmd"
         fi
 
+        [[ -f $mpnt/grub/grub.cfg || -f $mpnt/grub.cfg || -f $mpnt/boot/grub/grub.cfg ]] && HAS_GRUB=true
         umount_ "$tdev"
         [[ $type == lvm ]] && lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
 
@@ -1446,6 +1455,8 @@ To_file() { #{{{
     ctx_set SECTORS_SRC_USED
     ctx_set BOOT_PART
     ctx_set IS_LVM
+    ctx_set PART_TABLE
+    ctx_set HAS_GRUB
     ctx_save
 
     if [[ $IS_CHECKSUM == true ]]; then
@@ -2433,9 +2444,11 @@ Main() { #{{{
         (( src_size < dest_size )) \
              || exit_ 1 "Destination too small: Need at least ${src_size}M but $DEST is only ${dest_size}M"
 
-        [[ -b $SRC ]] \
-            && SECTORS_SRC=$(blockdev --getsz "$SRC") \
-            && SECTORS_SRC_USED=$(to_sector ${src_size}M)
+        if [[ -b $SRC ]]; then
+            SECTORS_SRC=$(blockdev --getsz "$SRC")
+            SECTORS_SRC_USED=$(to_sector ${src_size}M)
+			PART_TABLE=$(blkid -o value -s PTTYPE $SRC)
+		fi
 
         [[ -b $DEST ]] \
             && SECTORS_DEST=$(to_sector ${dest_size}M)
