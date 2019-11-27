@@ -1358,7 +1358,7 @@ To_file() { #{{{
         mount_ "$tdev" -o ro
         mpnt=$(get_mount "$tdev") || return 1
 
-        local cmd="tar --warning=none --atime-preserve --numeric-owner --xattrs --directory=$mpnt \
+        local cmd="tar --warning=none --atime-preserve=system --numeric-owner --xattrs --directory=$mpnt \
             --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*"
         local file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${used}.${sdev//\//_}.${mount//\//_} "
 
