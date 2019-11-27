@@ -533,42 +533,64 @@ vg_disks() { #{{{
 
 mounts() { #{{{
     logmsg "mounts"
-    f[0]='cat $mpnt/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
-    f[1]='cat $mpnt/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
-    f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
+	if [[ $_RMODE == false ]]; then
+		local f=()
+		local i y s
+		local mpnt sdev rest sid sdevname fs spid ptype type rest
 
-    local s
-    for s in "${!SRCS[@]}"; do
-        local mpnt=
-        local sid=$s
-        IFS=: read -r sdev rest <<<${SRCS[$s]}
+		f[0]='cat $mpnt/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
+		f[1]='cat $mpnt/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
+		f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
 
-        mount_ "$sdev" -o ro && mpnt=${MNTJRNL[$sdev]}
-        [[ -z $mpnt ]] && exit_ 1 "Could not mount ${sdev}."
+		for s in "${!SRCS[@]}"; do
+			sid=$s
+			IFS=: read -r sdev rest <<<${SRCS[$s]}
 
-        if [[ -f $mpnt/etc/fstab ]]; then
-            local y
-            for y in "${!SRCS[@]}"; do
-                sid=$y
-                #using sdev causes strange behaviour instead of devname
-                IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
-                local i
-                for ((i = 0; i < ${#f[@]}; i++)); do
-                    while read -r e; do
-                        read -r dev mnt <<<"$e"
-                        if [[ $dev == $sdevname || $dev == $spid || $dev == $sid ]]; then
-                            MOUNTS[$mnt]="$y"
-                            [[ -n $dev ]] && MOUNTS[$dev]="$mnt"
-                            [[ -n $sid ]] && MOUNTS[$sid]="$mnt"
-                            [[ -n $spid ]] && MOUNTS[$spid]="$mnt"
-                        fi
-                    done < <(eval "${f[$i]}")
-                done
-            done
-        fi
+			mount_ "$sdev" -o ro && mpnt=$(get_mount $sdev) || exit_ 1 "Could not mount ${sdev}."
 
-        umount_ "$sdev"
-    done
+			if [[ -f $mpnt/etc/fstab ]]; then
+				for y in "${!SRCS[@]}"; do
+					sid=$y
+					#using sdev causes strange behaviour instead of devname
+					IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
+
+					for ((i = 0; i < ${#f[@]}; i++)); do
+						while read -r e; do
+							read -r dev mnt <<<"$e"
+							if [[ $dev == $sdevname || $dev == $spid || $dev == $sid ]]; then
+								MOUNTS[$mnt]="$y"
+								[[ -n $dev ]] && MOUNTS[$dev]="$mnt"
+								[[ -n $sid ]] && MOUNTS[$sid]="$mnt"
+								[[ -n $spid ]] && MOUNTS[$spid]="$mnt"
+							fi
+						done < <(eval "${f[$i]}")
+					done
+				done
+			fi
+
+			umount_ "$sdev"
+		done
+	else
+		local files=()
+		pushd "$SRC" >/dev/null || return 1
+
+		{
+			local file
+			for file in [0-9]*; do
+				local k=$(echo "$file" | sed "s/\.[a-z]*$//")
+				files+=($k)
+			done
+		}
+
+		local file mpnt i uuid puuid fs type sused dev mnt ddev dfs dpid dptype dtype davail
+		for file in "${files[@]}"; do
+			read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
+			MOUNTS[${mnt//_/\/}]="$uuid"
+			MOUNTS[$uuid]="${mnt//_/\/}"
+		done
+
+		popd >/dev/null || return 1
+	fi
 } #}}}
 
 set_dest_uuids() { #{{{
@@ -1602,8 +1624,6 @@ Clone() { #{{{
             read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$uuid]}]}
 
-            MOUNTS[${mnt//_/\/}]="$uuid"
-
             if [[ -n $ddev ]]; then
                 mount_ "$ddev" && { mpnt=$(get_mount $ddev) || exit_ 1 "Could not find mount journal entry for $ddev. Aborting!"; }
                 pushd "$mpnt" >/dev/null || return 1
@@ -1775,6 +1795,9 @@ Clone() { #{{{
         local f=$([[ $_RMODE == true ]] && cat "$SRC/$F_PART_LIST" || $LSBLK_CMD "$SRC" ${VG_DISKS[@]})
 
         init_srcs "$f"
+        mounts
+
+        pvcreate -ff "$NAME"
 
         if [[ -n $ENCRYPT_PWD ]]; then
             for f in ${SRCS[*]}; do
@@ -1808,8 +1831,6 @@ Clone() { #{{{
         #Now collect what we have created
         set_dest_uuids
         _src2dest
-
-        [[ $_RMODE == false ]] && mounts
     }
     message -y
 
