@@ -185,7 +185,7 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "-w," "--swap-size"             "Swap partition size. May be zero to remove any swap partition."
     printf "  %-3s %-30s %s\n"   "-m," "--resize-threshold"      "Do not resize partitions smaller than <size> (default 2048M)"
     printf "  %-3s %-30s %s\n"   "   " "--schroot"               "Run in a secure chroot environment with a fixed and tested tool chain"
-    printf "  %-3s %-30s %s\n"   "   " "--no-cleanup"            "Do not remove temporary (backup) files. Does not affect mounts."
+    printf "  %-3s %-30s %s\n"   "   " "--no-cleanup"            "Do not remove temporary (backup) files and mounts."
     printf "  %-3s %-30s %s\n"   "   " ""                        "Useful when tracking down errors with --schroot."
     printf "  %-3s %-30s %s\n"   "   " "--disable-mount"         "Disable the given mount point in <destination>/etc/fstab."
     printf "  %-3s %-30s %s\n"   "   " ""                        "For instance --disable-mount /some/path. Can be used multiple times."
@@ -1234,18 +1234,18 @@ sector_to_tbyte() { #{{{
 Cleanup() { #{{{
     {
         logmsg "Cleanup"
-        umount_
         if [[ $IS_CLEANUP == true ]]; then
+            umount_
             [[ $SCHROOT_HOME =~ ^/tmp/ ]] && rm -rf "$SCHROOT_HOME" #TODO add option to overwrite and show warning
             rm "$F_SCHROOT_CONFIG"
+            [[ $VG_SRC_NAME_CLONE && -b $DEST ]] && vgchange -an "$VG_SRC_NAME_CLONE"
+            [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
+            [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
+            [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $SRC_NBD
+            find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
+            rmdir "$MNTPNT"
         fi
-        [[ $VG_SRC_NAME_CLONE && -b $DEST ]] && vgchange -an "$VG_SRC_NAME_CLONE"
-        [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
-        [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
-        [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $SRC_NBD
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
-        find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
-        rmdir "$MNTPNT"
     } &>/dev/null
 
     if [[ -t 3 ]]; then
