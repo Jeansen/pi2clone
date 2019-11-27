@@ -614,13 +614,13 @@ init_srcs() { #{{{
         if [[ $_RMODE == false ]]; then
             mount_ "$NAME" -o ro
             mpnt=$(get_mount $NAME) || exit_ 1 "Could not find mount journal entry for $NAME. Aborting!" #do not use local, $? will be affected!
-            local used avail
-            read -r used avail <<<$(df -k --output=used,size "$mpnt" | tail -n -1)
-            avail=$((avail - used)) #because df keeps 5% for root!
+            local used size
+            read -r used <<<$(df -k --output=used "$mpnt" | tail -n -1)
+            size=$(sector_to_kbyte $(blockdev --getsz "$mpnt"))
             umount_ "$NAME"
         fi
 
-        SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$avail" #Avail and used wrong
+        SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$size"
     done < <(echo "$file" | sort -u | grep -v 'disk')
 } #}}}
 #}}}
@@ -921,7 +921,7 @@ disk_setup() { #{{{
                 | sort -u
         ) #only partitions
 
-        local name kname fstype uuid partuuid type parttype e n=0
+        local name kname fstype uuid partuuid type parttype sname sfstype e n=0
         while read -r e; do
             read -r name kname fstype uuid partuuid type parttype <<<"$e"
             eval "$name" "$kname" "$fstype" "$uuid" "$partuuid" "$type" "$parttype"
@@ -1010,20 +1010,22 @@ grub_setup() { #{{{
     mount_chroot "$mp"
 
     {
-        local m
+        local m ddev rest
         for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
             IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
             mount_ $ddev -p "$mp/$m"
         done
     }
 
-    if [[ $uefi == true && $has_efi == true ]]; then
-        local name uuid parttype
-        read -r name uuid parttype <<<"$(lsblk -pPo name,uuid,parttype "$dest" | grep -i $ID_GPT_EFI)"
-        eval "$name" "$uuid" "$parttype"
-        echo -e "UUID=${UUID}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"$mp/etc/fstab"
-        mkdir -p "$mp/boot/efi" && mount_ "$NAME" -p "$mp/boot/efi"
-    fi
+    {
+        if [[ $uefi == true && $has_efi == true ]]; then
+            local name uuid parttype
+            read -r name uuid parttype <<<"$(lsblk -pPo name,uuid,parttype "$dest" | grep -i $ID_GPT_EFI)"
+            eval "$name" "$uuid" "$parttype"
+            echo -e "UUID=${UUID}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"$mp/etc/fstab"
+            mkdir -p "$mp/boot/efi" && mount_ "$NAME" -p "$mp/boot/efi"
+        fi
+    }
 
     {
         local d
@@ -1064,10 +1066,10 @@ crypt_setup() { #{{{
     mount_chroot "$mp"
 
     {
-        local m
+        local m ddev rest
         for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
             IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
-            mount_ $ddev -p "$mp/$m" || exit_ 1 "Faild to mount $ddev to ${mp/$m}."
+            mount_ $ddev -p "$mp/$m" || exit_ 1 "Failed to mount $ddev to ${mp/$m}."
         done
     }
 
@@ -1337,10 +1339,10 @@ To_file() { #{{{
         | awk '{print $2}'
     )
 
-    local s g=0 mpnt
+    local s g=0 mpnt  sdev fs spid ptype type used size
     for s in ${!SRCS[@]}; do
         local sid=$s
-        IFS=: read -r sdev fs spid ptype type used avail <<<${SRCS[$s]}
+        IFS=: read -r sdev fs spid ptype type used size <<<${SRCS[$s]}
         local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
 
         if [[ $type == lvm ]]; then
@@ -1496,16 +1498,16 @@ Clone() { #{{{
         }
 
         {
-            local sname fs spid ptype type used avail f size
+            local sname fs spid ptype type used size f lsize
             for f in ${SRCS[@]}; do
-                IFS=: read -r sname fs spid ptype type used avail <<<$f
+                IFS=: read -r sname fs spid ptype type used size <<<$f
                 if grep -qE "${sname}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n'); then
-                    lv_size=$(to_mbyte $((used + avail))K)
+                    lv_size=$(to_mbyte ${size}K)
                     if ((s1 < s2)); then
                         lvcreate --yes -L"${lv_size%%.*}" -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
                     else
-                        size=$(echo "scale=4; $lv_size * $scale_factor" | bc)
-                        lvcreate --yes -L${size%%.*} -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
+                        lsize=$(echo "scale=4; $lv_size * $scale_factor" | bc)
+                        lvcreate --yes -L${lsize%%.*} -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
                     fi
                 fi
             done
@@ -1514,9 +1516,9 @@ Clone() { #{{{
         [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
         {
-            local name fs pid ptype type used avail s
+            local name fs pid ptype type used size s
             for s in ${SRCS[@]}; do
-                IFS=: read -r name fs pid ptype type used avail <<<$s
+                IFS=: read -r name fs pid ptype type used size <<<$s
                 [[ $type == 'lvm' ]] && src_lfs[${name##*-}]=$fs
                 [[ $type == 'part' ]] && grep -qE "${name}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n') && src_lfs[${TO_LVM[$name]}]=$fs
             done
@@ -1595,7 +1597,7 @@ Clone() { #{{{
         }
 
         #Now, we are ready to restore files from previous backup images
-        local file mpnt
+        local file mpnt i uuid puuid fs type sused dev mnt ddev dfs dpid dptype dtype davail
         for file in "${files[@]}"; do
             read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$uuid]}]}
@@ -1652,10 +1654,10 @@ Clone() { #{{{
             | awk '{print $2}'
         )
 
-        local s smpnt dmpnt
+        local s smpnt dmpnt sdev sfs spid sptype stype sused ssize ddev dfs dpid dptype dtype davail
         for s in ${!SRCS[@]}; do
             local sid=$s
-            IFS=: read -r sdev sfs spid sptype stype sused savail <<<${SRCS[$s]}
+            IFS=: read -r sdev sfs spid sptype stype sused ssize <<<${SRCS[$s]}
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$s]}]}
 
             [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] \
@@ -1739,7 +1741,7 @@ Clone() { #{{{
         local di=0
 
         {
-            local i
+            local i sdev sfs spid sptype stype srest ddev dfs dpid dptype dtype drest
             for ((i = 0; i < ${#SRCS[@]}; i++)); do
                 IFS=: read -r sdev sfs spid sptype stype srest <<<${SRCS[${s[${sk[$i]}]}]}
                 IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DESTS[${d[${dk[$i]}]}]}
@@ -1756,7 +1758,7 @@ Clone() { #{{{
         }
 
         {
-            local i
+            local i sdev sfs spid sptype stype srest ddev dfs dpid dptype dtype drest
             for ((i = 0; i < ${#SRCS[@]}; i++)); do
                 IFS=: read -r sdev sfs spid sptype stype srest <<<${SRCS[${s[${sk[$i]}]}]}
                 IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DESTS[${d[${dk[$i]}]}]}
@@ -1785,21 +1787,23 @@ Clone() { #{{{
         _prepare_disk #First collect what we have in our backup
         sync_block_dev $DEST
 
-        if [[ -n $ENCRYPT_PWD ]]; then
-            if [[ $HAS_EFI == true ]]; then
-                local dev type
-                read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $DEST | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
-                mkfs -t vfat "$dev"
+        {
+            if [[ -n $ENCRYPT_PWD ]]; then
+                if [[ $HAS_EFI == true ]]; then
+                    local dev type
+                    read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $DEST | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
+                    mkfs -t vfat "$dev"
+                fi
+                pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
+                _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
+            else
+                disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
+                if echo "${SRCS[*]}" | grep -q 'lvm'; then
+                    _lvm_setup "$DEST"
+                    sleep 3
+                fi
             fi
-            pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
-            _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
-        else
-            disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
-            if echo "${SRCS[*]}" | grep -q 'lvm'; then
-                _lvm_setup "$DEST"
-                sleep 3
-            fi
-        fi
+        }
 
         #Now collect what we have created
         set_dest_uuids
@@ -1818,6 +1822,7 @@ Clone() { #{{{
     if [[ $HAS_GRUB == true ]]; then
         message -c -t "Installing Grub"
         {
+            local ddev rest
             IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS['/']}]}]}
             [[ -z $ddev ]] && exit_ 1 "Unexpected error - empty destination."
             if [[ $ENCRYPT_PWD ]]; then
@@ -1922,7 +1927,7 @@ Main() { #{{{
 
         mkdir -p "${BACKUP_FOLDER}/${cf%/*}" && cp "$cf" "${BACKUP_FOLDER}/${cf}"
         echo "en_US.UTF-8 UTF-8" >"$cf"
-        locale-gen || return 1
+        locale-gen >/dev/null || return 1
     } #}}}
 
     #If boot is a directory on /, returns ""
