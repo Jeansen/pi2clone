@@ -543,64 +543,64 @@ vg_disks() { #{{{
 
 mounts() { #{{{
     logmsg "mounts"
-	if [[ $_RMODE == false ]]; then
-		local f=()
-		local i y s
-		local mpnt sdev rest sid sdevname fs spid ptype type rest
+    if [[ $_RMODE == false ]]; then
+        local f=()
+        local i y s
+        local mpnt sdev rest sid sdevname fs spid ptype type rest
 
-		f[0]='cat $mpnt/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
-		f[1]='cat $mpnt/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
-		f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
+        f[0]='cat $mpnt/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
+        f[1]='cat $mpnt/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
+        f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
 
-		for s in "${!SRCS[@]}"; do
-			sid=$s
-			IFS=: read -r sdev rest <<<${SRCS[$s]}
+        for s in "${!SRCS[@]}"; do
+            sid=$s
+            IFS=: read -r sdev rest <<<${SRCS[$s]}
 
-			mount_ "$sdev" -o ro && mpnt=$(get_mount $sdev) || exit_ 1 "Could not mount ${sdev}."
+            mount_ "$sdev" -o ro && mpnt=$(get_mount $sdev) || exit_ 1 "Could not mount ${sdev}."
 
-			if [[ -f $mpnt/etc/fstab ]]; then
-				for y in "${!SRCS[@]}"; do
-					sid=$y
-					#using sdev causes strange behaviour instead of devname
-					IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
+            if [[ -f $mpnt/etc/fstab ]]; then
+                for y in "${!SRCS[@]}"; do
+                    sid=$y
+                    #using sdev causes strange behaviour instead of devname
+                    IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
 
-					for ((i = 0; i < ${#f[@]}; i++)); do
-						while read -r e; do
-							read -r dev mnt <<<"$e"
-							if [[ $dev == $sdevname || $dev == $spid || $dev == $sid ]]; then
-								MOUNTS[$mnt]="$y"
-								[[ -n $dev ]] && MOUNTS[$dev]="$mnt"
-								[[ -n $sid ]] && MOUNTS[$sid]="$mnt"
-								[[ -n $spid ]] && MOUNTS[$spid]="$mnt"
-							fi
-						done < <(eval "${f[$i]}")
-					done
-				done
-			fi
+                    for ((i = 0; i < ${#f[@]}; i++)); do
+                        while read -r e; do
+                            read -r dev mnt <<<"$e"
+                            if [[ $dev == $sdevname || $dev == $spid || $dev == $sid ]]; then
+                                MOUNTS[$mnt]="$y"
+                                [[ -n $dev ]] && MOUNTS[$dev]="$mnt"
+                                [[ -n $sid ]] && MOUNTS[$sid]="$mnt"
+                                [[ -n $spid ]] && MOUNTS[$spid]="$mnt"
+                            fi
+                        done < <(eval "${f[$i]}")
+                    done
+                done
+            fi
 
-			umount_ "$sdev"
-		done
-	else
-		local files=()
-		pushd "$SRC" >/dev/null || return 1
+            umount_ "$sdev"
+        done
+    else
+        local files=()
+        pushd "$SRC" >/dev/null || return 1
 
-		{
-			local file
-			for file in [0-9]*; do
-				local k=$(echo "$file" | sed "s/\.[a-z]*$//")
-				files+=($k)
-			done
-		}
+        {
+            local file
+            for file in [0-9]*; do
+                local k=$(echo "$file" | sed "s/\.[a-z]*$//")
+                files+=($k)
+            done
+        }
 
-		local file mpnt i uuid puuid fs type sused dev mnt ddev dfs dpid dptype dtype davail
-		for file in "${files[@]}"; do
-			read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
-			MOUNTS[${mnt//_/\/}]="$uuid"
-			MOUNTS[$uuid]="${mnt//_/\/}"
-		done
+        local file mpnt i uuid puuid fs type sused dev mnt ddev dfs dpid dptype dtype davail
+        for file in "${files[@]}"; do
+            read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
+            MOUNTS[${mnt//_/\/}]="$uuid"
+            MOUNTS[$uuid]="${mnt//_/\/}"
+        done
 
-		popd >/dev/null || return 1
-	fi
+        popd >/dev/null || return 1
+    fi
 } #}}}
 
 set_dest_uuids() { #{{{
@@ -655,22 +655,22 @@ init_srcs() { #{{{
         SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$size"
     done < <(echo "$file" | sort -u | grep -v 'disk')
 
-	if [[ $_RMODE == true ]]; then
-		pushd "$SRC" >/dev/null || return 1
-		{
-			local file f
-			for file in [0-9]*; do
-				f=$(echo "$file" | sed "s/\.[a-z]*$//")
-				read -r i uuid puuid fs type sused dev mnt <<<"${f//./ }"
-				IFS=: read -r sname sfstype spartuuid sparttype stype used size <<<${SRCS[$uuid]}
-				if [[ $type == part ]]; then
-					sname=$(grep $uuid $F_PART_LIST | awk '{print $1}' | cut -d '"' -f2)
-					size=$(sector_to_kbyte $(grep "$sname" $F_PART_TABLE | grep -o 'size=.*,' | grep -o '[0-9]*'))
-				fi
-				SRCS[$uuid]="$sname:$sfstype:$spartuuid:$sparttype:$stype:$sused:$size"
-			done
-		}
-	fi
+    if [[ $_RMODE == true ]]; then
+        pushd "$SRC" >/dev/null || return 1
+        {
+            local file f
+            for file in [0-9]*; do
+                f=$(echo "$file" | sed "s/\.[a-z]*$//")
+                read -r i uuid puuid fs type sused dev mnt <<<"${f//./ }"
+                IFS=: read -r sname sfstype spartuuid sparttype stype used size <<<${SRCS[$uuid]}
+                if [[ $type == part ]]; then
+                    sname=$(grep $uuid $F_PART_LIST | awk '{print $1}' | cut -d '"' -f2)
+                    size=$(sector_to_kbyte $(grep "$sname" $F_PART_TABLE | grep -o 'size=.*,' | grep -o '[0-9]*'))
+                fi
+                SRCS[$uuid]="$sname:$sfstype:$spartuuid:$sparttype:$stype:$sused:$size"
+            done
+        }
+    fi
 } #}}}
 #}}}
 
@@ -2494,8 +2494,8 @@ Main() { #{{{
         if [[ -b $SRC ]]; then
             SECTORS_SRC=$(blockdev --getsz "$SRC")
             SECTORS_SRC_USED=$(to_sector ${src_size}M)
-			PART_TABLE=$(blkid -o value -s PTTYPE $SRC)
-		fi
+            PART_TABLE=$(blkid -o value -s PTTYPE $SRC)
+        fi
 
         [[ -b $DEST ]] \
             && SECTORS_DEST=$(to_sector ${dest_size}M)
