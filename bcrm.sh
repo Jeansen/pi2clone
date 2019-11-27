@@ -98,6 +98,7 @@ declare SPLIT=false
 declare IS_CHECKSUM=false
 declare SCHROOT=false
 declare IS_CLEANUP=true
+declare ALL_TO_LVM=false
 
 declare MIN_RESIZE=2048 #In 1M units
 declare SWAP_SIZE=-1    #Values < 0 mean noch change/ignore
@@ -653,6 +654,23 @@ init_srcs() { #{{{
 
         SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$used:$size"
     done < <(echo "$file" | sort -u | grep -v 'disk')
+
+	if [[ $_RMODE == true ]]; then
+		pushd "$SRC" >/dev/null || return 1
+		{
+			local file f
+			for file in [0-9]*; do
+				f=$(echo "$file" | sed "s/\.[a-z]*$//")
+				read -r i uuid puuid fs type sused dev mnt <<<"${f//./ }"
+				IFS=: read -r sname sfstype spartuuid sparttype stype used size <<<${SRCS[$uuid]}
+				if [[ $type == part ]]; then
+					sname=$(grep $uuid $F_PART_LIST | awk '{print $1}' | cut -d '"' -f2)
+					size=$(sector_to_kbyte $(grep "$sname" $F_PART_TABLE | grep -o 'size=.*,' | grep -o '[0-9]*'))
+				fi
+				SRCS[$uuid]="$sname:$sfstype:$spartuuid:$sparttype:$stype:$sused:$size"
+			done
+		}
+	fi
 } #}}}
 #}}}
 
@@ -736,10 +754,14 @@ encrypt() { #{{{
     local dest="$2"
     local name="$3"
 
+    local size type
     if [[ $HAS_EFI == true ]]; then
-        local size type
         read -r size type <<<$(sfdisk -l -o Size,Type-UUID $SRC | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
         { echo -e "size=$size, type=$type\n;" | sfdisk --label gpt "$dest"; } || return 1
+    elif [[ $UEFI == true ]]; then
+        { echo ';' | sfdisk "$DEST"; }
+        mbr2gpt $DEST && HAS_EFI=true
+        read -r size type <<<$(sfdisk -l -o Size,Type-UUID $DEST | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
     else
         { echo ';' | sfdisk "$dest"; } || return 1 #delete all partitions and create one for the whole disk.
     fi
@@ -1620,10 +1642,9 @@ Clone() { #{{{
 
             flock "$DEST" sfdisk --force "$DEST" < <(echo "$ptable")
             flock "$DEST" sfdisk -Vq "$DEST" || return 1
+            [[ $UEFI == true ]] && mbr2gpt $DEST && HAS_EFI=true
         fi
         partprobe "$DEST"
-
-        [[ $UEFI == true ]] && mbr2gpt $DEST && HAS_EFI=true
     } #}}}
 
     _finish() { #{{{
@@ -1829,13 +1850,34 @@ Clone() { #{{{
 
         pvcreate -ff "$NAME"
 
-        if [[ -n $ENCRYPT_PWD ]]; then
-            for f in ${SRCS[*]}; do
-                IFS=: read -r name fstype partuuid parttype type used avail <<<"$f"
-                [[ $type == part && ! $parttype =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]] \
-                    && exit_ 1 "Cannot encrypt disk. All partitions (except for EFI) must be of type 'lvm'."
-            done
-        fi
+        {
+            if [[ $ALL_TO_LVM == true ]]; then
+                local y sdevname fs spid ptype type rest
+                for y in "${!SRCS[@]}"; do
+                    IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
+                    if [[ $type == part ]]; then
+                        if [[ ! ${ptype} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} \
+                        && ! ${ptype} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then
+                            name="${MOUNTS[$y]##*/}"
+                            TO_LVM[$sdevname]="${name:-root}"
+                        fi
+                    fi
+                done
+            fi
+        }
+
+        {
+            if [[ -n $ENCRYPT_PWD ]]; then
+                local f name fstype partuuid parttype type used avail
+                for f in ${SRCS[*]}; do
+                    IFS=: read -r name fstype partuuid parttype type used avail <<<"$f"
+                    if ! grep -qE "${name}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n'); then
+                        [[ $type == part && ! $parttype =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]] \
+                            && exit_ 1 "Cannot encrypt disk. All partitions (except for EFI) must be of type 'lvm'."
+                    fi
+                done
+            fi
+        }
 
         _prepare_disk #First collect what we have in our backup
         sync_block_dev $DEST
@@ -2095,6 +2137,7 @@ Main() { #{{{
             boot-size:,
             no-cleanup,
             to-lvm:,
+            all-to-lvm,
             disable-mount:,
             check' \
         -n "$(basename "$0" \
@@ -2254,6 +2297,10 @@ Main() { #{{{
             ;;
         '--no-cleanup')
             IS_CLEANUP=false
+            shift 1; continue
+            ;;
+        '--all-to-lvm')
+            ALL_TO_LVM=true
             shift 1; continue
             ;;
         '--to-lvm')
