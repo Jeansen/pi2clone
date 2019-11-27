@@ -1059,7 +1059,7 @@ grub_setup() { #{{{
     if [[ $has_efi == true ]]; then
         local apt_pkgs="grub-efi-amd64"
     else
-        local apt_pkgs="binutils"
+        local apt_pkgs="grub-pc"
     fi
 
     pkg_remove "$mp" "$REMOVE_PKGS" || return 1
@@ -1094,6 +1094,24 @@ crypt_setup() { #{{{
             mount_ $ddev -p "$mp/$m" || exit_ 1 "Failed to mount $ddev to ${mp/$m}."
         done
     }
+
+    {
+        if [[ $UEFI == true && $HAS_EFI == true ]]; then
+            local name uuid parttype
+            read -r name uuid parttype <<<"$(lsblk -pPo name,uuid,parttype "$DEST" | grep -i $ID_GPT_EFI)"
+            eval "$name" "$uuid" "$parttype"
+            echo -e "UUID=${UUID}\t/boot/efi\tvfat\tumask=0077\t0\t1" >>"$mp/etc/fstab"
+            mkdir -p "$mp/boot/efi" && mount_ "$NAME" -p "$mp/boot/efi"
+        fi
+    }
+
+    local apt_pkgs=(cryptsetup keyutils)
+
+    if [[ $HAS_EFI == true ]]; then
+        apt_pkgs+=(grub-efi-amd64)
+    else
+        apt_pkgs+=(grub-pc)
+    fi
 
     printf '%s' '#!/bin/sh
     exec /bin/cat /${1}' >"$mp/home/dummy" && chmod +x "$mp/home/dummy"
@@ -1141,7 +1159,8 @@ crypt_setup() { #{{{
         || echo "GRUB_ENABLE_CRYPTODISK=y" >>"$mp/etc/default/grub"
 
     pkg_remove "$mp" "$REMOVE_PKGS" || return 1
-    pkg_install "$mp" "$dest" "lvm2 cryptsetup keyutils binutils grub2-common grub-pc-bin" || return 1
+    pkg_install "$mp" "$dest" "${apt_pkgs[*]}" || return 1
+
     create_rclocal "$mp"
     umount_chroot
 } #}}}
