@@ -114,7 +114,7 @@ declare BOOT_PART=""
 declare SWAP_PART=""
 declare EFI_PART=""
 declare MNTPNT=""
-declare PART_TABLE=""
+declare TABLE_TYPE=""
 
 declare INTERACTIVE=false
 declare HAS_GRUB=false
@@ -304,7 +304,7 @@ ctx_init() { #{{{
     map[isLvm]=IS_LVM
     map[isChecksum]=IS_CHECKSUM
     map[hasEfi]=HAS_EFI
-    map[partTable]=PART_TABLE
+    map[tableType]=TABLE_TYPE
 
     if [[ -d "$SRC" && -e "$SRC/$F_CONTEXT" ]]; then
         local IFS='='
@@ -355,8 +355,8 @@ ctx_set() { #{{{
     HAS_EFI)
         CONTEXT[hasEfi]=$v
         ;;
-    PART_TABLE)
-        CONTEXT[partTable]=$v
+    TABLE_TYPE)
+        CONTEXT[tableType]=$v
         ;;
     HAS_GRUB)
         CONTEXT[hasGrub]=$v
@@ -888,7 +888,7 @@ expand_disk() { #{{{
     {
         local p
         for p in ${!TO_LVM[@]}; do
-            case $PART_TABLE in
+            case $TABLE_TYPE in
             dos)
                 pdata=$(sed "\|$p| s/type=\w*/type=8e/" < <(echo "$pdata"))
                 ;;
@@ -896,7 +896,7 @@ expand_disk() { #{{{
                 pdata=$(sed "\|$p| s/type=\([[:alnum:]]*-\)*[[:alnum:]]*/type=${ID_GPT_LVM^^}/" < <(echo "$pdata"))
                 ;;
             *)
-                exit_ 1 "Unsupported partition table $PART_TABLE."
+                exit_ 1 "Unsupported partition table $TABLE_TYPE."
                 ;;
             esac
         done
@@ -1477,7 +1477,7 @@ To_file() { #{{{
     ctx_set SECTORS_SRC_USED
     ctx_set BOOT_PART
     ctx_set IS_LVM
-    ctx_set PART_TABLE
+    ctx_set TABLE_TYPE
     ctx_set HAS_GRUB
     ctx_save
 
@@ -2494,7 +2494,7 @@ Main() { #{{{
         if [[ -b $SRC ]]; then
             SECTORS_SRC=$(blockdev --getsz "$SRC")
             SECTORS_SRC_USED=$(to_sector ${src_size}M)
-            PART_TABLE=$(blkid -o value -s PTTYPE $SRC)
+            TABLE_TYPE=$(blkid -o value -s PTTYPE $SRC)
         fi
 
         [[ -b $DEST ]] \
