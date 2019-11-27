@@ -756,12 +756,12 @@ encrypt() { #{{{
 
     local size type
     if [[ $HAS_EFI == true ]]; then
-        read -r size type <<<$(sfdisk -l -o Size,Type-UUID $SRC | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
+        read -r size type <<<$(sfdisk -l -o Size,Type-UUID $SRC | grep ${ID_GPT_EFI^^})
         { echo -e "size=$size, type=$type\n;" | sfdisk --label gpt "$dest"; } || return 1
     elif [[ $UEFI == true ]]; then
         { echo ';' | sfdisk "$DEST"; }
         mbr2gpt $DEST && HAS_EFI=true
-        read -r size type <<<$(sfdisk -l -o Size,Type-UUID $DEST | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
+        read -r size type <<<$(sfdisk -l -o Size,Type-UUID $DEST | grep ${ID_GPT_EFI^^})
     else
         { echo ';' | sfdisk "$dest"; } || return 1 #delete all partitions and create one for the whole disk.
     fi
@@ -1886,7 +1886,7 @@ Clone() { #{{{
             if [[ -n $ENCRYPT_PWD ]]; then
                 if [[ $HAS_EFI == true ]]; then
                     local dev type
-                    read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $DEST | grep C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
+                    read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $DEST | grep ${ID_GPT_EFI^^})
                     mkfs -t vfat "$dev"
                 fi
                 pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
@@ -2404,7 +2404,7 @@ Main() { #{{{
         exit_ 1 "$SRC is not readable."
 
     [[ -b $SRC ]] \
-        && lsblk -lpo parttype "$SRC" | grep -nqi 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b' \
+        && lsblk -lpo parttype "$SRC" | grep -nqi $ID_GPT_EFI \
         && HAS_EFI=true
 
     {
