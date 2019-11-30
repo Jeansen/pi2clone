@@ -654,7 +654,7 @@ init_srcs() { #{{{
             mpnt=$(get_mount $mp) || exit_ 1 "Could not find mount journal entry for $mp. Aborting!" #do not use local, $? will be affected!
             local used size
             read -r used <<<$(df -k --output=used "$mpnt" | tail -n -1)
-            size=$(sector_to_kbyte $(blockdev --getsz "$mpnt"))
+            size=$(sector_to_kbyte $(blockdev --getsz "$NAME"))
             umount_ "$mp"
         fi
 
@@ -1772,6 +1772,7 @@ Clone() { #{{{
             fi
 
             mount_ "$tdev" -o ro && smpnt=$(get_mount "$tdev") || exit_ 1 "Could not find mount journal entry for $tdev. Aborting!"
+			mount_ "$ddev" && dmpnt=$(get_mount "$ddev") || exit_ 1 "Could not find mount journal entry for $tdev. Aborting!"
 
             ((davail - sused <= 0)) && exit_ 10 "Require $(to_readable_size ${sused}K) but $ddev is only $(to_readable_size ${davail}K)"
 
@@ -2061,26 +2062,30 @@ Main() { #{{{
         local pdata=$(sfdisk -d $SRC)
         declare -n boot_part="$1"
 
+        local lvs_list=$(lvs -o lv_dmpath,lv_role)
+
         _set() { #{{{
             local mpnt
 
             local f name mountpoint
             while read -r name mountpoint; do
-                local mp=${mountpoint:-$name}
-                mount_ "$mp" -o ro || exit_ 1 "Could not mount ${dev}."
-                mpnt=$(get_mount $mp) || exit_ 1 "Could not find mount journal entry for $mp. Aborting!"
-                if [[ -e ${mpnt}/etc/fstab ]]; then
-                    {
-                        local part=$(awk '$1 ~ /^[^;#]/' "${mpnt}/etc/fstab" | grep -E "\s+/boot\s+" | awk '{print $1}')
-                        if [[ -n $part ]]; then
-                            local name kdev fstype uuid puuid type parttype mountpoint
-                            read -r name kdev fstype uuid puuid type parttype mountpoint <<<$(echo "$ldata" | grep "=\"${part#*=}\"")
-                            eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-                            boot_part=$KNAME
-                        fi
-                    }
+                if grep "$name" <<<"$lvs_list" | grep -vq "snapshot" && [[ -n $fs ]]; then
+                    local mp=${mountpoint:-$name}
+                    mount_ "$mp" -o ro || exit_ 1 "Could not mount ${dev}."
+                    mpnt=$(get_mount $mp) || exit_ 1 "Could not find mount journal entry for $mp. Aborting!"
+                    if [[ -e ${mpnt}/etc/fstab ]]; then
+                        {
+                            local part=$(awk '$1 ~ /^[^;#]/' "${mpnt}/etc/fstab" | grep -E "\s+/boot\s+" | awk '{print $1}')
+                            if [[ -n $part && -n $fs ]]; then
+                                local name kdev fstype uuid puuid type parttype mountpoint
+                                read -r name kdev fstype uuid puuid type parttype mountpoint <<<$(echo "$ldata" | grep "=\"${part#*=}\"")
+                                eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+                                boot_part=$KNAME
+                            fi
+                        }
+                    fi
+                    umount_ "$mp"
                 fi
-                umount_ "$mp"
             done <<<"$1"
         } #}}}
 
@@ -2128,13 +2133,13 @@ Main() { #{{{
 
         local fs dev name mountpoint swap_size=0
         while IFS=: read -r fs dev name mountpoint; do
-            if ! grep "$name" <<<"$lvs_list" | grep -q "snapshot"; then
+            if grep "$name" <<<"$lvs_list" | grep -vq "snapshot" && [[ -n $fs ]]; then
                 if [[ $SWAP_SIZE -lt 0 && $fs == swap ]]; then
                     swap_size=$(swapon --show=size,name --bytes --noheadings | grep $dev | awk '{print $1}') #no swap = 0
                     swap_size=$(to_kbyte ${swap_size:-0})
                 fi
 
-                [[ -z $mountpoint ]] && { mount_ $dev -o ro || exit_ 1 "Could not mount ${dev}."; }
+                [[ -z $mountpoint && $fs != swap ]] && { mount_ $dev -o ro || exit_ 1 "Could not mount ${dev}."; }
                 __src_size=$((swap_size + __src_size + $(df -k --output=used $dev | tail -n -1)))
                 [[ -z $mountpoint ]] && umount_ "$dev"
             fi
