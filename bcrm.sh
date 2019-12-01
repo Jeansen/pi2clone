@@ -152,7 +152,8 @@ echo_() { #{{{
 } #}}}
 
 logmsg() { #{{{
-    printf "\n[BCRM] $(date --rfc-3339=seconds)\t$1\n\n" >> $F_LOG
+    local d=$(date --rfc-3339=seconds)
+    printf "\n[BCRM] ${d}\t${1}\n\n" >> $F_LOG
 } #}}}
 
 usage() { #{{{
@@ -312,13 +313,13 @@ ctx_init() { #{{{
             CONTEXT["$k"]="$v"
         done < <(sed '/^#/d; /^$/d' "$SRC/$F_CONTEXT")
 
-        local keys=$(echo "${!map[*]} ${!CONTEXT[*]}" | tr -s " " $'\n' | sort | uniq -d)
+        local keys=$(echo "${!map[@]} ${!CONTEXT[@]}" | tr -s " " $'\n' | sort | uniq -d)
 
         {
             local f
-            for f in $keys; do
+            while read -r f; do
                 [[ -n ${CONTEXT[$f]} ]] && eval "${map[$f]}"="${CONTEXT[$f]}" || exit_ 1 "Could not init context."
-            done
+            done < <(echo "$keys")
         }
     else
         {
@@ -748,6 +749,7 @@ validate_m5dsums() { #{{{
 
 sync_block_dev() { #{{{
     logmsg "sync_block_dev"
+    sleep 3
     udevadm settle && blockdev --rereadpt "$1" && udevadm settle
 } #}}}
 
@@ -2386,6 +2388,9 @@ Main() { #{{{
                 ;;
             qemu-img)
                 packages+=(qemu-utils)
+                ;;
+            blockdev)
+                packages+=(util-linux)
                 ;;
             *)
                 packages+=("$c")
