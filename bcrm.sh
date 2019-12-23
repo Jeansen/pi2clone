@@ -72,7 +72,7 @@ declare -A CONTEXT          #Values needed for backup/restore
 declare -A CHG_SYS_FILES    #Container for system files that needed to be changed during execution
                             #Key = original file path, Value = MD5sum
 
-declare -A MNTJRNL MOUNTS
+declare -A MNTJRNL MOUNTS EXT_PARTS EXCLUDES CHOWN
 declare -A SRC2DEST PSRC2PDEST NSRC2NDEST
 
 declare PVS=() VG_DISKS=() CHROOT_MOUNTS=()
@@ -135,7 +135,7 @@ declare VG_FREE_SIZE=0
 printarr() { #{{{
     local k
     declare -n __p="$1"
-    for k in "${!__p[@]}"; do printf "%s=%s\n" "$k" "${__p[$k]}"; done
+    for k in "${!__p[@]}"; do printf "%s=%s\n" "$k" "${__p[$k]}" >> $F_LOG; done
 } #}}}
 #}}}
 
@@ -178,7 +178,7 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "   " "--remove-pkgs"           "Remove the given list of whitespace-separated packages as a final step."
     printf "  %-3s %-30s %s\n"   "   " ""                        "The whole list must be enclosed in \"\""
     printf "  %-3s %-30s %s\n"   "-n," "--new-vg-name"           "LVM only: Define new volume group name"
-    printf "  %-3s %-30s %s\n"   "   " "--vg-free-size"          "LVM only: How much space should remain free in a VG."
+    printf "  %-3s %-30s %s\n"   "   " "--vg-free-size"          "LVM only: How much space should be added to remaining free space in source VG."
     printf "  %-3s %-30s %s\n"   "-e," "--encrypt-with-password" "LVM only: Create encrypted disk with supplied passphrase"
     printf "  %-3s %-30s %s\n"   "-p," "--use-all-pvs"           "LVM only: Use all disks found on destination as PVs for VG"
     printf "  %-3s %-30s %s\n"   "   " "--lvm-expand"            "LVM only: Have the given LV use the remaining free space."
@@ -195,6 +195,13 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "   " "--to-lvm"                "Convert given source partition to LV. E.g. '/dev/sda1:boot' would be"
     printf "  %-3s %-30s %s\n"   "   " ""                        "converted to LV with the name 'boot' Can be used multiple times."
     printf "  %-3s %-30s %s\n"   "   " ""                        "Only works for partitions that have a valid mountpoint in fstab"
+    printf "  %-3s %-30s %s\n"   "   " "--all-to-lvm"            "Convert all source partitions to LV. (except EFI)"
+    printf "  %-3s %-30s %s\n"   "   " "--include-partition"     "Also include the content of the given partition to the specified path."
+    printf "  %-3s %-30s %s\n"   "   " ""                        "E.g: 'part=/dev/sdX,dir=/some/path/,user=1000,group=10001,exclude=fodler1,folder2'"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "would copy all content from /dev/sdX to /some/path."
+    printf "  %-3s %-30s %s\n"   "   " ""                        "If /some/path does not exist, it will be created with the given user"
+    printf "  %-3s %-30s %s\n"   "   " ""                        "and group ID, or root otherwise. With exclude you can filter folders and files."
+    printf "  %-3s %-30s %s\n"   "   " ""                        "This option can be specified multiple times."
     printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
     printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
 
@@ -397,6 +404,12 @@ exit_() { #{{{
 
 #--- Mounting ---{{{
 
+find_mount_part() { #{{{
+    for x in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | sort -r | grep -E '^/' | grep -v -E '^/dev/'); do
+        [[ $1 =~ $x ]] && echo $x && return 0
+    done
+} #}}}
+
 mount_() { #{{{
     local cmd="mount"
     local OPTIND
@@ -546,39 +559,33 @@ vg_disks() { #{{{
 mounts() { #{{{
     logmsg "mounts"
     if [[ $_RMODE == false ]]; then
-        local f=()
-        local i y s
-        local mp mpnt sdev sid sdevname fs spid ptype type mountp rest
-
-        f[0]='cat $mpnt/etc/fstab | grep "^UUID" | sed -e "s/UUID=//" | awk '"'"'{print $1,$2}'"'"
-        f[1]='cat $mpnt/etc/fstab | grep "^PARTUUID" | sed -e "s/PARTUUID=//" | awk '"'"'{print $1,$2}'"'"
-        f[2]='cat $mpnt/etc/fstab | grep "^/" | awk '"'"'{print $1,$2}'"'"
+        local mp mpnt sdev sid fs spid ptype type mountpoint rest
+        local s ldata=$(lsblk -lnpo name,kname,uuid,partuuid $SRC)
 
         for s in "${!SRCS[@]}"; do
             sid=$s
             IFS=: read -r sdev fs spid ptype type mountpoint rest <<<${SRCS[$s]}
 
             mp="${mountpoint:-$sdev}"
-            mount_ $mp -o ro && mpnt=$(get_mount $mp) || exit_ 1 "Could not mount ${mp}."
+            mount_ $mp && mpnt=$(get_mount $mp) || exit_ 1 "Could not mount ${mp}."
 
             if [[ -f $mpnt/etc/fstab ]]; then
-                for y in "${!SRCS[@]}"; do
-                    sid=$y
-                    #using sdev causes strange behaviour instead of devname
-                    IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
+                {
+                    local dev mnt fs
+                    local name kname uuid partuuid
+                    while read -r dev mnt fs; do
+                        if [[ ! $fs =~ nfs|swap|udf ]]; then
+                            read -r name kname uuid partuuid <<<$(grep -iE "${dev//*=/}\s+" <<<"$ldata") #Ignore -real, -cow
 
-                    for ((i = 0; i < ${#f[@]}; i++)); do
-                        while read -r e; do
-                            read -r dev mnt <<<"$e"
-                            if [[ $dev == $sdevname || $dev == $spid || $dev == $sid ]]; then
-                                MOUNTS[$mnt]="$y"
-                                [[ -n $dev ]] && MOUNTS[$dev]="$mnt"
-                                [[ -n $sid ]] && MOUNTS[$sid]="$mnt"
-                                [[ -n $spid ]] && MOUNTS[$spid]="$mnt"
+                            if [[ -n $name ]]; then
+                                MOUNTS[$mnt]="${uuid}"
+                                [[ -n $name ]] && MOUNTS[${name//*=/}]=$mnt
+                                [[ -n $partuuid ]] && MOUNTS[${partuuid}]=$mnt
+                                [[ -n $uuid ]] && MOUNTS[$uuid]="${mnt}"
                             fi
-                        done < <(eval "${f[$i]}")
-                    done
-                done
+                        fi
+                    done <<<$(grep -E '^[^;#]' "$mpnt/etc/fstab" | awk '{print $1,$2,$3}')
+                }
             fi
 
             umount_ "$mp"
@@ -595,9 +602,9 @@ mounts() { #{{{
             done
         }
 
-        local file mpnt i uuid puuid fs type sused dev mnt ddev dfs dpid dptype dtype davail
+        local file mpnt i uuid puuid fs type sused dev mnt dir ddev dfs dpid dptype dtype davail user group
         for file in "${files[@]}"; do
-            read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
+            read -r i uuid puuid fs type sused dev mnt dir user group <<<"${file//./ }"
             MOUNTS[${mnt//_/\/}]="$uuid"
             MOUNTS[$uuid]="${mnt//_/\/}"
         done
@@ -623,7 +630,7 @@ set_dest_uuids() { #{{{
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
 
         local mp="${MOUNTPOINT:-$NAME}"
-        mount_ "$mp" -t "$FSTYPE" -o ro || exit_ 1 "Could not mount ${mp}."
+        mount_ "$mp" -t "$FSTYPE" || exit_ 1 "Could not mount ${mp}."
 
         local used avail
         read -r used avail <<<$(df --block-size=1K --output=used,size "$NAME" | tail -n -1)
@@ -632,7 +639,7 @@ set_dest_uuids() { #{{{
         DESTS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
 
         # [[ ${PVS[@]} =~ $NAME ]] && continue
-    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -u | grep -vE '\bdisk|\bUUID="".*\bPARTUUID=""')
+    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -u | grep -vE 'disk|UUID="".*PARTUUID=""')
 } #}}}
 
 # $2: <File with lsblk dump>
@@ -813,7 +820,7 @@ expand_disk() { #{{{
     if [[ -n $SWAP_PART ]]; then
         #Substract the swap partition size
         swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
-        src_size=$((src_size - swap_size))
+        # src_size=$((src_size - swap_size))
     fi
 
     local expand_factor=$(echo "scale=4; $dest_size / $src_size" | bc)
@@ -826,8 +833,8 @@ expand_disk() { #{{{
     declare -A val_parts #Partitions with fixed sizes
     declare -A var_parts #Partitions to be expanded
 
+    local n=0
     {
-        local n=0
         while read -r name size; do
             if [[ (-n $BOOT_PART && $name == "$BOOT_PART") ||
                 (-n $SWAP_PART && $name == "$SWAP_PART") ||
@@ -1002,7 +1009,6 @@ disk_setup() { #{{{
             fi
             n=$((n + 1))
         done < <(echo "$plist")
-        sync_block_dev $DEST
     } #}}}
 
     _scan_src_parts
@@ -1411,48 +1417,39 @@ To_file() { #{{{
     }
     message -y
 
-    local VG_SRC_NAME=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | awk '{print $2}')
-    if [[ -z $VG_SRC_NAME ]]; then
-        while read -r e g; do
-            grep -q "${SRC##*/}" < <(dmsetup deps -o devname "$e" | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME="$g"
-        done < <(pvs --noheadings -o pv_name,vg_name | xargs)
+    if [[ $IS_LVM ]]; then
+        local VG_SRC_NAME=$(pvs --noheadings -o pv_name,vg_name | grep "$SRC" | xargs | awk '{print $2}')
+        if [[ -z $VG_SRC_NAME ]]; then
+            while read -r e g; do
+                grep -q "${SRC##*/}" < <(dmsetup deps -o devname "$e" | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME="$g"
+            done < <(pvs --noheadings -o pv_name,vg_name | xargs)
+        fi
+
+        local lvs_data=$(lvs --noheadings -o lv_name,lv_dm_path,vg_name \
+            | grep "\b${VG_SRC_NAME}\b"
+        )
+
+        local src_vg_free=$( vgs --noheadings --units m --nosuffix -o vg_name,vg_free \
+            | grep "\b${VG_SRC_NAME}\b" \
+            | awk '{print $2}'
+        )
     fi
 
-    local lvs_data=$(lvs --noheadings -o lv_name,lv_dm_path,vg_name \
-        | grep "\b${VG_SRC_NAME}\b"
-    )
-
-    local src_vg_free=$( vgs --noheadings --units m --nosuffix -o vg_name,vg_free \
-        | grep "\b${VG_SRC_NAME}\b" \
-        | awk '{print $2}'
-    )
-
     local s g=0 mpnt  sdev fs spid ptype type used size
-    for s in ${!SRCS[@]}; do
-        local sid=$s
-        IFS=: read -r sdev fs spid ptype type mountpoint used size <<<${SRCS[$s]}
-        local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
 
-        if [[ $type == lvm ]]; then
-            local lv_src_name=$(grep $sdev <<<"$lvs_data" | awk '{print $1}')
-        fi
+    _copy() { #{{{
+        local sdev=$1 mpnt=$2 file=$3 excludes=()
+        local cmd="tar --warning=none --atime-preserve=system --numeric-owner --xattrs --directory=$mpnt"
 
-        if [[ $type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
-            local tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
-            lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
-            lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
+        [[ -n $4 ]] && excludes=(${EXCLUDES[$4]//:/ })
+
+        if [[ -z $excludes ]]; then
+            cmd="$cmd --exclude=run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*"
         else
-            local tdev="${mountpoint:-$sdev}"
+            for ex in ${excludes[@]}; do
+                cmd="$cmd --exclude=$ex"
+            done
         fi
-
-        mount_ "$tdev" -o ro || exit_ 1 "Could not mount ${tdev}."
-        mpnt=$(get_mount "$tdev")  || exit_ 1 "Could not find mount journal entry for $tdev. Aborting!"
-
-        local cmd="tar --warning=none --atime-preserve=system --numeric-owner --xattrs --directory=$mpnt \
-            --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*"
-        local file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${used}.${sdev//\//_}.${mount//\//_} "
-
-        [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
         if [[ $INTERACTIVE == true ]]; then
             message -u -c -t "Creating backup for $sdev [ scan ]"
@@ -1478,13 +1475,57 @@ To_file() { #{{{
             fi
             eval "$cmd"
         fi
+        message -y
+        g=$((g + 1))
+    } #}}}
+
+    for s in ${!SRCS[@]}; do
+        local sid=$s
+        IFS=: read -r sdev fs spid ptype type mountpoint used size <<<${SRCS[$s]}
+        local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
+
+        if [[ $type == lvm ]]; then
+            local lv_src_name=$(grep $sdev <<<"$lvs_data" | awk '{print $1}')
+        fi
+
+        if [[ $type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
+            local tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
+            lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
+            lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
+        else
+            local tdev="${mountpoint:-$sdev}"
+        fi
+
+        mount_ "$tdev" || exit_ 1 "Could not mount ${tdev}."
+        mpnt=$(get_mount "$tdev")  || exit_ 1 "Could not find mount journal entry for $tdev. Aborting!"
+
+        [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
+
+        local file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${used}.${sdev//\//_}.${mount//\//_} "
+
+        _copy $sdev $mpnt $file
+
+        for em in ${!EXT_PARTS[@]}; do
+            local l=${MOUNTS[$s]}
+            local e=${EXT_PARTS[$em]}
+
+            if [[ $l == $(find_mount_part $em ) ]]; then
+                local user password
+                read -r user password <<<${CHOWN[$em]/:/ }
+
+                mount_ "$e"
+                local mpnt_e=$(get_mount $e) || exit_ 1 "Could not find mount journal entry for $e. Aborting!"
+                file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${used}.${sdev//\//_}.${mount//\//_}.${em//\//_}.${user}.${password} "
+
+                _copy $e $mpnt_e $file $em
+                umount_ "$e"
+            fi
+        done
 
         [[ -f $mpnt/grub/grub.cfg || -f $mpnt/grub.cfg || -f $mpnt/boot/grub/grub.cfg ]] && HAS_GRUB=true
         umount_ "$tdev"
         [[ $type == lvm ]] && lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
 
-        message -y
-        g=$((g + 1))
     done
 
     popd >/dev/null || return 1
@@ -1674,6 +1715,7 @@ Clone() { #{{{
     } #}}}
 
     _finish() { #{{{
+        [[ -z $1 ]] && return 1 #Just to protect ourselves
         logmsg "[ Clone ] _finish"
         [[ -f "$1/etc/hostname" && -n $HOST_NAME ]] && echo "$HOST_NAME" >"$1/etc/hostname"
         [[ -f $1/grub/grub.cfg || -f $1/grub.cfg || -f $1/boot/grub/grub.cfg ]] && HAS_GRUB=true
@@ -1696,21 +1738,30 @@ Clone() { #{{{
         }
 
         #Now, we are ready to restore files from previous backup images
-        local file mpnt i uuid puuid fs type sused dev mnt ddev dfs dpid dptype dtype davail
+        local file mpnt i uuid puuid fs type sused dev mnt dir ddev dfs dpid dptype dtype davail user group o_user o_group
         for file in "${files[@]}"; do
-            read -r i uuid puuid fs type sused dev mnt <<<"${file//./ }"
+            read -r i uuid puuid fs type sused dev mnt dir user group<<<"${file//./ }"
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$uuid]}]}
+            dir=${dir//_//}
+            mnt=${mnt//_//}
 
             if [[ -n $ddev ]]; then
                 mount_ "$ddev" && { mpnt=$(get_mount $ddev) || exit_ 1 "Could not find mount journal entry for $ddev. Aborting!"; }
+                if [[ -n $dir ]]; then
+                    mpnt=$(realpath -s $mpnt/$dir)
+                    mnt=$(realpath -s $mnt/$dir && mkdir -p $mpnt)
+                    o_user=$(stat -c "%u" $mpnt)
+                    o_group=$(stat -c "%g" $mpnt)
+                fi
                 pushd "$mpnt" >/dev/null || return 1
+
 
                 [[ $SYS_HAS_EFI == false && $HAS_EFI == true ]] && exit_ 1 "Cannot clone UEFI system. Current running system does not support UEFI."
 
                 ((davail - sused <= 0)) \
                     && exit_ 10 "Require $(to_readable_size ${sused}K) but destination is only $(to_readable_size ${davail}K)"
 
-                local cmd="tar -xf - -C $mpnt"
+                local cmd="tar --same-owner -xf - -C $mpnt"
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
                 if [[ $INTERACTIVE == true ]]; then
@@ -1719,15 +1770,22 @@ Clone() { #{{{
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     while read -r e; do
                         [[ $e -ge 100 ]] && e=100
-                        message -u -c -t "Restoring ${dev//_//} (${mnt//_//}) to $ddev [ $(printf '%02d%%' $e) ]"
+                        message -u -c -t "Restoring ${dev//_//} ($mnt) to $ddev [ $(printf '%02d%%' $e) ]"
                         #Note that with pv stderr holds the current percentage value!
                     done < <((eval "$cmd") 2>&1)
-                    message -u -c -t "Restoring ${dev//_//} (${mnt//_//}) to $ddev [ $(printf '%02d%%' 100) ]"
+                    message -u -c -t "Restoring ${dev//_//} ($mnt) to $ddev [ $(printf '%02d%%' 100) ]"
                 else
-                    message -c -t "Restoring ${dev//_//} (${mnt//_//}) to $ddev"
+                    message -c -t "Restoring ${dev//_//} ($mnt) to $ddev"
                     cmd="$cmd < ${SRC}/${file}*"
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     eval "$cmd"
+                fi
+
+                # Tar will change parent folder permissions because all contend was saved with '.'.
+                # So we either restore the original values or the ones provided by argument overwrites.
+                if [[ -n $dir ]]; then
+                    chown ${user:-$o_user} $mpnt
+                    chgrp ${group:-$o_group} $mpnt
                 fi
 
                 popd >/dev/null || return 1
@@ -1740,6 +1798,42 @@ Clone() { #{{{
         popd >/dev/null || return 1
         return 0
     } #}}}
+
+        _copy() { #{{{
+            local sdev=$1 ddev=$2 smpnt=$3 dmpnt=$4 excludes=() cmd
+            [[ -n $5 ]] && excludes=(${EXCLUDES[$5]//:/ })
+
+            if [[ -n $excludes ]]; then
+                for ex in ${excludes[@]}; do
+                    cmd="$cmd --exclude=/$ex"
+                done
+            else
+                cmd="--exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*"
+            fi
+
+            if [[ $INTERACTIVE == true ]]; then
+                message -u -c -t "Cloning $sdev to $ddev [ scan ]"
+                local size=$(rsync -aSXxH --stats --dry-run $cmd "$smpnt/" "$dmpnt" \
+                    | grep -oP 'Number of files: \d*(,\d*)*' \
+                    | cut -d ':' -f2 \
+                    | tr -d ' ' \
+                    | sed -e 's/,//g'
+                )
+
+                {
+                    local e
+                    while read -r e; do
+                        [[ $e -ge 100 ]] && e=100
+                        message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
+                    done < <(rsync -vaSXxH $cmd "$smpnt/" "$dmpnt" | pv --interval 0.5 --numeric -le -s "$size" 2>&1 >/dev/null)
+                }
+                message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' 100) ]"
+            else
+                message -c -t "Cloning $sdev to $ddev"
+                rsync -aSXxH $cmd "$smpnt/" "$dmpnt"
+            fi
+            message -y
+        } #}}}
 
     _clone() { #{{{
         logmsg "[ Clone ] _clone"
@@ -1754,7 +1848,6 @@ Clone() { #{{{
 
         local s smpnt dmpnt sdev sfs spid sptype stype sused ssize ddev dfs dpid dptype dtype davail
         for s in ${!SRCS[@]}; do
-            local sid=$s
             IFS=: read -r sdev sfs spid sptype stype mountpoint sused ssize <<<${SRCS[$s]}
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$s]}]}
 
@@ -1770,42 +1863,46 @@ Clone() { #{{{
                 lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
                 lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
             else
-                local tdev="${mountpoint:-$sdev}"
+                local tdev="$sdev"
             fi
 
-            mount_ "$tdev" -o ro && smpnt=$(get_mount "$tdev") || exit_ 1 "Could not find mount journal entry for $tdev. Aborting!"
-			mount_ "$ddev" && dmpnt=$(get_mount "$ddev") || exit_ 1 "Could not find mount journal entry for $tdev. Aborting!"
+            mount_ "$tdev"
+            smpnt=$(get_mount "$tdev") || exit_ 1 "Could not find mount journal entry for $tdev. Aborting!"
+
+            mount_ "$ddev"
+            dmpnt=$(get_mount "$ddev") || exit_ 1 "Could not find mount journal entry for $tdev. Aborting!"
 
             ((davail - sused <= 0)) && exit_ 10 "Require $(to_readable_size ${sused}K) but $ddev is only $(to_readable_size ${davail}K)"
 
-            if [[ $INTERACTIVE == true ]]; then
-                message -u -c -t "Cloning $sdev to $ddev [ scan ]"
-                local size=$(rsync -aSXxH --stats --dry-run "$smpnt/" "$dmpnt" \
-                    | grep -oP 'Number of files: \d*(,\d*)*' \
-                    | cut -d ':' -f2 \
-                    | tr -d ' ' \
-                    | sed -e 's/,//g'
-                )
+            _copy "$sdev" "$ddev" "$smpnt" "$dmpnt"
 
-                {
-                    local e
-                    while read -r e; do
-                        [[ $e -ge 100 ]] && e=100
-                        message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
-                    done < <((rsync -vaSXxH "$smpnt/" "$dmpnt" | pv --interval 0.5 --numeric -le -s "$size" 3>&2 2>&1 1>&3) 2>/dev/null)
-                }
-                message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' 100) ]"
-            else
-                message -c -t "Cloning $sdev to $ddev"
-                rsync -aSXxH "$smpnt/" "$dmpnt"
-            fi
+            for em in ${!EXT_PARTS[@]}; do
+                local e=${EXT_PARTS[$em]}
+                local l=${MOUNTS[$s]}
+                if [[ $l == $(find_mount_part $em ) ]]; then
+                    local user password
+                    read -r user password <<<${CHOWN[$em]/:/ }
+
+                    mount_ "$e"
+                    local smpnt_e=$(get_mount $e) || exit_ 1 "Could not find mount journal entry for $e. Aborting!"
+
+                    local o_user=$(stat -c "%u" "$dmpnt/${em/$l/}")
+                    local o_group=$(stat -c "%g" "$dmpnt/${em/$l/}")
+
+                    _copy "$e" "$ddev:$em" "$smpnt_e" "$dmpnt/${em/$l/}" $em
+
+                    chown ${user:-$o_user} "$dmpnt/${em/$l/}"
+                    chgrp ${group:-$o_group} "$dmpnt/${em/$l/}"
+
+                    umount_ "$e"
+                fi
+            done
 
             _finish "$dmpnt"
-            umount_ "$tdev"
             umount_ "$ddev"
+            umount_ "$tdev"
             [[ $stype == lvm ]] && lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE"
 
-            message -y
         done
 
         return 0
@@ -1875,8 +1972,6 @@ Clone() { #{{{
         init_srcs "$f"
         mounts
 
-        pvcreate -ff "$NAME"
-
         {
             if [[ $ALL_TO_LVM == true ]]; then
                 local y sdevname fs spid ptype type rest
@@ -1906,7 +2001,7 @@ Clone() { #{{{
             fi
         }
 
-        _prepare_disk #First collect what we have in our backup
+        _prepare_disk
         sync_block_dev $DEST
 
         {
@@ -2016,10 +2111,10 @@ Main() { #{{{
         mount_chroot "$SCHROOT_HOME"
 
         [[ -n $DEST_IMG ]] && mount_ "${DEST_IMG%/*}" -p "$SCHROOT_HOME/${DEST_IMG%/*}" -b
-        [[ -n $SRC_IMG ]] && mount_ "${SRC_IMG%/*}" -o ro -p "$SCHROOT_HOME/${SRC_IMG%/*}" -b
+        [[ -n $SRC_IMG ]] && mount_ "${SRC_IMG%/*}" -p "$SCHROOT_HOME/${SRC_IMG%/*}" -b
 
         if [[ -d "$SRC" && -b $DEST ]]; then
-            { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -o ro -p "$SCHROOT_HOME/$SRC" -b; } \
+            { mkdir -p "$SCHROOT_HOME/$SRC" && mount_ "$SRC" -p "$SCHROOT_HOME/$SRC" -b; } \
                 || exit_ 1 "Failed preparing chroot for restoring from backup."
         elif [[ -b "$SRC" && -d $DEST ]]; then
             { mkdir -p "$SCHROOT_HOME/$DEST" && mount_ "$DEST" -p "$SCHROOT_HOME/$DEST" -b; } \
@@ -2067,18 +2162,17 @@ Main() { #{{{
         local lvs_list=$(lvs -o lv_dmpath,lv_role)
 
         _set() { #{{{
-            local mpnt
+            local mpnt f name mountpoint
 
-            local f name mountpoint
             while read -r name mountpoint; do
-                if grep "$name" <<<"$lvs_list" | grep -vq "snapshot" && [[ -n $fs ]]; then
+                if grep "$name" <<<"$lvs_list" | grep -vq "snapshot"; then
                     local mp=${mountpoint:-$name}
-                    mount_ "$mp" -o ro || exit_ 1 "Could not mount ${dev}."
+                    mount_ "$mp" || exit_ 1 "Could not mount ${dev}."
                     mpnt=$(get_mount $mp) || exit_ 1 "Could not find mount journal entry for $mp. Aborting!"
-                    if [[ -e ${mpnt}/etc/fstab ]]; then
+                    if [[ -f ${mpnt}/etc/fstab ]]; then
                         {
                             local part=$(awk '$1 ~ /^[^;#]/' "${mpnt}/etc/fstab" | grep -E "\s+/boot\s+" | awk '{print $1}')
-                            if [[ -n $part && -n $fs ]]; then
+                            if [[ -n $part ]]; then
                                 local name kdev fstype uuid puuid type parttype mountpoint
                                 read -r name kdev fstype uuid puuid type parttype mountpoint <<<$(echo "$ldata" | grep "=\"${part#*=}\"")
                                 eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
@@ -2141,7 +2235,7 @@ Main() { #{{{
                     swap_size=$(to_kbyte ${swap_size:-0})
                 fi
 
-                [[ -z $mountpoint && $fs != swap ]] && { mount_ $dev -o ro || exit_ 1 "Could not mount ${dev}."; }
+                [[ -z $mountpoint && $fs != swap ]] && { mount_ $dev || exit_ 1 "Could not mount ${dev}."; }
                 __src_size=$((swap_size + __src_size + $(df -k --output=used $dev | tail -n -1)))
                 [[ -z $mountpoint ]] && umount_ "$dev"
             fi
@@ -2184,6 +2278,7 @@ Main() { #{{{
             to-lvm:,
             all-to-lvm,
             disable-mount:,
+            include-partition:,
             check' \
         -n "$(basename "$0" \
         )" -- "$@")
@@ -2195,7 +2290,7 @@ Main() { #{{{
     [[ $1 == -h || $1 == --help || $args_count -eq 0 ]] && usage #Don't have to be root to get the usage info
 
     #Force root
-    [[ "$(id -u)" != 0 ]] && exec sudo "$0" "$@"
+    [[ $(id -u) -ne 0 ]] && exec sudo "$0" "$@"
 
     echo >"$F_LOG"
     { hash pv && INTERACTIVE=true; } || message -i -t "No progress will be shown. Consider installing package: pv"
@@ -2348,6 +2443,33 @@ Main() { #{{{
             ALL_TO_LVM=true
             shift 1; continue
             ;;
+        '--include-partition')
+            local part mp fstype type user group excludes
+            for x in ${2//,/ }; do
+                read -r k v <<<"${x/=/ }"
+                if [[ -n $k && -n $v ]]; then
+                    [[ $k == user ]] && user=$v
+                    [[ $k == group ]] && group=$v
+                    [[ $k == part ]] && part=$v
+                    [[ $k == dir ]] && mp=$v
+                    excludes=$v
+                elif [[ -n $k ]]; then
+                    excludes=${excludes}:$k
+                fi
+            done
+
+            [[ -b $part ]] && read -r type fstype <<<$(lsblk -lpno type,fstype $part) || exit_ 2 "$part not a block device."
+            if [[ $type == part || -z $fstype ]]; then
+                [[ -n $user && $user =~ ^[0-9]+$ || -z $user ]] || exit_ 1 "Invalid user ID."
+                [[ -n $group && $group =~ ^[0-9]+$ || -z $group ]] || exit_ 1 "Invalid group ID."
+                EXT_PARTS[$mp]=$part
+                EXCLUDES[$mp]=$excludes
+                CHOWN[$mp]=$user:$group
+            else
+                exit_ 2 "$part is not a partition"
+            fi
+            shift 2; continue
+            ;;
         '--to-lvm')
             {
                 local k v
@@ -2373,8 +2495,8 @@ Main() { #{{{
 
     grep -q 'LVM2_member' < <([[ -d $SRC ]] && cat "$SRC/$F_PART_LIST" || lsblk -o FSTYPE "$SRC") && PKGS+=(lvm)
 
-    PKGS+=(awk rsync tar flock bc blockdev fdisk sfdisk locale-gen)
-    [[ -d $SRC ]] && PKGS+=(fakeroot)
+    PKGS+=(awk rsync tar flock bc blockdev fdisk sfdisk locale-gen git)
+    [[ -d $SRC ]] && PKGS+=(fakeroot) && _RMODE=true
 
     local packages=()
     #Inform about ALL missing but necessary tools.
@@ -2475,6 +2597,17 @@ Main() { #{{{
     [[ -n $(lsblk --noheadings -o mountpoint $DEST 2>/dev/null) ]] &&
         exit_ 1 "Invalid device condition. Some or all partitions of $DEST are mounted."
 
+    {
+        for part in ${EXT_PARTS[@]}; do
+            if [[ -b $SRC ]]; then
+                grep "^$part/*\$" -q < <(lsblk -lnpo name "$SRC") && exit_ 2 "Cannot include partition ${part}. It is part of the source device ${SRC}."
+            fi
+            if [[ -b $DEST ]]; then
+                grep "^$part/*\$" -q < <(lsblk -lnpo name "$DEST") && exit_ 2 "Cannot include partition ${part}. It is part of the source device ${DEST}."
+            fi
+        done
+    }
+
     [[ $PVALL == true && -n $ENCRYPT_PWD ]] && exit_ 1 "Encryption only supported for simple LVM setups with a single PV!"
 
     {
@@ -2570,8 +2703,6 @@ Main() { #{{{
 
     [[ ${#VG_SRC_NAME[@]} -gt 1 ]] && exit_ 1 "Unsupported situation: PVs of $SRC assigned to multiplge VGs."
 
-    [[ ${VG_SRC_NAME[0]} == "$VG_SRC_NAME_CLONE" ]] && exit_ 1 "VG with name '$VG_SRC_NAME_CLONE' already exists!"
-
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
             grep -q ${SRC##*/} < <(dmsetup deps -o devname | sort -u | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
@@ -2597,6 +2728,8 @@ Main() { #{{{
 
             [[ -z $VG_SRC_NAME_CLONE ]] \
                 && VG_SRC_NAME_CLONE=${VG_SRC_NAME}_${CLONE_DATE}
+
+            [[ ${VG_SRC_NAME[0]} == "$VG_SRC_NAME_CLONE" ]] && exit_ 1 "VG with name '$VG_SRC_NAME_CLONE' already exists!"
 
             if [[ -b $DEST ]]; then
                 #Even whenn SRC and DEST have dirrent VG names, another one could already exists!
@@ -2628,9 +2761,11 @@ Main() { #{{{
 
     [[ $BOOT_SIZE -gt 0 && -z $BOOT_PART ]] && exit_ 1 "Boot is equal to root partition."
 
-    #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
-    [[ ! -e /run/resolvconf/resolv.conf ]] && mkdir /run/resolvconf && cp /run/NetworkManager/resolv.conf /run/resolvconf/
-    [[ ! -e /run/NetworkManager/resolv.conf ]] && mkdir /run/NetworkManager && cp /run/resolvconf/resolv.conf /run/NetworkManager/
+    {
+        #In case another distribution is used when cloning, e.g. cloning an Ubuntu system with Debian Live CD.
+        [[ ! -e /run/resolvconf/resolv.conf ]] && mkdir /run/resolvconf && cp /run/NetworkManager/resolv.conf /run/resolvconf/
+        [[ ! -e /run/NetworkManager/resolv.conf ]] && mkdir /run/NetworkManager && cp /run/resolvconf/resolv.conf /run/NetworkManager/
+    } 2>/dev/null
 
     _prepare_locale || exit_ 1 "Could not prepare locale!"
 
