@@ -139,7 +139,6 @@ printarr() { #{{{
 } #}}}
 #}}}
 
-
 # PRIVATE - Only used by PUBLIC functions -----------------------------------------------------------------------------{{{
 
 #--- Display ---{{{
@@ -1340,6 +1339,7 @@ Cleanup() { #{{{
             find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
             rmdir "$MNTPNT"
         fi
+        systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
     } &>/dev/null
 
@@ -2311,6 +2311,8 @@ Main() { #{{{
 
     #Do not use /tmp! It will be excluded on backups!
     MNTPNT=$(mktemp -d -p /mnt) || exit_ 1 "Could not set temporary mountpoint."
+
+    systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target
 
     PKGS=()
     while true; do
