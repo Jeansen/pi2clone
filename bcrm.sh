@@ -770,8 +770,15 @@ encrypt() { #{{{
 
     local size type
     if [[ $HAS_EFI == true ]]; then
-        read -r size type <<<$(sfdisk -l -o Size,Type-UUID $SRC | grep ${ID_GPT_EFI^^})
-        { echo -e "size=$size, type=$type\n;" | sfdisk --label gpt "$dest"; } || return 1
+        if [[ $_RMODE == true ]]; then
+            { 
+                echo -e "$(cat $F_PART_TABLE | tr -d ' ' | grep -o "size=[0-9]*,type=${ID_GPT_EFI^^}")\n;" \
+                | sfdisk --label gpt "$dest"; 
+            } || return 1
+        else
+            read -r size type <<<$(sfdisk -l -o Size,Type-UUID $SRC | grep ${ID_GPT_EFI^^})
+            { echo -e "size=$size, type=$type\n;" | sfdisk --label gpt "$dest"; } || return 1
+        fi
     elif [[ $UEFI == true ]]; then
         { echo ';' | sfdisk "$DEST"; }
         mbr2gpt $DEST && HAS_EFI=true
@@ -2312,7 +2319,7 @@ Main() { #{{{
     #Do not use /tmp! It will be excluded on backups!
     MNTPNT=$(mktemp -d -p /mnt) || exit_ 1 "Could not set temporary mountpoint."
 
-    systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target
+    systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target &>/dev/null
 
     PKGS=()
     while true; do
