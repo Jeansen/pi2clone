@@ -1048,7 +1048,7 @@ boot_setup() { #{{{
             if [[ -e $dmnt/${path[4]} ]]; then
                 read -r uuid fstype <<<$(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
                 uuid=${uuid//\"/} #get rid of ""
-                eval sed -i -E '/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i' "$dmnt/${path[4]}"
+                eval sed -i -E "/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i" "$dmnt/${path[4]}"
             fi
 
             if [[ -e $dmnt/${path[1]} ]]; then
