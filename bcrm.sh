@@ -2504,7 +2504,7 @@ Main() { #{{{
 
     grep -q 'LVM2_member' < <([[ -d $SRC ]] && cat "$SRC/$F_PART_LIST" || lsblk -o FSTYPE "$SRC") && PKGS+=(lvm)
 
-    PKGS+=(awk rsync tar flock bc blockdev fdisk sfdisk locale-gen git mkfs.vfat)
+    PKGS+=(awk rsync tar flock bc blockdev fdisk sfdisk locale-gen git mkfs.vfat parted)
     [[ -d $SRC ]] && PKGS+=(fakeroot) && _RMODE=true
 
     local packages=()
