@@ -531,7 +531,7 @@ vg_extend() { #{{{
         local name type
         read -r name type <<<"$e"
         [[ -n $(lsblk -no mountpoint "$name" 2>/dev/null) ]] && continue
-        echo ';' | flock "$name" sfdisk -q "$name" && sfdisk "$name" -Vq
+        echo ';' | sfdisk -q "$name" && sfdisk "$name" -Vq
         local part=$(lsblk "$name" -lnpo name,type | grep part | awk '{print $1}')
         pvcreate -ff "$part" && vgextend "$vg_name" "$part"
         PVS+=("$part")
@@ -936,12 +936,12 @@ mbr2gpt() { #{{{
 
     if [[ $overlap -gt 0 ]]; then
         local sectors=$(echo "$pdata" | tail -n 1 | grep -o -P 'size=\s*(\d*)' | awk '{print $2}')
-        flock "$dest" sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors - overlap))/")
+        sfdisk "$dest" < <(echo "$pdata" | sed -e "$ s/$sectors/$((sectors - overlap))/")
     fi
 
     sync_block_dev "$dest"
-    flock "$dest" sgdisk -z "$dest"
-    flock "$dest" sgdisk -g "$dest"
+    sgdisk -z "$dest"
+    sgdisk -g "$dest"
     sync_block_dev "$dest"
 
     pdata=$(sfdisk -d "$dest")
@@ -950,7 +950,7 @@ mbr2gpt() { #{{{
     local size=$(echo "$pdata" | grep -o -P 'size=\s*(\d*)' | awk '{print $2}' | tail -n 1)
     pdata=$(echo "$pdata" | sed -e "s/$size/$((size - 1024000))/") #TODO what if n partitions with the same size?
 
-    flock "$dest" sfdisk "$dest" < <(echo "$pdata")
+    sfdisk "$dest" < <(echo "$pdata")
     sync_block_dev "$dest"
 } #}}}
 
@@ -1019,6 +1019,7 @@ disk_setup() { #{{{
 
     _scan_src_parts
     _create_dests
+    sync_block_dev "$dest"
 } #}}}
 
 # $1: <Ref.>
@@ -1223,8 +1224,14 @@ create_image() { #{{{
     local img="$1"
     local type="$2"
     local size="$3"
+    local options=""
 
-    qemu-img create -f "$type" "$img" "$size" || return 1
+    case "$type" in
+    vdi)
+        options="$options -o static=on"
+        ;;
+    esac
+    qemu-img create -f $type $options $img $size || return 1
 } #}}}
 #}}}
 
@@ -1714,8 +1721,8 @@ Clone() { #{{{
             local ptable="$(if [[ $_RMODE == true ]]; then cat "$SRC/$F_PART_TABLE"; else sfdisk -d "$SRC"; fi)"
             expand_disk "$SECTORS_SRC" "$SECTORS_DEST" "$ptable" 'ptable'
 
-            flock "$DEST" sfdisk --force "$DEST" < <(echo "$ptable")
-            flock "$DEST" sfdisk -Vq "$DEST" || return 1
+            sfdisk --force "$DEST" < <(echo "$ptable")
+            sfdisk -Vq "$DEST" || return 1
             [[ $UEFI == true ]] && mbr2gpt $DEST && HAS_EFI=true
         fi
         partprobe "$DEST"
@@ -2547,7 +2554,7 @@ Main() { #{{{
     fi
 
     if [[ -n $SRC_IMG ]]; then
-        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG" && udevadm settle; } || exit_ 1
+        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG"; } || exit_ 1
         SRC=$SRC_NBD
     fi
 
@@ -2557,7 +2564,7 @@ Main() { #{{{
     if [[ -n $DEST_IMG ]]; then
         create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."
         chmod +rwx "$DEST_IMG"
-        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG" && udevadm settle; } || exit_ 1
+        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG"; } || exit_ 1
         DEST=$DEST_NBD
     fi
 
