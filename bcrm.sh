@@ -1592,8 +1592,8 @@ Clone() { #{{{
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name | grep "$dest" | tr -d ' ')
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE" "$SRC" "$DEST"
 
-        local lvs_cmd='lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_role,lv_dm_path'
-        local lvm_data=$([[ $_RMODE == true ]] && cat "$SRC/$F_LVS_LIST" || $lvs_cmd | grep -E "\b$VG_SRC_NAME\b")
+        local lvs_cmd='lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role,lv_dm_path'
+        local lvm_data=$({ [[ $_RMODE == true ]] && cat "$SRC/$F_LVS_LIST" || $lvs_cmd; } | grep -E "\b$VG_SRC_NAME\b")
 
         local vg_data=$(vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free | grep -E "\b$VG_SRC_NAME\b|\b$VG_SRC_NAME_CLONE\b")
         [[ $_RMODE == true ]] && vg_data=$(echo -e "$vg_data\n$(cat $SRC/$F_VGS_LIST)")
@@ -1634,9 +1634,9 @@ Clone() { #{{{
 
         scale_factor=$(echo "scale=4; $s2 / $s1" | bc)
         {
-            local lv_name vg_name lv_size vg_size vg_free lv_role lv_dm_path e size
+            local lv_name vg_name lv_size vg_size vg_free lv_active lv_role lv_dm_path e size
             while read -r e; do
-                read -r lv_name vg_name lv_size vg_size vg_free lv_role lv_dm_path <<<"$e"
+                read -r lv_name vg_name lv_size vg_size vg_free lv_active lv_role lv_dm_path <<<"$e"
                 if [[ $vg_name == "$VG_SRC_NAME" ]]; then
                     [[ $lv_dm_path == "$SWAP_PART" ]] && continue
                     [[ -n $LVM_EXPAND && $lv_name == "$LVM_EXPAND" ]] && continue
