@@ -1054,8 +1054,12 @@ boot_setup() { #{{{
 
             if [[ -e $dmnt/${path[1]} ]]; then
                 #Make sure swap is set correctly.
-                read -r fstype uuid <<<$(lsblk -plo fstype,uuid "$DEST" ${PVS[@]} | grep '^swap')
-                sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "$dmnt/${path[1]}"
+                if [[ $SWAP_SIZE -eq 0 ]]; then
+                    sed -i '/swap/d' "$dmnt/${path[1]}"
+                else
+                    read -r fstype uuid <<<$(lsblk -plo fstype,uuid "$DEST" ${PVS[@]} | grep '^swap')
+                    sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "$dmnt/${path[1]}"
+                fi
             fi
         done
     done
