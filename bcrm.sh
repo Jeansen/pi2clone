@@ -1047,9 +1047,18 @@ boot_setup() { #{{{
 
             #Resume file might be wrong, so we just set it explicitely
             if [[ -e $dmnt/${path[4]} ]]; then
-                read -r uuid fstype <<<$(lsblk -Ppo uuid,fstype "$DEST" | grep 'swap')
-                uuid=${uuid//\"/} #get rid of ""
-                eval sed -i -E "/RESUME=none/!s/^RESUME=.*/RESUME=$uuid/i" "$dmnt/${path[4]}"
+                local name uuid fstype
+                read -r name uuid fstype type <<<$(lsblk -lnpo name,uuid,fstype,type "$DEST" | grep 'swap')
+                local rplc
+                if [[ -z $name ]]; then
+                    rplc="RESUME="
+                elif [[ $type == lvm ]]; then
+                    #For some reson UUID with LVM does not work, though update-initramfs will not complain.
+                    rplc="RESUME=$name"
+                else
+                    rplc="RESUME=UUID=$uuid"
+                fi
+                sed -i -E "/RESUME=none/!s|^RESUME=.*|$rplc|i" "$dmnt/${path[4]}" #We don't overwrite none
             fi
 
             if [[ -e $dmnt/${path[1]} ]]; then
@@ -1057,7 +1066,7 @@ boot_setup() { #{{{
                 if [[ $SWAP_SIZE -eq 0 ]]; then
                     sed -i '/swap/d' "$dmnt/${path[1]}"
                 else
-                    read -r fstype uuid <<<$(lsblk -plo fstype,uuid "$DEST" ${PVS[@]} | grep '^swap')
+                    read -r fstype uuid <<<$(lsblk -lnpo fstype,uuid "$DEST" ${PVS[@]} | grep '^swap')
                     sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "$dmnt/${path[1]}"
                 fi
             fi
