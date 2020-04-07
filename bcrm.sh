@@ -1121,7 +1121,7 @@ grub_setup() { #{{{
     }
 
     if [[ $has_efi == true ]]; then
-        local apt_pkgs="grub-efi-amd64"
+        local apt_pkgs="grub-efi-amd64-signed shim-signed"
     else
         local apt_pkgs="grub-pc"
     fi
