@@ -1397,7 +1397,7 @@ Cleanup() { #{{{
 
 To_file() { #{{{
     logmsg "To_file"
-    if [ -n "$(ls -A "$DEST")" ]; then return 1; fi
+    if [ -n "$(ls "$DEST")" ]; then return 1; fi
 
     pushd "$DEST" >/dev/null || return 1
 
@@ -2564,7 +2564,7 @@ Main() { #{{{
     [[ -n $abort ]] && message -n -t "ERROR: Some packages missing. Please install packages: ${packages[*]}"
     eval "$abort"
 
-    [[ -b "$SRC" && -d $DEST && -n "$(ls -A "$DEST")" ]] && exit_ 1 "Destination not empty!"
+    [[ -b "$SRC" && -d $DEST && -n "$(ls "$DEST")" ]] && exit_ 1 "Destination not empty!"
 
     if [[ $SCHROOT == true ]]; then
         _run_schroot
