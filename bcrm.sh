@@ -1361,8 +1361,13 @@ Cleanup() { #{{{
             rm "$F_SCHROOT_CONFIG"
             [[ $VG_SRC_NAME_CLONE && -b $DEST ]] && vgchange -an "$VG_SRC_NAME_CLONE"
             [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
-            [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $DEST_NBD
-            [[ $CREATE_LOOP_DEV == true ]] && qemu-nbd -d $SRC_NBD
+
+            [[ $DEST_IMG == true ]] && qemu-nbd -d $DEST_NBD
+            if [[ -n $SRC_IMG ]]; then
+                vgchange -an ${VG_SRC_NAME}
+                qemu-nbd -d $SRC_NBD
+            fi
+
             find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
             rmdir "$MNTPNT"
         fi
