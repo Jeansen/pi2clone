@@ -2364,6 +2364,8 @@ Main() { #{{{
             [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $1 $2"
             [[ ! -e "$SRC_IMG" ]] && exit_ 1 "Specified image file does not exists."
 
+            ischroot || modprobe nbd max_part=16 || exit_ 1 "Cannot load nbd kernel module."
+
             PKGS+=(qemu-img)
             CREATE_LOOP_DEV=true
             shift 2; continue
