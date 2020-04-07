@@ -694,8 +694,8 @@ init_srcs() { #{{{
 # $3: ["<list of packages to install>"]
 pkg_install() { #{{{
     logmsg "pkg_install"
-    chroot "$1" sh -c "
-        apt-get install -y $3 &&
+    chroot "$1" bash -c "
+        DEBIAN_FRONTEND=noninteractive apt-get install -y $3 &&
         grub-install $2 &&
         update-grub &&
         update-initramfs -u -k all" || return 1
