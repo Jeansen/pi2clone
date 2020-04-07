@@ -22,6 +22,7 @@ unset IFS #Make sure IFS is not overwritten from the outside
 export LC_ALL=en_US.UTF-8
 export LVM_SUPPRESS_FD_WARNINGS=true
 export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Main()
+[[ $TERM == unknown || $TERM == dumb ]] && export TERM=xterm
 #}}}
 
 # CONSTANTS -----------------------------------------------------------------------------------------------------------{{{
