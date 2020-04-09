@@ -772,9 +772,9 @@ encrypt() { #{{{
     local size type
     if [[ $HAS_EFI == true ]]; then
         if [[ $_RMODE == true ]]; then
-            { 
+            {
                 echo -e "$(cat $F_PART_TABLE | tr -d ' ' | grep -o "size=[0-9]*,type=${ID_GPT_EFI^^}")\n;" \
-                | sfdisk --label gpt "$dest"; 
+                | sfdisk --label gpt "$dest";
             } || return 1
         else
             read -r size type <<<$(sfdisk -l -o Size,Type-UUID $SRC | grep ${ID_GPT_EFI^^})
@@ -1363,7 +1363,7 @@ Cleanup() { #{{{
             [[ $VG_SRC_NAME_CLONE && -b $DEST ]] && vgchange -an "$VG_SRC_NAME_CLONE"
             [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
 
-            [[ $DEST_IMG == true ]] && qemu-nbd -d $DEST_NBD
+            [[ -n $DEST_IMG ]] && qemu-nbd -d $DEST_NBD
             if [[ -n $SRC_IMG ]]; then
                 vgchange -an ${VG_SRC_NAME}
                 qemu-nbd -d $SRC_NBD
@@ -2810,6 +2810,7 @@ Main() { #{{{
     _prepare_locale || exit_ 1 "Could not prepare locale!"
 
 
+    #TODO avoid return values and use exit_ instead?
     #main
     echo_ "Backup started at $(date)"
     if [[ -b $SRC && -b $DEST ]]; then
