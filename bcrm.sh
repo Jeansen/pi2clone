@@ -1372,7 +1372,7 @@ Cleanup() { #{{{
             find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
             rmdir "$MNTPNT"
         fi
-        systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target
+        systemctl --runtime unmask sleep.target hibernate.target suspend.target hybrid-sleep.target
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
     } &>/dev/null
 
