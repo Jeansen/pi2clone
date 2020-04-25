@@ -1389,8 +1389,8 @@ Cleanup() { #{{{
         else
             failed+=("$f")
         fi
-        [[ ${#failed[@]} -gt 0 ]] && message -n -t "Backups of original file(s) ${f[*]} changed. Will not restore. Check ${BACKUP_FOLDER}."
     done
+    [[ ${#failed[@]} -gt 0 ]] && message -n -t "Backups of original file(s) ${f[*]} changed. Will not restore. Check ${BACKUP_FOLDER}."
 
     exec 200>&-
     exit "$EXIT" #Make sure we really exit the script!
