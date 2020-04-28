@@ -241,7 +241,7 @@ message() { #{{{
     local status
     local text
     local update=false
-    clor_cancel=$(tput bold; tput setaf 3)
+    clor_current=$(tput bold; tput setaf 3)
     clr_yes=$(tput setaf 2)
     clor_no=$(tput setaf 1)
     clor_info=$(tput setaf 6)
@@ -270,7 +270,7 @@ message() { #{{{
             update=true
             ;;
         c)
-            status="${clor_cancel}➤${clr_rmso}"
+            status="${clor_current}➤${clr_rmso}"
             tput sc
             ;;
         :)
