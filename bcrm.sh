@@ -566,7 +566,7 @@ mounts() { #{{{
             sid=$s
             IFS=: read -r sdev fs spid ptype type mountpoint rest <<<${SRCS[$s]}
 
-            [[ -z ${mountpoint// } ]] && mp="${sdev}" || mp="${mountpoint}"
+            [[ -z ${mountpoint// } ]] && mp="$sdev" || mp="$mountpoint"
             mount_ $mp && mpnt=$(get_mount $mp) || exit_ 1 "Could not mount ${mp}."
 
             if [[ -f $mpnt/etc/fstab ]]; then
@@ -633,7 +633,8 @@ set_dest_uuids() { #{{{
         [[ $UEFI == true && $PARTTYPE == $ID_GPT_EFI ]] && continue
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
 
-        local mp="${MOUNTPOINT:-$NAME}"
+        local mp
+        [[ -z ${MOUNTPOINT// } ]] && mp="$NAME" || mp="$MOUNTPOINT"
         mount_ "$mp" -t "$FSTYPE" || exit_ 1 "Could not mount ${mp}."
 
         local used avail
@@ -661,7 +662,7 @@ init_srcs() { #{{{
         [[ $NAME =~ real$|cow$ ]] && continue
 
         if [[ $_RMODE == false ]]; then
-            mp="${MOUNTPOINT:-$NAME}"
+            [[ -z ${MOUNTPOINT// } ]] && mp="$NAME" || mp="$MOUNTPOINT"
             mount_ "$mp" -t "$FSTYPE" || exit_ 1 "Could not mount ${mp}."
             mpnt=$(get_mount $mp) || exit_ 1 "Could not find mount journal entry for $mp. Aborting!" #do not use local, $? will be affected!
             local used size
@@ -1524,7 +1525,7 @@ To_file() { #{{{
     } #}}}
 
     for s in ${!SRCS[@]}; do
-        local sid=$s
+        local tdev sid=$s
         IFS=: read -r sdev fs spid ptype type mountpoint used size <<<${SRCS[$s]}
         local mount=${MOUNTS[$sid]:-${MOUNTS[$spid]}}
 
@@ -1533,11 +1534,11 @@ To_file() { #{{{
         fi
 
         if [[ $type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
-            local tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
+            tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
             lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
             lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
         else
-            local tdev="${mountpoint:-$sdev}"
+            [[ -z ${mountpoint// } ]] && tdev="$sdev" || tdev="$mountpoint"
         fi
 
         mount_ "$tdev" || exit_ 1 "Could not mount ${tdev}."
@@ -2206,7 +2207,8 @@ Main() { #{{{
 
             while read -r name mountpoint; do
                 if grep "$name" <<<"$lvs_list" | grep -vq "snapshot"; then
-                    local mp=${mountpoint:-$name}
+                    local mp
+                    [[ -z ${mp// } ]] && mp="$name" || mp="$mountpoint"
                     mount_ "$mp" || exit_ 1 "Could not mount ${dev}."
                     mpnt=$(get_mount $mp) || exit_ 1 "Could not find mount journal entry for $mp. Aborting!"
                     if [[ -f ${mpnt}/etc/fstab ]]; then
