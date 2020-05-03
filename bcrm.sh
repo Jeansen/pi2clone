@@ -566,7 +566,7 @@ mounts() { #{{{
             sid=$s
             IFS=: read -r sdev fs spid ptype type mountpoint rest <<<${SRCS[$s]}
 
-            mp="${mountpoint:-$sdev}"
+            [[ -z ${mountpoint// } ]] && mp="${sdev}" || mp="${mountpoint}"
             mount_ $mp && mpnt=$(get_mount $mp) || exit_ 1 "Could not mount ${mp}."
 
             if [[ -f $mpnt/etc/fstab ]]; then
@@ -574,14 +574,14 @@ mounts() { #{{{
                     local dev mnt fs
                     local name kname uuid partuuid
                     while read -r dev mnt fs; do
-                        if [[ ! $fs =~ nfs|swap|udf ]]; then
+                        if [[ ! ${fs// } =~ nfs|swap|udf ]]; then
                             read -r name kname uuid partuuid <<<$(grep -iE "${dev//*=/}\s+" <<<"$ldata") #Ignore -real, -cow
 
-                            if [[ -n $name ]]; then
+                            if [[ -n ${name// } ]]; then
                                 MOUNTS[$mnt]="${uuid}"
-                                [[ -n $name ]] && MOUNTS[${name//*=/}]=$mnt
-                                [[ -n $partuuid ]] && MOUNTS[${partuuid}]=$mnt
-                                [[ -n $uuid ]] && MOUNTS[$uuid]="${mnt}"
+                                [[ -n ${name// } ]] && MOUNTS[${name//*=/}]=$mnt
+                                [[ -n ${partuuid// } ]] && MOUNTS[${partuuid}]=$mnt
+                                [[ -n ${uuid// } ]] && MOUNTS[$uuid]="${mnt}"
                             fi
                         fi
                     done <<<$(grep -E '^[^;#]' "$mpnt/etc/fstab" | awk '{print $1,$2,$3}')
@@ -604,9 +604,13 @@ mounts() { #{{{
 
         local file mpnt i uuid puuid fs type sused dev mnt dir ddev dfs dpid dptype dtype davail user group
         for file in "${files[@]}"; do
-            read -r i uuid puuid fs type sused dev mnt dir user group <<<"${file//./ }"
-            MOUNTS[${mnt//_/\/}]="$uuid"
-            MOUNTS[$uuid]="${mnt//_/\/}"
+            IFS=. read -r i uuid puuid fs type sused dev mnt dir user group <<<"$(pad_novalue $file)"
+            mnt=${mnt//_//}
+
+            MOUNTS[${mnt}]="$uuid"
+            [[ -n ${dev//NOVALUE/} ]] && MOUNTS[${dev//_//}]=$mnt
+            [[ -n ${puuid//NOVALUE/} ]] && MOUNTS[${puuid}]=$mnt
+            [[ -n ${uuid//NOVALUE/} ]] && MOUNTS[$uuid]="$mnt"
         done
 
         popd >/dev/null || return 1
@@ -636,7 +640,7 @@ set_dest_uuids() { #{{{
         read -r used avail <<<$(df --block-size=1K --output=used,size "$NAME" | tail -n -1)
         avail=$((avail - used)) #because df keeps 5% for root!
         umount_ "$mp"
-        DESTS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$avail" #Avail to be checked
+        DESTS[$UUID]="${NAME}:${FSTYPE:- }:${PARTUUID:- }:${PARTTYPE:- }:${TYPE:- }:${avail:- }" #Avail to be checked
 
         # [[ ${PVS[@]} =~ $NAME ]] && continue
     done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | sort -u | grep -vE 'disk|UUID="".*PARTUUID=""')
@@ -666,7 +670,7 @@ init_srcs() { #{{{
             umount_ "$mp"
         fi
 
-        SRCS[$UUID]="$NAME:$FSTYPE:$PARTUUID:$PARTTYPE:$TYPE:$MOUNTPOINT:$used:$size"
+        SRCS[$UUID]="${NAME}:${FSTYPE:- }:${PARTUUID:- }:${PARTTYPE:- }:${TYPE:- }:${MOUNTPOINT:- }:${used:- }:${size:- }"
     done < <(echo "$file" | sort -u | grep -v 'disk')
 
     if [[ $_RMODE == true ]]; then
@@ -674,14 +678,13 @@ init_srcs() { #{{{
         {
             local file f
             for file in [0-9]*; do
-                f=$(echo "$file" | sed "s/\.[a-z]*$//")
-                read -r i uuid puuid fs type sused dev mnt <<<"${f//./ }"
-                IFS=: read -r sname sfstype spartuuid sparttype stype used size <<<${SRCS[$uuid]}
+                IFS=. read -r i uuid puuid fs type sused dev mnt <<<"$(pad_novalue $file)"
+                IFS=: read -r sname sfstype spartuuid sparttype stype mp used size <<<"${SRCS[$uuid]}"
                 if [[ $type == part ]]; then
                     sname=$(grep $uuid $F_PART_LIST | awk '{print $1}' | cut -d '"' -f2)
                     size=$(sector_to_kbyte $(grep "$sname" $F_PART_TABLE | grep -o 'size=.*,' | grep -o '[0-9]*'))
                 fi
-                SRCS[$uuid]="$sname:$sfstype:$spartuuid:$sparttype:$stype:$sused:$size"
+                SRCS[$uuid]="${sname//NOVALUE/}:${sfstype//NOVALUE/}:${spartuuid//NOVALUE/}:${sparttype//NOVALUE/}:${stype//NOVALUE/}:${mp//NOVALUE/}:${sused//NOVALUE/}:${size//NOVALUE/}"
             done
         }
     fi
@@ -1009,7 +1012,7 @@ disk_setup() { #{{{
             elif [[ ${PARTTYPE} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then #EFI
                 mkfs -t vfat "$NAME"
                 [[ $UEFI == true ]] && continue
-            elif [[ -n $sfstype ]]; then
+            elif [[ -n ${sfstype// } ]]; then
                 mkfs -t "$sfstype" "$NAME"
             else
                 return 1
@@ -1099,7 +1102,7 @@ grub_setup() { #{{{
     {
         local m ddev rest
         for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
-            IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
+            IFS=: read -r ddev rest <<<"${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}"
             mount_ $ddev -p "$mp/$m"
         done
     }
@@ -1250,6 +1253,14 @@ create_image() { #{{{
 #}}}
 
 #--- Value conversion and calculation --- {{{
+
+# $1: <file>
+pad_novalue() { #{{{
+    while echo "$file" | sed '/\.\./!{q10}' > /dev/null; do
+        file=$(echo "$file" | sed 's/\.\./\.NOVALUE\./')
+    done
+    echo "$file"
+} #}}}
 
 # $1: <bytes>
 to_readable_size() { #{{{
@@ -1471,7 +1482,7 @@ To_file() { #{{{
     local s g=0 mpnt  sdev fs spid ptype type used size
 
     _copy() { #{{{
-        local sdev=$1 mpnt=$2 file=$3 excludes=()
+        local sdev="$1" mpnt="$2" file="$3" excludes=()
         local cmd="tar --warning=none --atime-preserve=system --numeric-owner --xattrs --directory=$mpnt"
 
         [[ -n $4 ]] && excludes=(${EXCLUDES[$4]//:/ })
@@ -1534,9 +1545,11 @@ To_file() { #{{{
 
         [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
-        local file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${used}.${sdev//\//_}.${mount//\//_} "
+        sid=${sid// }
+        spid=${spid// }
+        local file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mount//\//_}"
 
-        _copy $sdev $mpnt $file
+        _copy "$sdev" $mpnt "$file"
 
         for em in ${!EXT_PARTS[@]}; do
             local l=${MOUNTS[$s]}
@@ -1548,9 +1561,9 @@ To_file() { #{{{
 
                 mount_ "$e"
                 local mpnt_e=$(get_mount $e) || exit_ 1 "Could not find mount journal entry for $e. Aborting!"
-                file="${g}.${sid:-NOUUID}.${spid:-NOPUUID}.${fs}.${type}.${used}.${sdev//\//_}.${mount//\//_}.${em//\//_}.${user}.${password} "
+                file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mount//\//_}.${em//\//_}.${user}.${password}"
 
-                _copy $e $mpnt_e $file $em
+                _copy "$e" "$mpnt_e" "$file" "$em"
                 umount_ "$e"
             fi
         done
@@ -1641,9 +1654,9 @@ Clone() { #{{{
         }
 
         {
-            local sname fs spid ptype type used size f lsize lv_size
-            for f in ${SRCS[@]}; do
-                IFS=: read -r sname fs spid ptype type used size <<<$f
+            local sname fs spid ptype type used mp size f lsize lv_size
+            for f in "${SRCS[@]}"; do
+                IFS=: read -r sname fs spid ptype type mp used size <<<"$f"
                 if grep -qE "${sname}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n'); then
                     lv_size=$(to_mbyte ${size}K)
                     s2=$((s2 - lv_size))
@@ -1672,11 +1685,11 @@ Clone() { #{{{
         }
 
         {
-            local sname fs spid ptype type used size f lsize lv_size
-            for f in ${SRCS[@]}; do
-                IFS=: read -r sname fs spid ptype type used size <<<$f
-                if grep -qE "${sname}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n'); then
-                    lv_size=$(to_mbyte ${size}K)
+            local sname fs spid ptype type mp used size f lsize lv_size
+            for f in "${SRCS[@]}"; do
+                IFS=: read -r sname fs spid ptype type mp used size <<<"$f"
+                if [[ -n ${TO_LVM[$sname]} ]] ; then
+                    lv_size=$(to_mbyte ${size}K) #TODO to_mbyte should be able to deal with floats
                     if ((s1 < s2)); then
                         lvcreate --yes -L"${lv_size%%.*}" -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
                     else
@@ -1690,9 +1703,9 @@ Clone() { #{{{
         [[ -n $LVM_EXPAND ]] && lvcreate --yes -l"${LVM_EXPAND_BY:-100}%FREE" -n "$LVM_EXPAND" "$VG_SRC_NAME_CLONE"
 
         {
-            local name fs pid ptype type used size s
-            for s in ${SRCS[@]}; do
-                IFS=: read -r name fs pid ptype type used size <<<$s
+            local name fs pid ptype type mp used size s
+            for s in "${SRCS[@]}"; do
+                IFS=: read -r name fs pid ptype type mp used size <<<"$s"
                 [[ $type == 'lvm' ]] && src_lfs[${name##*-}]=$fs
                 [[ $type == 'part' ]] && grep -qE "${name}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n') && src_lfs[${TO_LVM[$name]}]=$fs
             done
@@ -1762,19 +1775,13 @@ Clone() { #{{{
         local files=()
         pushd "$SRC" >/dev/null || return 1
 
-        {
-            local file
-            for file in [0-9]*; do
-                local k=$(echo "$file" | sed "s/\.[a-z]*$//")
-                files+=($k)
-            done
-        }
+        files=([0-9]*)
 
         #Now, we are ready to restore files from previous backup images
         local file mpnt i uuid puuid fs type sused dev mnt dir ddev dfs dpid dptype dtype davail user group o_user o_group
         for file in "${files[@]}"; do
-            read -r i uuid puuid fs type sused dev mnt dir user group<<<"${file//./ }"
-            IFS=: read -r ddev dfs dpid dptype dtype davail <<<${DESTS[${SRC2DEST[$uuid]}]}
+            IFS=. read -r i uuid puuid fs type sused dev mnt dir user group<<<"$(pad_novalue "$file")"
+            IFS=: read -r ddev dfs dpid dptype dtype davail <<<"${DESTS[${SRC2DEST[$uuid]}]}"
             dir=${dir//_//}
             mnt=${mnt//_//}
 
@@ -1798,7 +1805,7 @@ Clone() { #{{{
                 [[ -n $XZ_OPT ]] && cmd="$cmd --xz"
 
                 if [[ $INTERACTIVE == true ]]; then
-                    local size=$(du --bytes -c "${SRC}/${file}"* | tail -n1 | awk '{print $1}')
+                    local size=$(du --bytes -c "${SRC}/${file}" | tail -n1 | awk '{print $1}')
                     cmd="pv --interval 0.5 --numeric -s $size \"${SRC}\"/${file}* | $cmd"
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     while read -r e; do
@@ -1809,7 +1816,7 @@ Clone() { #{{{
                     message -u -c -t "Restoring ${dev//_//} ($mnt) to $ddev [ $(printf '%02d%%' 100) ]"
                 else
                     message -c -t "Restoring ${dev//_//} ($mnt) to $ddev"
-                    cmd="$cmd < ${SRC}/${file}*"
+                    cmd="$cmd < ${SRC}/${file}"
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     eval "$cmd"
                 fi
@@ -1948,16 +1955,16 @@ Clone() { #{{{
 
         {
             local x sdev rest
-            for x in ${!SRCS[@]}; do
-                IFS=: read -r sdev rest <<<${SRCS[$x]}
+            for x in "${!SRCS[@]}"; do
+                IFS=: read -r sdev rest <<<"${SRCS[$x]}"
                 s[$sdev]=$x
             done
         }
 
         {
             local x sdev rest
-            for x in ${!DESTS[@]}; do
-                IFS=: read -r ddev rest <<<${DESTS[$x]}
+            for x in "${!DESTS[@]}"; do
+                IFS=: read -r ddev rest <<<"${DESTS[$x]}"
                 d[$ddev]=$x
             done
         }
@@ -1970,9 +1977,9 @@ Clone() { #{{{
 
         {
             local i sdev sfs spid sptype stype srest ddev dfs dpid dptype dtype drest
-            for ((i = 0; i < ${#SRCS[@]}; i++)); do
-                IFS=: read -r sdev sfs spid sptype stype srest <<<${SRCS[${s[${sk[$i]}]}]}
-                IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DESTS[${d[${dk[$i]}]}]}
+            for ((i = 0; i < "${#SRCS[@]}"; i++)); do
+                IFS=: read -r sdev sfs spid sptype stype srest <<<"${SRCS[${s[${sk[$i]}]}]}"
+                IFS=: read -r ddev dfs dpid dptype dtype drest <<<"${DESTS[${d[${dk[$i]}]}]}"
 
                 [[ -n ${TO_LVM[$sdev]} ]] && si=$i
                 grep -qE "\b${ddev##*-}\b" < <(echo ${TO_LVM[*]} | tr ' ' '\n') && di=$i
@@ -2009,7 +2016,7 @@ Clone() { #{{{
             if [[ $ALL_TO_LVM == true ]]; then
                 local y sdevname fs spid ptype type rest
                 for y in "${!SRCS[@]}"; do
-                    IFS=: read -r sdevname fs spid ptype type rest <<<${SRCS[$y]}
+                    IFS=: read -r sdevname fs spid ptype type rest <<<"${SRCS[$y]}"
                     if [[ $type == part ]]; then
                         if [[ ! ${ptype} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} \
                         && ! ${ptype} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then
@@ -2262,15 +2269,15 @@ Main() { #{{{
 
         local fs dev name mountpoint swap_size=0
         while IFS=: read -r fs dev name mountpoint; do
-            if grep "$name" <<<"$lvs_list" | grep -vq "snapshot" && [[ -n $fs ]]; then
+            if grep "$name" <<<"$lvs_list" | grep -vq "snapshot" && [[ -n ${fs// } ]]; then
                 if [[ $SWAP_SIZE -lt 0 && $fs == swap ]]; then
                     swap_size=$(swapon --show=size,name --bytes --noheadings | grep $dev | awk '{print $1}') #no swap = 0
                     swap_size=$(to_kbyte ${swap_size:-0})
                 fi
 
-                [[ -z $mountpoint && $fs != swap ]] && { mount_ $dev || exit_ 1 "Could not mount ${dev}."; }
+                [[ -z ${mountpoint// } && $fs != swap ]] && { mount_ $dev || exit_ 1 "Could not mount ${dev}."; }
                 __src_size=$((swap_size + __src_size + $(df -k --output=used $dev | tail -n -1)))
-                [[ -z $mountpoint ]] && umount_ "$dev"
+                [[ -z ${mountpoint// } ]] && umount_ "$dev"
             fi
         done <<<"$plist"
 
