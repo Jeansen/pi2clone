@@ -1388,10 +1388,7 @@ Cleanup() { #{{{
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
     } &>/dev/null
 
-    if [[ -t 3 ]]; then
-        exec 1>&3 2>&4
-        tput cnorm
-    fi
+    tput cnorm
 
     #Check if system files have been changed for execution and restore
     local f failed=()
