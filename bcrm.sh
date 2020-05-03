@@ -2637,7 +2637,7 @@ Main() { #{{{
         done
     }
 
-    [[ $SRC == "$DEST" ]] &&
+    [[ $(realpath "$SRC") == $(realpath "$DEST") ]] &&
         exit_ 1 "Source and destination cannot be the same!"
 
     [[ -n $(lsblk --noheadings -o mountpoint $DEST 2>/dev/null) ]] &&
