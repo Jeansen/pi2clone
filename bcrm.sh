@@ -2205,8 +2205,8 @@ Main() { #{{{
             while read -r name mountpoint; do
                 if grep "$name" <<<"$lvs_list" | grep -vq "snapshot"; then
                     local mp
-                    [[ -z ${mp// } ]] && mp="$name" || mp="$mountpoint"
-                    mount_ "$mp" || exit_ 1 "Could not mount ${dev}."
+                    [[ -z ${mountpoint// } ]] && mp="${name}" || mp="${mountpoint}"
+                    mount_ "$mp" || exit_ 1 "Could not mount ${mp}."
                     mpnt=$(get_mount $mp) || exit_ 1 "Could not find mount journal entry for $mp. Aborting!"
                     if [[ -f ${mpnt}/etc/fstab ]]; then
                         {
