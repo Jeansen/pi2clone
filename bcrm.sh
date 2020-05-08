@@ -75,6 +75,7 @@ declare -A CHG_SYS_FILES    #Container for system files that needed to be change
 
 declare -A MNTJRNL MOUNTS EXT_PARTS EXCLUDES CHOWN
 declare -A SRC2DEST PSRC2PDEST NSRC2NDEST
+declare -A DEVICE_MAP
 
 declare PVS=() VG_DISKS=() CHROOT_MOUNTS=()
 #}}}
@@ -102,8 +103,8 @@ declare IS_CLEANUP=true
 declare ALL_TO_LVM=false
 
 declare MIN_RESIZE=2048 #In 1M units
-declare SWAP_SIZE=-1    #Values < 0 mean noch change/ignore
-declare BOOT_SIZE=0
+declare SWAP_SIZE=-1    #Values < 0 mean no change/ignore
+declare BOOT_SIZE=-1
 declare LVM_EXPAND_BY=0 #How much % of free space to use from a VG, e.g. when a dest disk is larger than a src disk.
 #}}}
 
@@ -556,6 +557,15 @@ vg_disks() { #{{{
 
 #--- Registration ---{{{
 
+        add_device_links() { #{{{
+            local kdev=$1
+            local devlinks=$(find /dev -type l -exec readlink -nf {} \; -exec echo " {}" ';' | grep "$kdev" | awk '{print $2}')
+            DEVICE_MAP[$kdev]="$devlinks"
+            for d in $devlinks;
+                do DEVICE_MAP[$d]=$kdev;
+            done
+        } #}}}
+
 mounts() { #{{{
     logmsg "mounts"
     if [[ $_RMODE == false ]]; then
@@ -629,6 +639,9 @@ set_dest_uuids() { #{{{
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+
+        add_device_links $KNAME
+
         [[ $FSTYPE == swap ]] && continue
         [[ $UEFI == true && $PARTTYPE == $ID_GPT_EFI ]] && continue
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
@@ -656,6 +669,8 @@ init_srcs() { #{{{
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval declare "$name" "$kdev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
+
+        add_device_links $KNAME
 
         [[ $PARTTYPE == 0x5 || $FSTYPE == LVM2_member || $FSTYPE == swap || $TYPE == crypt || $FSTYPE == crypto_LUKS ]] && continue
         lvs -o lv_dmpath,lv_role | grep "$NAME" | grep "snapshot" -q && continue
@@ -1388,8 +1403,6 @@ Cleanup() { #{{{
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
     } &>/dev/null
 
-    tput cnorm
-
     #Check if system files have been changed for execution and restore
     local f failed=()
     for f in "${!CHG_SYS_FILES[@]}"; do
@@ -1400,6 +1413,9 @@ Cleanup() { #{{{
         fi
     done
     [[ ${#failed[@]} -gt 0 ]] && message -n -t "Backups of original file(s) ${f[*]} changed. Will not restore. Check ${BACKUP_FOLDER}."
+
+    exec 1>&3
+    tput cnorm
 
     exec 200>&-
     exit "$EXIT" #Make sure we really exit the script!
@@ -1628,25 +1644,40 @@ Clone() { #{{{
         local vg_data=$(vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free | grep -E "\b$VG_SRC_NAME\b|\b$VG_SRC_NAME_CLONE\b")
         [[ $_RMODE == true ]] && vg_data=$(echo -e "$vg_data\n$(cat $SRC/$F_VGS_LIST)")
 
-        if [[ -n $SWAP_PART ]]; then
-            local swap_name swap_size
-            read -r swap_name swap_size <<<$(echo "$lvm_data" | grep "$SWAP_PART" | awk '{print $1, $3}')
-            local swap_size_src=${swap_size:-0}
-            local swap_size_dest=${swap_size:-0}
+        declare -i fixd_size_dest=0
+        declare -i fixd_size_src=0
 
-            [[ $SWAP_SIZE -ge 0 ]] && swap_size_dest=$(to_mbyte ${SWAP_SIZE}K)
+        _create_fixed() {
+            local part="$1"
+            local part_size=$2
 
-            if [[ ${swap_size_dest%%.*} -gt 0 ]]; then
-                lvcreate --yes -L${swap_size_dest%%.*} -n "$swap_name" "$VG_SRC_NAME_CLONE"
-            fi
-        fi
+            for d in ${DEVICE_MAP[$part]}; do
+                if echo "$lvm_data" | grep -q "$d\|$part"; then
+                    local name size
+                    read -r name size <<<$(echo "$lvm_data" | grep "$d\|$part" | awk '{print $1, $3}')
+                    local part_size_src=${size%%.*}
+                    local part_size_dest=${size%%.*}
+                    fixd_size_src+=$part_size_src
+
+                    [[ $part_size -ge 0 ]] && part_size_dest=$(to_mbyte ${part_size}K)
+
+                    if [[ $part_size_dest -gt 0 ]]; then
+                        fixd_size_dest+=$part_size_dest
+                        lvcreate --yes -L$part_size_dest -n "$name" "$VG_SRC_NAME_CLONE"
+                    fi
+                fi
+            done
+        }
+
+        [[ -n $SWAP_PART ]] && _create_fixed "$SWAP_PART" $SWAP_SIZE
+        [[ -n $BOOT_PART ]] && _create_fixed "$BOOT_PART" $BOOT_SIZE
 
         {
             local vg_name vg_size vg_free e src_vg_free
             while read -r e; do
                 read -r vg_name vg_size vg_free <<<"$e"
-                [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*} - ${vg_free%%.*} - ${swap_size_src%%.*})) && src_vg_free=${vg_free%%.*}
-                [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=$((${vg_free%%.*} - ${swap_size_dest%%.*} - $VG_FREE_SIZE))
+                [[ $vg_name == "$VG_SRC_NAME" ]] && s1=$((${vg_size%%.*} - ${vg_free%%.*} - $fixd_size_src)) && src_vg_free=${vg_free%%.*}
+                [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=$((${vg_free%%.*} - $fixd_size_dest - $VG_FREE_SIZE))
             done < <(echo "$vg_data")
             [[ $VG_FREE_SIZE -eq 0  ]] && s2=$((s2 - src_vg_free))
         }
