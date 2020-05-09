@@ -23,6 +23,7 @@ export LC_ALL=en_US.UTF-8
 export LVM_SUPPRESS_FD_WARNINGS=true
 export XZ_OPT= #Make sure no compression is in place, can be set with -z. See Main()
 [[ $TERM == unknown || $TERM == dumb ]] && export TERM=xterm
+set -o pipefail
 #}}}
 
 # CONSTANTS -----------------------------------------------------------------------------------------------------------{{{
@@ -2316,10 +2317,11 @@ Main() { #{{{
 
     trap Cleanup INT TERM EXIT
 
-    if [[ -t 1 ]]; then
-        exec 3>&1 4>&2
-        tput sc
-    fi
+    exec 3>&1 4>&2
+    tput sc
+
+    { >&3; } 2<> /dev/null || exit_ 9
+    { >&4; } 2<> /dev/null || exit_ 9
 
     option=$(getopt \
         -o 'huqczps:d:e:n:m:w:b:H:' \
