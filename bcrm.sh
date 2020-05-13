@@ -36,6 +36,7 @@ declare F_PVS_LIST='pvs_list'
 declare F_PART_TABLE='part_table'
 declare F_CHESUM='check.md5'
 declare F_CONTEXT='context'
+declare F_DEVICE_MAP='device_map'
 declare F_LOG='/tmp/bcrm.log'
 
 declare SCHROOT_HOME=/tmp/dbs
@@ -348,28 +349,28 @@ ctx_set() { #{{{
 
     case "$1" in
     BOOT_PART)
-        CONTEXT[bootPart]=$v
+        CONTEXT[bootPart]="$v"
         ;;
     SECTORS_SRC)
-        CONTEXT[sectors]=$v
+        CONTEXT[sectors]="$v"
         ;;
     SECTORS_SRC_USED)
-        CONTEXT[sectorsUsed]=$v
+        CONTEXT[sectorsUsed]="$v"
         ;;
     IS_LVM)
-        CONTEXT[isLvm]=$v
+        CONTEXT[isLvm]="$v"
         ;;
     IS_CHECKSUM)
-        CONTEXT[isChecksum]=$v
+        CONTEXT[isChecksum]="$v"
         ;;
     HAS_EFI)
-        CONTEXT[hasEfi]=$v
+        CONTEXT[hasEfi]="$v"
         ;;
     TABLE_TYPE)
-        CONTEXT[tableType]=$v
+        CONTEXT[tableType]="$v"
         ;;
     HAS_GRUB)
-        CONTEXT[hasGrub]=$v
+        CONTEXT[hasGrub]="$v"
         ;;
     *)
         return 1
@@ -640,8 +641,6 @@ set_dest_uuids() { #{{{
     while read -r e; do
         read -r name kdev fstype uuid puuid type parttype mountpoint <<<"$e"
         eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint"
-
-        add_device_links $KNAME
 
         [[ $FSTYPE == swap ]] && continue
         [[ $UEFI == true && $PARTTYPE == $ID_GPT_EFI ]] && continue
@@ -1472,6 +1471,9 @@ To_file() { #{{{
     {
         _save_disk_layout
         init_srcs "$($LSBLK_CMD "$SRC" ${VG_DISKS[@]})"
+        local av=""
+        for k in "${!DEVICE_MAP[@]}"; do av+="[$k]=\"${DEVICE_MAP[$k]}\" "; done
+        echo "DEVICE_MAP=($av)" > $F_DEVICE_MAP
         mounts
     }
     message -y
@@ -1648,7 +1650,7 @@ Clone() { #{{{
         declare -i fixd_size_dest=0
         declare -i fixd_size_src=0
 
-        _create_fixed() {
+        _create_fixed() { #{{{ TODO works, but should be factored out to avoid multiple nesting!
             local part="$1"
             local part_size=$2
 
@@ -1668,7 +1670,7 @@ Clone() { #{{{
                     fi
                 fi
             done
-        }
+        } #}}}
 
         [[ -n $SWAP_PART ]] && _create_fixed "$SWAP_PART" $SWAP_SIZE
         [[ -n $BOOT_PART ]] && _create_fixed "$BOOT_PART" $BOOT_SIZE
@@ -2040,6 +2042,7 @@ Clone() { #{{{
         local f=$([[ $_RMODE == true ]] && cat "$SRC/$F_PART_LIST" || $LSBLK_CMD "$SRC" ${VG_DISKS[@]})
 
         init_srcs "$f"
+        [[ $_RMODE == true ]] && eval $(cat $F_DEVICE_MAP)
         mounts
 
         {
@@ -2614,8 +2617,9 @@ Main() { #{{{
     fi
 
     if [[ -n $SRC_IMG ]]; then
-        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG"; } || exit_ 1
+        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG"; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
         SRC=$SRC_NBD
+        sleep 3
     fi
 
     [[ -n $DEST && -n $DEST_IMG && -n $IMG_TYPE && -n $IMG_SIZE ]] && exit_ 1 "Invalid combination."
@@ -2624,8 +2628,9 @@ Main() { #{{{
     if [[ -n $DEST_IMG ]]; then
         create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."
         chmod +rwx "$DEST_IMG"
-        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG"; } || exit_ 1
+        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG"; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
         DEST=$DEST_NBD
+        sleep 3
     fi
 
     [[ -z $SRC ]] && exit_ 1 "Missing required parameter -s <source>"
@@ -2703,6 +2708,7 @@ Main() { #{{{
             [[ -s $SRC/$F_CHESUM && $IS_CHECKSUM == true ||
                 -s $SRC/$F_CONTEXT &&
                 -s $SRC/$F_PART_LIST &&
+                -s $SRC/$F_DEVICE_MAP &&
                 -s $SRC/$F_PART_TABLE ]] || exit_ 2 "Cannot restore dump, one or more meta files are missing or empty."
             if [[ $IS_LVM == true ]]; then
                 [[ -s $SRC/$F_VGS_LIST &&
