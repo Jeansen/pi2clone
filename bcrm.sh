@@ -828,6 +828,9 @@ expand_disk() { #{{{
     local src_boot_size=$(echo "$pdata" | grep "$BOOT_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
     declare -n pdata_new=$4
 
+    declare -A val_parts #Partitions with fixed sizes
+    declare -A var_parts #Partitions to be expanded
+
     _part_size_check() { #{{{
         local part=$1
         local size=$2
@@ -846,7 +849,12 @@ expand_disk() { #{{{
     if [[ -n $SWAP_PART ]]; then
         #Substract the swap partition size
         swap_size=$(echo "$pdata" | grep "$SWAP_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
-        # src_size=$((src_size - swap_size))
+        src_size=$((src_size - swap_size))
+        if [[ $SWAP_SIZE -gt 0 ]]; then
+            dest_size=$((dest_size - SWAP_SIZE))
+        else
+            dest_size=$((dest_size - swap_size))
+        fi
     fi
 
     local expand_factor=$(echo "scale=4; $dest_size / $src_size" | bc)
@@ -856,8 +864,6 @@ expand_disk() { #{{{
         pdata=$(echo "$pdata" | sed "/$swap_part/d")
     fi
 
-    declare -A val_parts #Partitions with fixed sizes
-    declare -A var_parts #Partitions to be expanded
 
     local n=0
     {
