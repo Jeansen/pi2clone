@@ -2256,7 +2256,7 @@ Main() { #{{{
 
         local mpnt f name mountpoint fstype,type
         if [[ $IS_LVM == true ]]; then
-            local parts=$(lsblk -lpo name,fstype,mountpoint | grep "${VG_SRC_NAME//-/--}-" | grep -iv 'swap' | awk '{print $1,$3}')
+            local parts=$(lsblk -lpo name,fstype,mountpoint | grep "${VG_SRC_NAME//-/--}-" | grep -iv 'swap')
             while read -r name fstype mountpoint; do
                 if grep "$name" <<<"$lvs_list" | grep -vq "snapshot"; then
                     [[ -n $fstype ]] && _set $name $mountpoint
