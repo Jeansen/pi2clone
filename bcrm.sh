@@ -123,6 +123,7 @@ declare TABLE_TYPE=""
 
 declare INTERACTIVE=false
 declare HAS_GRUB=false
+declare HAS_LUKS=false    #If source is encrypted
 declare HAS_EFI=false     #If the cloned system is UEFI enabled
 declare SYS_HAS_EFI=false #If the currently running system has UEFI
 declare IS_LVM=false
@@ -644,7 +645,8 @@ set_dest_uuids() { #{{{
         eval declare "$kdev" "$name" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint" "$size"
 
         [[ $FSTYPE == swap ]] && continue
-        [[ $UEFI == true && $PARTTYPE == $ID_GPT_EFI ]] && continue
+        [[ $UEFI == true && ${PARTTYPE} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]] && continue
+
         [[ $PARTTYPE == 0x5 || $TYPE == crypt || $FSTYPE == crypto_LUKS || $FSTYPE == LVM2_member ]] && continue
 
         local mp
@@ -656,6 +658,7 @@ set_dest_uuids() { #{{{
         avail=$((avail - used)) #because df keeps 5% for root!
         umount_ "$mp"
         update_dest_order $UUID
+
         DESTS[$UUID]="${NAME}:${FSTYPE:- }:${PARTUUID:- }:${PARTTYPE:- }:${TYPE:- }:${avail:- }" #Avail to be checked
 
         # [[ ${PVS[@]} =~ $NAME ]] && continue
@@ -851,7 +854,7 @@ expand_disk() { #{{{
     declare -A val_parts #Partitions with fixed sizes
     declare -A var_parts #Partitions to be expanded
 
-    _size() {
+    _size() { #{{{
         local part=$1
         local part_size=$2
         #Substract the swap partition size
@@ -859,7 +862,7 @@ expand_disk() { #{{{
         src_size=$((src_size - part_size))
         dest_size=$((dest_size - part_size))
         echo "$part -- $part_size"
-    }
+    } #}}}
 
     [[ -n $SWAP_PART  ]] && _size $SWAP_PART $SWAP_SIZE
     [[ -n $BOOT_PART  ]] && _size $BOOT_PART $BOOT_SIZE
@@ -925,24 +928,34 @@ expand_disk() { #{{{
     #Finally remove some headers
     pdata=$(sed '/last-lba:/d' < <(echo "$pdata"))
 
+    _set_type() {
+        local p="$1"
+        case $TABLE_TYPE in
+        dos)
+            pdata=$(sed "\|$p| s/type=\w*/type=8e/" < <(echo "$pdata"))
+            ;;
+        gpt)
+            pdata=$(sed "\|$p| s/type=\([[:alnum:]]*-\)*[[:alnum:]]*/type=${ID_GPT_LVM^^}/" < <(echo "$pdata"))
+            ;;
+        *)
+            exit_ 1 "Unsupported partition table $TABLE_TYPE."
+            ;;
+        esac
+    }
+
     {
         local p
         for p in ${!TO_LVM[@]}; do
-            case $TABLE_TYPE in
-            dos)
-                pdata=$(sed "\|$p| s/type=\w*/type=8e/" < <(echo "$pdata"))
-                ;;
-            gpt)
-                pdata=$(sed "\|$p| s/type=\([[:alnum:]]*-\)*[[:alnum:]]*/type=${ID_GPT_LVM^^}/" < <(echo "$pdata"))
-                ;;
-            *)
-                exit_ 1 "Unsupported partition table $TABLE_TYPE."
-                ;;
-            esac
+            _set_type "$p"
         done
     }
 
-    pdata_new="$pdata"
+	if [[ $HAS_LUKS == true ]]; then
+		[[ $HAS_EFI == true ]] && pdata=$(sed "s/${ID_GPT_LINUX^^}/${ID_GPT_LVM^^}/" < <(echo "$pdata"))
+		[[ $(grep -E '^/' < <(echo "$pdata") | wc -l ) -eq 1 ]] && _set_type " "
+	fi
+
+	pdata_new="$pdata"
     return 0
 } #}}}
 
@@ -1119,8 +1132,10 @@ grub_setup() { #{{{
     {
         local m ddev rest
         for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
-            IFS=: read -r ddev rest <<<"${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}"
-            mount_ $ddev -p "$mp/$m"
+            if [[ -n ${SRC2DEST[${MOUNTS[$m]}]} ]]; then
+                IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
+                mount_ $ddev -p "$mp/$m" || exit_ 1 "Failed to mount $ddev to ${mp/$m}."
+            fi
         done
     }
 
@@ -1175,8 +1190,11 @@ crypt_setup() { #{{{
     {
         local m ddev rest
         for m in $(echo ${!MOUNTS[@]} | tr ' ' '\n' | grep -E '^/' | grep -vE '^/dev' | sort -u); do
-            IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
-            mount_ $ddev -p "$mp/$m" || exit_ 1 "Failed to mount $ddev to ${mp/$m}."
+            if [[ -n ${SRC2DEST[${MOUNTS[$m]}]} ]]; then
+                IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
+                mount_ $ddev -p "$mp/$m" || exit_ 1 "Failed to mount $ddev to ${mp/$m}."
+                echo_ "mount_ $ddev -p $mp/$m"
+            fi
         done
     }
 
@@ -1640,6 +1658,8 @@ Clone() { #{{{
         local dest=$1
         declare -A src_lfs
 
+        echo_ ""
+		echo_ "vgcreate $VG_SRC_NAME_CLONE $(pvs --noheadings -o pv_name | grep $dest | tr -d ' ')"
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name | grep "$dest" | tr -d ' ')
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE" "$SRC" "$DEST"
 
@@ -2083,6 +2103,8 @@ Clone() { #{{{
                     local dev type
                     read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $DEST | grep ${ID_GPT_EFI^^})
                     mkfs -t vfat "$dev"
+                    read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $SRC | grep ${ID_GPT_EFI^^})
+					update_src_order $(get_uuid $dev)
                 fi
                 pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
                 _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
@@ -2624,15 +2646,12 @@ Main() { #{{{
     [[ -d $DEST && $BOOT_SIZE -gt 0 ]] && exit_ 1 "Invalid combination."
 
     if [[ -n $DEST_IMG ]]; then
-        create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."
+        [[ ! -e $DEST_IMG ]] && { create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."; }
         chmod +rwx "$DEST_IMG"
         { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG"; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
         DEST=$DEST_NBD
         sleep 3
     fi
-
-    [[ -z $SRC ]] && exit_ 1 "Missing required parameter -s <source>"
-    [[ -z $DEST ]] && exit_ 1 "Missing required parameter -d <destination>"
 
     [[ -z $SRC || -z $DEST ]] &&
         usage
@@ -2655,9 +2674,10 @@ Main() { #{{{
     [[ -d $SRC && ! -r $SRC && ! -x $SRC ]] &&
         exit_ 1 "$SRC is not readable."
 
-    [[ -b $SRC ]] \
-        && lsblk -lpo parttype "$SRC" | grep -nqi $ID_GPT_EFI \
-        && HAS_EFI=true
+    if [[ -b $SRC ]]; then
+        lsblk -lpo parttype "$SRC" | grep -qi $ID_GPT_EFI && HAS_EFI=true
+        lsblk -lpo type "$SRC" | grep -qi 'crypt' && HAS_LUKS=true
+	fi
 
     {
         if [[ -b $DEST ]]; then
@@ -2784,6 +2804,11 @@ Main() { #{{{
     }
 
     VG_SRC_NAME=($(awk '{print $2}' < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sort -u))
+
+    if [[ -z $VG_SRC_NAME ]]; then
+        luks=$(grep -q "$SRC" < <(dmsetup deps -o devname) | awk '{print $1}' | tr -d ':')
+        VG_SRC_NAME=($(awk '{print $2}' < <(pvs --noheadings -o pv_name,vg_name | grep "$luks") | sort -u))
+    fi
 
     [[ ${#VG_SRC_NAME[@]} -gt 1 ]] && exit_ 1 "Unsupported situation: PVs of $SRC assigned to multiplge VGs."
 
