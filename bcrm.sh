@@ -861,7 +861,6 @@ expand_disk() { #{{{
         [[ $part_size -le 0 ]] && part_size=$(echo "$pdata" | grep "$part" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
         src_size=$((src_size - part_size))
         dest_size=$((dest_size - part_size))
-        echo "$part -- $part_size"
     } #}}}
 
     [[ -n $SWAP_PART  ]] && _size $SWAP_PART $SWAP_SIZE
@@ -1193,7 +1192,6 @@ crypt_setup() { #{{{
             if [[ -n ${SRC2DEST[${MOUNTS[$m]}]} ]]; then
                 IFS=: read -r ddev rest <<<${DESTS[${SRC2DEST[${MOUNTS[$m]}]}]}
                 mount_ $ddev -p "$mp/$m" || exit_ 1 "Failed to mount $ddev to ${mp/$m}."
-                echo_ "mount_ $ddev -p $mp/$m"
             fi
         done
     }
@@ -1658,8 +1656,6 @@ Clone() { #{{{
         local dest=$1
         declare -A src_lfs
 
-        echo_ ""
-		echo_ "vgcreate $VG_SRC_NAME_CLONE $(pvs --noheadings -o pv_name | grep $dest | tr -d ' ')"
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name | grep "$dest" | tr -d ' ')
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE" "$SRC" "$DEST"
 
@@ -2805,7 +2801,7 @@ Main() { #{{{
 
     VG_SRC_NAME=($(awk '{print $2}' < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sort -u))
 
-    if [[ -z $VG_SRC_NAME ]]; then
+    if [[ -z $VG_SRC_NAME && $HAS_LUKS == true ]]; then
         luks=$(grep -q "$SRC" < <(dmsetup deps -o devname) | awk '{print $1}' | tr -d ':')
         VG_SRC_NAME=($(awk '{print $2}' < <(pvs --noheadings -o pv_name,vg_name | grep "$luks") | sort -u))
     fi
