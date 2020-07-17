@@ -1122,7 +1122,7 @@ grub_setup() { #{{{
     mount_ "$d"
     mp=$(get_mount $d) || exit_ 1 "Could not find mount journal entry for $d. Aborting!" #do not use local, $? will be affected!
 
-    sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*||" "$mp/etc/default/grub"
+    sed -i -E '/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*[^\"]||' "$mp/etc/default/grub"
     sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=n/' "$mp/etc/default/grub"
     sed -i 's/^/#/' "$mp/etc/crypttab"
 
@@ -1249,7 +1249,7 @@ crypt_setup() { #{{{
     # local dev=$(lsblk -asno pkname /dev/mapper/$luks_lvm_name | head -n 1)
     echo "$luks_lvm_name UUID=$(cryptsetup luksUUID "$encrypt_part") /crypto_keyfile.bin luks,keyscript=/home/dummy" >"$mp/etc/crypttab"
 
-    sed -i -E "/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*[^\"]||" "$mp/etc/default/grub"
+    sed -i -E '/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*[^\"]||' "$mp/etc/default/grub"
 
     grep -q 'GRUB_CMDLINE_LINUX' "$mp/etc/default/grub" \
         && sed -i -E "/GRUB_CMDLINE_LINUX=/ s|\"(.*)\"|\"cryptdevice=UUID=$(cryptsetup luksUUID $encrypt_part):$luks_lvm_name \1\"|" "$mp/etc/default/grub" \
@@ -2272,7 +2272,7 @@ Main() { #{{{
             umount_ "$mp"
         } #}}}
 
-        local mpnt f name mountpoint fstype,type
+        local mpnt f name mountpoint fstype type
         if [[ $IS_LVM == true ]]; then
             local parts=$(lsblk -lpo name,fstype,mountpoint | grep "${VG_SRC_NAME//-/--}-" | grep -iv 'swap')
             while read -r name fstype mountpoint; do
