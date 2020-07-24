@@ -48,7 +48,8 @@ declare SRC_NBD=/dev/nbd0
 declare DEST_NBD=/dev/nbd1
 declare CLONE_DATE=$(date '+%d%m%y')
 declare SNAP4CLONE='snap4clone'
-declare LUKS_LVM_NAME=lukslvm_$CLONE_DATE
+declare SALT=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 10)
+declare LUKS_LVM_NAME="${SALT}_${CLONE_DATE}"
 
 declare ID_GPT_LVM=e6d6d379-f507-44c2-a23c-238f2a3df928
 declare ID_GPT_EFI=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
@@ -662,7 +663,7 @@ set_dest_uuids() { #{{{
         DESTS[$UUID]="${NAME}:${FSTYPE:- }:${PARTUUID:- }:${PARTTYPE:- }:${TYPE:- }:${avail:- }" #Avail to be checked
 
         # [[ ${PVS[@]} =~ $NAME ]] && continue
-    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | grep -vE 'disk|UUID="".*PARTUUID=""')
+    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | grep -vE 'disk|UUID="".*PARTUUID=""' | sort -u)
 } #}}}
 
 update_src_order() {
@@ -710,7 +711,8 @@ init_srcs() { #{{{
             umount_ "$mp"
         fi
         SRCS[$UUID]="${NAME}:${FSTYPE:- }:${PARTUUID:- }:${PARTTYPE:- }:${TYPE:- }:${MOUNTPOINT:- }:${used:- }:${size:- }"
-    done < <(echo "$file" | grep -v 'disk')
+        update_src_order "$UUID"
+    done < <(echo "$file" | grep -v 'disk' | sort -u)
 
     if [[ $_RMODE == true ]]; then
         pushd "$SRC" >/dev/null || return 1
@@ -1038,11 +1040,9 @@ disk_setup() { #{{{
                 pvcreate -ff "$NAME"
             elif [[ ${PARTTYPE} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then #EFI
                 mkfs -t vfat "$NAME"
-                update_src_order $(get_uuid $sname)
                 [[ $UEFI == true ]] && continue
             elif [[ -n ${sfstype// } ]]; then
                 mkfs -t "$sfstype" "$NAME"
-                update_src_order $(get_uuid $sname)
             else
                 return 1
             fi
@@ -1118,14 +1118,15 @@ grub_setup() { #{{{
     local uefi=$3
     local dest="$4"
     local mp
+    local resume=$(lsblk -lpo name,fstype $DEST | grep swap | awk '{print $1}')
 
     mount_ "$d"
     mp=$(get_mount $d) || exit_ 1 "Could not find mount journal entry for $d. Aborting!" #do not use local, $? will be affected!
 
     sed -i -E '/GRUB_CMDLINE_LINUX=/ s|[a-z=]*UUID=[-0-9a-Z]*[^ ]*[^\"]||' "$mp/etc/default/grub"
+    sed -i -E "/GRUB_CMDLINE_LINUX_DEFAULT=/ s|resume=[^ \"]*|resume=$resume|" "$mp/etc/default/grub"
     sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=n/' "$mp/etc/default/grub"
     sed -i 's/^/#/' "$mp/etc/crypttab"
-
     mount_chroot "$mp"
 
     {
@@ -1258,6 +1259,8 @@ crypt_setup() { #{{{
     grep -q 'GRUB_ENABLE_CRYPTODISK' "$mp/etc/default/grub" \
         && sed -i -E '/GRUB_ENABLE_CRYPTODISK=/ s/=./=y/' "$mp/etc/default/grub" \
         || echo "GRUB_ENABLE_CRYPTODISK=y" >>"$mp/etc/default/grub"
+
+    sed -i -E "/GRUB_CMDLINE_LINUX_DEFAULT=/ s|resume=[^ \"]*|resume=$resume|" "$mp/etc/default/grub"
 
     pkg_remove "$mp" "$REMOVE_PKGS" || return 1
     pkg_install "$mp" "$dest" "${apt_pkgs[*]}" || return 1
@@ -1708,7 +1711,7 @@ Clone() { #{{{
         } #}}}
 
         [[ -n $SWAP_PART ]] && _create_fixed "$SWAP_PART" $SWAP_SIZE
-        [[ -n $BOOT_PART ]] && _create_fixed "$BOOT_PART" $BOOT_SIZE && update_src_order $(get_uuid $BOOT_PART)
+        [[ -n $BOOT_PART ]] && _create_fixed "$BOOT_PART" $BOOT_SIZE
 
         {
             local vg_name vg_size vg_free e src_vg_free
@@ -1767,7 +1770,6 @@ Clone() { #{{{
                         size=$(echo "scale=4; $lv_size * $scale_factor" | bc)
                         lvcreate --yes -L${size%%.*} -n "$lv_name" "$VG_SRC_NAME_CLONE"
                     fi
-                    update_src_order $(get_uuid $lv_dm_path)
                 fi
             done < <(echo "$lvm_data")
         }
@@ -1785,7 +1787,6 @@ Clone() { #{{{
                         lsize=$(echo "scale=4; $lv_size * $scale_factor" | bc)
                         lvcreate --yes -L${lsize%%.*} -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
                     fi
-                    update_src_order $f
                 fi
             done
         }
@@ -2099,10 +2100,8 @@ Clone() { #{{{
                     local dev type
                     read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $DEST | grep ${ID_GPT_EFI^^})
                     mkfs -t vfat "$dev"
-                    read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $SRC | grep ${ID_GPT_EFI^^})
-					update_src_order $(get_uuid $dev)
                 fi
-                pvcreate -ff "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
+                pvcreate -ffy "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
                 _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
             else
                 disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
