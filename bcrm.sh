@@ -663,7 +663,7 @@ set_dest_uuids() { #{{{
         DESTS[$UUID]="${NAME}:${FSTYPE:- }:${PARTUUID:- }:${PARTTYPE:- }:${TYPE:- }:${avail:- }" #Avail to be checked
 
         # [[ ${PVS[@]} =~ $NAME ]] && continue
-    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | grep -vE 'disk|UUID="".*PARTUUID=""' | sort -u)
+    done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | grep -vE 'disk|UUID="".*PARTUUID=""')
 } #}}}
 
 update_src_order() {
@@ -712,7 +712,7 @@ init_srcs() { #{{{
         fi
         SRCS[$UUID]="${NAME}:${FSTYPE:- }:${PARTUUID:- }:${PARTTYPE:- }:${TYPE:- }:${MOUNTPOINT:- }:${used:- }:${size:- }"
         update_src_order "$UUID"
-    done < <(echo "$file" | grep -v 'disk' | sort -u)
+    done < <(echo "$file" | grep -v 'disk')
 
     if [[ $_RMODE == true ]]; then
         pushd "$SRC" >/dev/null || return 1
@@ -1001,8 +1001,7 @@ disk_setup() { #{{{
     _scan_src_parts() { #{{{
         local plist=$( echo "$file" \
             | grep 'TYPE="part"' \
-            | grep -vE 'PARTTYPE="0x5"' \
-            | sort -u
+            | grep -vE 'PARTTYPE="0x5"'
         )
 
         while read -r e; do
@@ -1023,8 +1022,7 @@ disk_setup() { #{{{
         plist=$(
             lsblk -Ppo NAME,KNAME,FSTYPE,UUID,PARTUUID,TYPE,PARTTYPE "$dest" \
                 | grep -vE 'PARTTYPE="0x5"' \
-                | grep -vE 'TYPE="disk"' \
-                | sort -u
+                | grep -vE 'TYPE="disk"'
         ) #only partitions
 
         local name kname fstype uuid partuuid type parttype sname sfstype e n=0
@@ -1462,14 +1460,14 @@ To_file() { #{{{
         {
             pvs --noheadings -o pv_name,vg_name,lv_active \
                 | grep 'active$' \
-                | sort -u \
                 | sed -e 's/active$//;s/^\s*//' \
+                | uniq \
                 | grep -E "\b$VG_SRC_NAME\b" >$F_PVS_LIST
 
             vgs --noheadings --units m --nosuffix -o vg_name,vg_size,vg_free,lv_active \
                 | grep 'active$' \
-                | sort -u \
                 | sed -e 's/active$//;s/^\s*//' \
+                | uniq \
                 | grep -E "\b$VG_SRC_NAME\b" >$F_VGS_LIST
 
             lvs --noheadings --units m --nosuffix -o lv_name,vg_name,lv_size,vg_size,vg_free,lv_active,lv_role,lv_dm_path \
@@ -1967,6 +1965,7 @@ Clone() { #{{{
 
     _clone() { #{{{
         logmsg "[ Clone ] _clone"
+
         local lvs_data=$(lvs --noheadings -o lv_name,lv_dm_path,vg_name \
             | grep "\b${VG_SRC_NAME}\b"
         )
@@ -2065,7 +2064,7 @@ Clone() { #{{{
         {
             if [[ $ALL_TO_LVM == true ]]; then
                 local y sdevname fs spid ptype type rest
-                for y in "${!SRCS[@]}"; do
+                for y in "${SRCS_ORDER[@]}"; do
                     IFS=: read -r sdevname fs spid ptype type rest <<<"${SRCS[$y]}"
                     if [[ $type == part ]]; then
                         if [[ ! ${ptype} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} \
@@ -2081,7 +2080,7 @@ Clone() { #{{{
         {
             if [[ -n $ENCRYPT_PWD ]]; then
                 local f name fstype partuuid parttype type used avail
-                for f in "${!SRCS[@]}"; do
+                for f in "${SRCS_ORDER[@]}"; do
                     IFS=: read -r name fstype partuuid parttype type used avail <<<"${SRCS[$f]}"
                     if ! grep -qE "${name}" < <(echo "${!TO_LVM[@]}" | tr ' ' '\n'); then
                         [[ $type == part && ! $parttype =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]] \
