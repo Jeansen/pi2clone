@@ -664,10 +664,45 @@ set_dest_uuids() { #{{{
 
         # [[ ${PVS[@]} =~ $NAME ]] && continue
     done < <($LSBLK_CMD "$DEST" $([[ $PVALL == true ]] && echo ${PVS[@]}) | grep -vE 'disk|UUID="".*PARTUUID=""')
+    align_order
 } #}}}
 
 update_src_order() {
     grep -q "$1" < <(echo ${SRCS_ORDER[*]}) || SRCS_ORDER+=($1)
+}
+
+align_order() {
+    declare -A snames
+    declare -A dnames
+
+    {
+        local sdev rest u i
+        for u in ${!SRCS[@]}; do
+            IFS=: read -r sdev rest <<<${SRCS[$u]}
+            if [[ $sdev =~ $VG_SRC_NAME ]]; then
+                snames[$sdev]=$u
+                for i in ${!SRCS_ORDER[@]}; do 
+                    [[ ${SRCS_ORDER[$i]} == $u ]] && unset SRCS_ORDER[$i];
+                done
+            fi
+        done
+    }
+
+    {
+        local sdev rest u i
+        for u in ${!SRCS[@]}; do
+            IFS=: read -r sdev rest <<<${DESTS[$u]}
+            if [[ $sdev =~ $VG_SRC_NAME_CLONE ]]; then
+                dnames[$sdev]=$u
+                for i in ${!DESTS_ORDER[@]}; do 
+                    [[ ${DESTS_ORDER[$i]} == $u ]] && unset DESTS_ORDER[$i];
+                done
+            fi
+        done
+    }
+
+    SRCS_ORDER+=($( echo ${snames[@]} | sort ))
+    DESTS_ORDER+=($( echo ${dnames[@]} | sort ))
 }
 
 update_dest_order() {
