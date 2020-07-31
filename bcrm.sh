@@ -679,7 +679,7 @@ align_order() {
         local sdev rest u i
         for u in ${!SRCS[@]}; do
             IFS=: read -r sdev rest <<<${SRCS[$u]}
-            if [[ $sdev =~ $VG_SRC_NAME ]]; then
+            if [[ -n $VG_SRC_NAME_CLONE && $sdev =~ $VG_SRC_NAME ]]; then
                 snames[$sdev]=$u
                 for i in ${!SRCS_ORDER[@]}; do 
                     [[ ${SRCS_ORDER[$i]} == $u ]] && unset SRCS_ORDER[$i];
@@ -692,7 +692,7 @@ align_order() {
         local sdev rest u i
         for u in ${!SRCS[@]}; do
             IFS=: read -r sdev rest <<<${DESTS[$u]}
-            if [[ $sdev =~ $VG_SRC_NAME_CLONE ]]; then
+            if [[ -n $VG_SRC_NAME_CLONE && $sdev =~ $VG_SRC_NAME_CLONE ]]; then
                 dnames[$sdev]=$u
                 for i in ${!DESTS_ORDER[@]}; do 
                     [[ ${DESTS_ORDER[$i]} == $u ]] && unset DESTS_ORDER[$i];
