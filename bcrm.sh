@@ -1692,6 +1692,8 @@ Clone() { #{{{
         local dest=$1
         declare -A src_lfs
 
+        echo "${SRCS[*]}" | grep -q 'lvm' || [[ $ALL_TO_LVM == true || ${#TO_LVM[@]} -ge 0 ]] || return 1
+
         vgcreate "$VG_SRC_NAME_CLONE" $(pvs --noheadings -o pv_name | grep "$dest" | tr -d ' ')
         [[ $PVALL == true ]] && vg_extend "$VG_SRC_NAME_CLONE" "$SRC" "$DEST"
 
@@ -1767,7 +1769,7 @@ Clone() { #{{{
             done
         }
 
-        if [[ $ALL_TO_LVM == true && $IS_LVM == false ]]; then
+        if [[ ($ALL_TO_LVM == true || ${#TO_LVM[@]} -gt 0) && $IS_LVM == false ]]; then
         {
             local vg_name vg_size vg_free e src_vg_free
             while read -r e; do
@@ -2139,10 +2141,8 @@ Clone() { #{{{
                 _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
             else
                 disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
-                if echo "${SRCS[*]}" | grep -q 'lvm' || [[ $ALL_TO_LVM == true ]]; then
-                    _lvm_setup "$DEST"
-                    sleep 3
-                fi
+                _lvm_setup "$DEST"
+                sleep 3
             fi
         }
 
