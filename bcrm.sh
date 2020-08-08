@@ -771,11 +771,10 @@ init_srcs() { #{{{
 
 # $1: <mount point>
 # $2: "<dest-dev>"
-# $3: ["<list of packages to install>"]
-pkg_install() { #{{{
-    logmsg "pkg_install"
+grub_install() { #{{{
+    logmsg "grub_install"
     chroot "$1" bash -c "
-        DEBIAN_FRONTEND=noninteractive apt-get install -y $3 &&
+        DEBIAN_FRONTEND=noninteractive &&
         grub-install $2 &&
         update-grub &&
         update-initramfs -u -k all" || return 1
@@ -786,6 +785,13 @@ pkg_install() { #{{{
 pkg_remove() { #{{{
     logmsg "pkg_remove"
     chroot "$1" sh -c "apt-get remove -y $2" || return 1
+} #}}}
+
+# $1: <mount point>
+# $2: ["<list of packages to install>"]
+pkg_install() { #{{{
+    logmsg "pkg_install"
+    chroot "$1" sh -c "apt-get install -y $2" || return 1
 } #}}}
 
 # $1: <mount point>
@@ -1196,7 +1202,8 @@ grub_setup() { #{{{
     fi
 
     pkg_remove "$mp" "$REMOVE_PKGS" || return 1
-    pkg_install "$mp" "$dest" "$apt_pkgs" || return 1
+    [[ ${#TO_LVM[@]} -gt 0 ]] && pkg_install "$mp" "lvm2" || return 1
+    grub_install "$mp" "$dest" "$apt_pkgs" || return 1
 
     create_rclocal "$mp"
     umount_chroot
@@ -1296,7 +1303,7 @@ crypt_setup() { #{{{
     sed -i -E "/GRUB_CMDLINE_LINUX_DEFAULT=/ s|resume=[^ \"]*|resume=$resume|" "$mp/etc/default/grub"
 
     pkg_remove "$mp" "$REMOVE_PKGS" || return 1
-    pkg_install "$mp" "$dest" "${apt_pkgs[*]}" || return 1
+    grub_install "$mp" "$dest" "${apt_pkgs[*]}" || return 1
 
     create_rclocal "$mp"
     umount_chroot
@@ -2569,7 +2576,7 @@ Main() { #{{{
             ;;
         '--all-to-lvm')
             ALL_TO_LVM=true
-            PKGS+=(lvm2)
+            PKGS+=(lvm)
             shift 1; continue
             ;;
         '--include-partition')
@@ -2610,7 +2617,7 @@ Main() { #{{{
                 else
                     exit_ 1 "Invalid LV name '$v'."
                 fi
-                PKGS+=(lvm2)
+                PKGS+=(lvm)
             }
             shift 2; continue
             ;;
