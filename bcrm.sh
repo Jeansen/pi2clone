@@ -2569,6 +2569,7 @@ Main() { #{{{
             ;;
         '--all-to-lvm')
             ALL_TO_LVM=true
+            PKGS+=(lvm2)
             shift 1; continue
             ;;
         '--include-partition')
@@ -2609,6 +2610,7 @@ Main() { #{{{
                 else
                     exit_ 1 "Invalid LV name '$v'."
                 fi
+                PKGS+=(lvm2)
             }
             shift 2; continue
             ;;
