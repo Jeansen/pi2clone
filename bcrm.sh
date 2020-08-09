@@ -1104,8 +1104,6 @@ boot_setup() { #{{{
     local path=(
         "/cmdline.txt"
         "/etc/fstab"
-        "/grub/grub.cfg"
-        "/boot/grub/grub.cfg"
         "/etc/initramfs-tools/conf.d/resume"
     )
 
@@ -1113,6 +1111,11 @@ boot_setup() { #{{{
     for k in "${!sd[@]}"; do
         for d in "${DESTS[@]}"; do
             sed -i "s|$k|${sd[$k]}|" \
+                "$dmnt/${path[0]}" "$dmnt/${path[1]}" \
+                "$dmnt/${path[2]}" "$dmnt/${path[3]}" \
+                2>/dev/null
+
+            sed -i "s|\(PART\)*UUID=/.*|${sd[$k]}|" \
                 "$dmnt/${path[0]}" "$dmnt/${path[1]}" \
                 "$dmnt/${path[2]}" "$dmnt/${path[3]}" \
                 2>/dev/null
@@ -1778,20 +1781,21 @@ Clone() { #{{{
 
         if [[ ($ALL_TO_LVM == true || ${#TO_LVM[@]} -gt 0) && $IS_LVM == false ]]; then
         {
-            local vg_name vg_size vg_free e src_vg_free
+            local vg_name vg_size vg_free e
             while read -r e; do
                 read -r vg_name vg_size vg_free <<<"$e"
                 [[ $vg_name == "$VG_SRC_NAME_CLONE" ]] && s2=$((${vg_free%%.*} - $fixd_size_dest - $VG_FREE_SIZE))
             done < <(echo "$vg_data")
-            [[ $VG_FREE_SIZE -eq 0  ]] && s2=$((s2 - src_vg_free))
             local name kdev fstype uuid puuid type parttype mountpoint size
 
             local f=$({ [[ $_RMODE == true ]] && cat "$SRC/$F_PART_LIST" || $LSBLK_CMD "$SRC"; } | grep 'SWAP')
-            read -r name kdev fstype uuid puuid type parttype mountpoint size <<<"$f"
-            eval declare "$name" "$kdev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint" "$size"
-            src_swap=$(to_mbyte $SIZE)
-            s1=$(sector_to_mbyte $SECTORS_SRC)
-            s1=$((s1 - src_swap))
+            if [[ -n $f  ]]; then
+                read -r name kdev fstype uuid puuid type parttype mountpoint size <<<"$f"
+                eval declare "$name" "$kdev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint" "$size"
+                src_swap=$(to_mbyte $SIZE)
+                s1=$(sector_to_mbyte $SECTORS_SRC)
+                s1=$((s1 - src_swap))
+            fi
         }
         fi
 
@@ -2092,8 +2096,9 @@ Clone() { #{{{
             IFS=: read -r ddev dfs dpid dptype dtype drest <<<${DESTS[${DESTS_ORDER[$i]}]}
 
             SRC2DEST[${SRCS_ORDER[$i]}]=${DESTS_ORDER[$i]}
-            [[ -n $spid && -n $dpid ]] && PSRC2PDEST[$spid]=$dpid
-            [[ -n $sdev && -n $ddev ]] && NSRC2NDEST[$sdev]=$ddev
+            [[ -n ${spid// } && -n ${dpid// } ]] && PSRC2PDEST[$spid]=$dpid
+            [[ -n ${sdev// } && -n ${ddev// } ]] && NSRC2NDEST[$sdev]=$ddev
+            [[ -n $spid && -z ${dpid// } ]] && PSRC2PDEST[$spid]=$ddev
         done
     } #}}}
 
