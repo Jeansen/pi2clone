@@ -1104,6 +1104,8 @@ boot_setup() { #{{{
     local path=(
         "/cmdline.txt"
         "/etc/fstab"
+        "/grub/grub.cfg"
+        "/boot/grub/grub.cfg"
         "/etc/initramfs-tools/conf.d/resume"
     )
 
@@ -1115,7 +1117,7 @@ boot_setup() { #{{{
                 "$dmnt/${path[2]}" "$dmnt/${path[3]}" \
                 2>/dev/null
 
-            sed -i "s|\(PART\)*UUID=/.*|${sd[$k]}|" \
+            sed -i "s|\(PART\)*UUID=/[^ ]*|${sd[$k]}|" \
                 "$dmnt/${path[0]}" "$dmnt/${path[1]}" \
                 "$dmnt/${path[2]}" "$dmnt/${path[3]}" \
                 2>/dev/null
@@ -1142,7 +1144,7 @@ boot_setup() { #{{{
                     sed -i '/swap/d' "$dmnt/${path[1]}"
                 else
                     read -r fstype uuid <<<$(lsblk -lnpo fstype,uuid "$DEST" ${PVS[@]} | grep '^swap')
-                    sed -i -E "/\bswap/ s/[^ ]*/UUID=$uuid/" "$dmnt/${path[1]}"
+                    sed -i -E "/^[^#].*\bswap/ s/[^ ]*/UUID=$uuid/" "$dmnt/${path[1]}"
                 fi
             fi
         done
