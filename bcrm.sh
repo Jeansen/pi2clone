@@ -1630,7 +1630,7 @@ To_file() { #{{{
 
         sid=${sid// }
         spid=${spid// }
-        local file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mount//\//_}"
+        local file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mountpoint//\//_}"
 
         _copy "$sdev" $mpnt "$file"
 
@@ -1644,7 +1644,7 @@ To_file() { #{{{
 
                 mount_ "$e"
                 local mpnt_e=$(get_mount $e) || exit_ 1 "Could not find mount journal entry for $e. Aborting!"
-                file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mount//\//_}.${em//\//_}.${user}.${password}"
+                file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mountpoint//\//_}.${em//\//_}.${user}.${password}"
 
                 _copy "$e" "$mpnt_e" "$file" "$em"
                 umount_ "$e"
