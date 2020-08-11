@@ -1110,7 +1110,7 @@ boot_setup() { #{{{
     )
 
     local k d uuid fstype
-    for k in "${!sd[@]}"; do
+    for k in ${!sd[@]}; do
         for d in "${DESTS[@]}"; do
             sed -i "s|$k|${sd[$k]}|" \
                 "$dmnt/${path[0]}" "$dmnt/${path[1]}" \
