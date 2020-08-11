@@ -1075,7 +1075,7 @@ disk_setup() { #{{{
 
             if [[ $sfstype == swap ]]; then
                 mkswap -f "$NAME" && continue
-            elif [[ ${PARTTYPE} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} ]]; then #LVM
+            elif [[ ${PARTTYPE} =~ $ID_GPT_LVM|0x${ID_DOS_LVM} || $sfstype == LVM2_member ]]; then #LVM
                 pvcreate -ff "$NAME"
             elif [[ ${PARTTYPE} =~ $ID_GPT_EFI|0x${ID_DOS_EFI} ]]; then #EFI
                 mkfs -t vfat "$NAME"
