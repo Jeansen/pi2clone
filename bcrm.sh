@@ -783,15 +783,21 @@ grub_install() { #{{{
 # $1: <mount point>
 # $2: ["<list of packages to install>"]
 pkg_remove() { #{{{
+    local mp="$1"
+    local pkgs="$2"
     logmsg "pkg_remove"
-    chroot "$1" sh -c "apt-get remove -y $2" || return 1
+    [[ -n ${pkgs// } ]] && { chroot "$mp" sh -c "apt-get remove -y $pkgs" || return 1; }
+    return 0
 } #}}}
 
 # $1: <mount point>
 # $2: ["<list of packages to install>"]
 pkg_install() { #{{{
+    local mp="$1"
+    local pkgs="$2"
     logmsg "pkg_install"
-    chroot "$1" sh -c "apt-get install -y $2" || return 1
+    [[ -n ${pkgs// } ]] && { chroot "$mp" sh -c "apt-get install -y $pkgs" || return 1; } 
+    return 0
 } #}}}
 
 # $1: <mount point>
@@ -1110,6 +1116,7 @@ boot_setup() { #{{{
     )
 
     local k d uuid fstype
+    local k d uuid fstype
     for k in ${!sd[@]}; do
         for d in "${DESTS[@]}"; do
             sed -i "s|$k|${sd[$k]}|" \
@@ -1207,7 +1214,7 @@ grub_setup() { #{{{
     fi
 
     pkg_remove "$mp" "$REMOVE_PKGS" || return 1
-    [[ ${#TO_LVM[@]} -gt 0 ]] && pkg_install "$mp" "lvm2" || return 1
+    [[ ${#TO_LVM[@]} -gt 0 ]] && { pkg_install "$mp" "lvm2" || return 1; }
     grub_install "$mp" "$dest" "$apt_pkgs" || return 1
 
     create_rclocal "$mp"
