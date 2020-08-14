@@ -1342,6 +1342,7 @@ create_image() { #{{{
 
 #--- Value conversion and calculation --- {{{
 
+#TODO Check if valid and still needed
 # $1: <file>
 pad_novalue() { #{{{
     local file="$1"
@@ -1613,6 +1614,7 @@ To_file() { #{{{
         g=$((g + 1))
     } #}}}
 
+	#TODO check usage of mount, mountpoint. Should be only one in use.
     for s in ${!SRCS[@]}; do
         local tdev sid=$s
         IFS=: read -r sdev fs spid ptype type mountpoint used size <<<${SRCS[$s]}
@@ -1637,7 +1639,7 @@ To_file() { #{{{
 
         sid=${sid// }
         spid=${spid// }
-        local file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mountpoint//\//_}"
+        local file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mount//\//_}"
 
         _copy "$sdev" $mpnt "$file"
 
@@ -1651,7 +1653,7 @@ To_file() { #{{{
 
                 mount_ "$e"
                 local mpnt_e=$(get_mount $e) || exit_ 1 "Could not find mount journal entry for $e. Aborting!"
-                file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mountpoint//\//_}.${em//\//_}.${user}.${password}"
+                file="${g}.${sid// }.${spid// }.${fs// }.${type// }.${used}.${sdev//\//_}.${mount//\//_}.${em//\//_}.${user}.${password}"
 
                 _copy "$e" "$mpnt_e" "$file" "$em"
                 umount_ "$e"
