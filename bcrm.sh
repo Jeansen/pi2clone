@@ -1810,8 +1810,10 @@ Clone() { #{{{
         }
         fi
 
-        scale_factor=$(echo "scale=4; $s2 / $s1" | bc)
+        scale_factor=$(echo "$s2 / $s1" | bc)
 
+        #TODO rework this and the next block. Currently there are two stage, LVM and ALL_TO_LVM using SRC
+        #SWAP is excluded from LVM conversion, too
         {
             local lv_name vg_name lv_size vg_size vg_free lv_active lv_role lv_dm_path e size
             while read -r e; do
@@ -1824,25 +1826,35 @@ Clone() { #{{{
                     if ((s1 < s2)); then
                         lvcreate --yes -L"${lv_size%%.*}" -n "$lv_name" "$VG_SRC_NAME_CLONE"
                     else
-                        size=$(echo "scale=4; $lv_size * $scale_factor" | bc)
+                        size=$(echo "$lv_size * $scale_factor" | bc)
                         lvcreate --yes -L${size%%.*} -n "$lv_name" "$VG_SRC_NAME_CLONE"
                     fi
                 fi
             done < <(echo "$lvm_data")
         }
 
-
         {
             local sname fs spid ptype type mp used size f lsize lv_size
             for f in "${!SRCS[@]}"; do
                 IFS=: read -r sname fs spid ptype type mp used size <<<"${SRCS[$f]}"
+
+                local vg_free=$( vgs --noheadings --units m --nosuffix -o vg_name,vg_free \
+                    | grep "\b${VG_SRC_NAME_CLONE}\b" \
+                    | awk '{print $2}'
+                )
+
+                lv_size=${lv_size%%.*}
+                vg_free=$(( ${vg_free%%.*} - $VG_FREE_SIZE ))
+
                 if [[ -n ${TO_LVM[$sname]} && $sname != $BOOT_PART ]] ; then
                     lv_size=$(to_mbyte ${size}K) #TODO to_mbyte should be able to deal with floats
                     if ((s1 < s2)); then
-                        lvcreate --yes -L"${lv_size%%.*}" -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
+                        (( vg_free < lv_size  )) && lv_size=$vg_free
+                        lvcreate --yes -L$lv_size -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE" || return 1
                     else
-                        lsize=$(echo "scale=4; $lv_size * $scale_factor" | bc)
-                        lvcreate --yes -L${lsize%%.*} -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE"
+                        lv_size=$(echo "scale=0; $lv_size * $scale_factor / 1" | bc)
+                        (( vg_free < lv_size  )) && lv_size=$vg_free
+                        lvcreate --yes -L$lv_size -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE" || return 1
                     fi
                 fi
             done
@@ -2161,10 +2173,10 @@ Clone() { #{{{
                     mkfs -t vfat "$dev"
                 fi
                 pvcreate -ffy "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
-                _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
+                _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle || exit_ 1 "LVM setup failed!"
             else
                 disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
-                _lvm_setup "$DEST"
+                _lvm_setup "$DEST" || exit_ 1 "LVM setup failed!"
                 sleep 3
             fi
         }
