@@ -1810,7 +1810,7 @@ Clone() { #{{{
         }
         fi
 
-        scale_factor=$(echo "$s2 / $s1" | bc)
+        scale_factor=$(echo "scale=2; $s2 / $s1" | bc)
 
         #TODO rework this and the next block. Currently there are two stage, LVM and ALL_TO_LVM using SRC
         #SWAP is excluded from LVM conversion, too
