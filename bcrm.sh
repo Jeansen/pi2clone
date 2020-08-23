@@ -1805,12 +1805,12 @@ Clone() { #{{{
                 eval declare "$name" "$kdev" "$fstype" "$uuid" "$puuid" "$type" "$parttype" "$mountpoint" "$size"
                 src_swap=$(to_mbyte $SIZE)
                 s1=$(sector_to_mbyte $SECTORS_SRC)
-                s1=$((s1 - src_swap))
+                s1=$((s1 - src_swap - fixd_size_src))
             fi
         }
         fi
 
-        scale_factor=$(echo "scale=2; $s2 / $s1" | bc)
+        scale_factor=$(echo "scale=4; $s2 / $s1" | bc)
 
         #TODO rework this and the next block. Currently there are two stage, LVM and ALL_TO_LVM using SRC
         #SWAP is excluded from LVM conversion, too
@@ -1826,7 +1826,7 @@ Clone() { #{{{
                     if ((s1 < s2)); then
                         lvcreate --yes -L"${lv_size%%.*}" -n "$lv_name" "$VG_SRC_NAME_CLONE"
                     else
-                        size=$(echo "$lv_size * $scale_factor" | bc)
+                        size=$(echo "scale=4; $lv_size * $scale_factor" | bc)
                         lvcreate --yes -L${size%%.*} -n "$lv_name" "$VG_SRC_NAME_CLONE"
                     fi
                 fi
@@ -1850,7 +1850,7 @@ Clone() { #{{{
                     lv_size=$(to_mbyte ${size}K) #TODO to_mbyte should be able to deal with floats
                     if ((s1 < s2)); then
                         (( vg_free < lv_size  )) && lv_size=$vg_free
-                        lvcreate --yes -L$lv_size -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE" || return 1
+                        echo "---> lvcreate --yes -L$lv_size -n ${TO_LVM[$sname]} $VG_SRC_NAME_CLONE"
                     else
                         lv_size=$(echo "scale=0; $lv_size * $scale_factor / 1" | bc)
                         (( vg_free < lv_size  )) && lv_size=$vg_free
