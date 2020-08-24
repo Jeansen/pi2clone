@@ -1848,14 +1848,9 @@ Clone() { #{{{
 
                 if [[ -n ${TO_LVM[$sname]} && $sname != $BOOT_PART ]] ; then
                     lv_size=$(to_mbyte ${size}K) #TODO to_mbyte should be able to deal with floats
-                    if ((s1 < s2)); then
-                        (( vg_free < lv_size  )) && lv_size=$vg_free
-                        echo "---> lvcreate --yes -L$lv_size -n ${TO_LVM[$sname]} $VG_SRC_NAME_CLONE"
-                    else
-                        lv_size=$(echo "scale=0; $lv_size * $scale_factor / 1" | bc)
-                        (( vg_free < lv_size  )) && lv_size=$vg_free
-                        lvcreate --yes -L$lv_size -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE" || return 1
-                    fi
+                    ((s1 > s2)) && lv_size=$(echo "scale=0; $lv_size * $scale_factor / 1" | bc)
+					(( vg_free < lv_size  )) && lv_size=$vg_free
+					lvcreate --yes -L$lv_size -n "${TO_LVM[$sname]}" "$VG_SRC_NAME_CLONE" || return 1
                 fi
             done
         }
