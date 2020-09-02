@@ -1468,6 +1468,7 @@ Cleanup() { #{{{
             if [[ -n $SRC_IMG ]]; then
                 vgchange -an ${VG_SRC_NAME}
                 qemu-nbd -d $SRC_NBD
+                rmmod nbd
             fi
 
             find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
