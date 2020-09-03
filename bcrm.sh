@@ -637,7 +637,6 @@ set_dest_uuids() { #{{{
     if [[ -b $DEST ]]; then
         [[ $IS_LVM == true ]] && vgchange -an $VG_SRC_NAME_CLONE
         [[ $IS_LVM == true ]] && vgchange -ay $VG_SRC_NAME_CLONE
-        udevadm settle
     fi
 
     local name kdev fstype uuid puuid type parttype mountpoint size e
@@ -2168,8 +2167,8 @@ Clone() { #{{{
                     read -r dev type <<<$(sfdisk -l -o Device,Type-UUID $DEST | grep ${ID_GPT_EFI^^})
                     mkfs -t vfat "$dev"
                 fi
-                pvcreate -ffy "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle
-                _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" && udevadm settle || exit_ 1 "LVM setup failed!"
+                pvcreate -ffy "/dev/mapper/$LUKS_LVM_NAME"
+                _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" || exit_ 1 "LVM setup failed!"
             else
                 disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
                 _lvm_setup "$DEST" || exit_ 1 "LVM setup failed!"
