@@ -50,6 +50,8 @@ declare CLONE_DATE=$(date '+%d%m%y')
 declare SNAP4CLONE='snap4clone'
 declare SALT=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 10)
 declare LUKS_LVM_NAME="${SALT}_${CLONE_DATE}"
+declare SRC_SOCKET=$(mktemp)
+declare DEST_SOCKET=$(mktemp)
 
 declare ID_GPT_LVM=e6d6d379-f507-44c2-a23c-238f2a3df928
 declare ID_GPT_EFI=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
@@ -1463,10 +1465,10 @@ Cleanup() { #{{{
             [[ $VG_SRC_NAME_CLONE && -b $DEST ]] && vgchange -an "$VG_SRC_NAME_CLONE"
             [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
 
-            [[ -n $DEST_IMG ]] && qemu-nbd -d $DEST_NBD
+            [[ -n $DEST_IMG ]] && nbd-client -d $DEST_NBD
             if [[ -n $SRC_IMG ]]; then
                 vgchange -an ${VG_SRC_NAME}
-                qemu-nbd -d $SRC_NBD
+                nbd-client -d $SRC_NBD
                 rmmod nbd
             fi
 
@@ -1475,6 +1477,7 @@ Cleanup() { #{{{
         fi
         systemctl --runtime unmask sleep.target hibernate.target suspend.target hybrid-sleep.target
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
+        flock -u 200
     } &>/dev/null
 
     #Check if system files have been changed for execution and restore
@@ -2459,7 +2462,7 @@ Main() { #{{{
 
     #Lock the script, only one instance is allowed to run at the same time!
     exec 200>"$PIDFILE"
-    flock -n 200 || exit_ 1 "Another instance with PID $pid is already running!"
+    flock -n 200 || exit_ 1 "Another instance is already running!"
     pid=$$
     echo $pid 1>&200
 
@@ -2698,7 +2701,8 @@ Main() { #{{{
     fi
 
     if [[ -n $SRC_IMG ]]; then
-        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG"; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
+        { qemu-nbd -f "$IMG_TYPE" --socket=$SRC_SOCKET "$SRC_IMG" --fork; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
+        nbd-client -b 512 -u $SRC_SOCKET $SRC_NBD
         SRC=$SRC_NBD
         sleep 3
     fi
@@ -2709,7 +2713,8 @@ Main() { #{{{
     if [[ -n $DEST_IMG ]]; then
         [[ ! -e $DEST_IMG ]] && { create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."; }
         chmod +rwx "$DEST_IMG"
-        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG"; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
+        { qemu-nbd -f "$IMG_TYPE" --socket=$DEST_SOCKET "$DEST_IMG" --fork; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
+        nbd-client -b 512 -u $DEST_SOCKET $DEST_NBD
         DEST=$DEST_NBD
         sleep 3
     fi
