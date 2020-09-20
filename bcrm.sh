@@ -2702,7 +2702,7 @@ Main() { #{{{
 
     if [[ -n $SRC_IMG ]]; then
         { qemu-nbd -f "$IMG_TYPE" --socket=$SRC_SOCKET "$SRC_IMG" --fork; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
-        nbd-client -b 512 -u $SRC_SOCKET $SRC_NBD
+        nbd-client -b 512 -u $SRC_SOCKET -s 300 $SRC_NBD
         SRC=$SRC_NBD
         sleep 3
     fi
@@ -2714,7 +2714,7 @@ Main() { #{{{
         [[ ! -e $DEST_IMG ]] && { create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."; }
         chmod +rwx "$DEST_IMG"
         { qemu-nbd -f "$IMG_TYPE" --socket=$DEST_SOCKET "$DEST_IMG" --fork; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
-        nbd-client -b 512 -u $DEST_SOCKET $DEST_NBD
+        nbd-client -b 512 -u $DEST_SOCKET -s 300 $DEST_NBD
         DEST=$DEST_NBD
         sleep 3
     fi
