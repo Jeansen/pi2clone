@@ -2055,7 +2055,7 @@ Clone() { #{{{
                 local lv_src_name=$(grep $sdev <<<"$lvs_data" | awk '{print $1}')
             fi
 
-            if [[ $stype == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
+            if [[ $stype == lvm && "${src_vg_free%%.*}" -ge "500" && -z $SRC_IMG ]]; then
                 local tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
                 lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
                 lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
