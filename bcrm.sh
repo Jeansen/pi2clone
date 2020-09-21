@@ -50,8 +50,6 @@ declare CLONE_DATE=$(date '+%d%m%y')
 declare SNAP4CLONE='snap4clone'
 declare SALT=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 10)
 declare LUKS_LVM_NAME="${SALT}_${CLONE_DATE}"
-declare SRC_SOCKET=$(mktemp)
-declare DEST_SOCKET=$(mktemp)
 
 declare ID_GPT_LVM=e6d6d379-f507-44c2-a23c-238f2a3df928
 declare ID_GPT_EFI=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
@@ -89,7 +87,7 @@ declare PVS=() VG_DISKS=() CHROOT_MOUNTS=()
 declare PKGS=() #Will be filled with a list of packages that will be needed, depending on given arguments
 declare SRCS_ORDER=() DESTS_ORDER=()
 
-declare SRC_IMG="" 
+declare SRC_IMG=""
 declare DEST_IMG=""
 declare IMG_TYPE=""
 declare IMG_SIZE=""
@@ -683,7 +681,7 @@ align_order() {
             IFS=: read -r sdev rest <<<${SRCS[$u]}
             if [[ -n $VG_SRC_NAME && $sdev =~ $VG_SRC_NAME ]]; then
                 snames[$sdev]=$u
-                for i in ${!SRCS_ORDER[@]}; do 
+                for i in ${!SRCS_ORDER[@]}; do
                     [[ ${SRCS_ORDER[$i]} == $u ]] && unset SRCS_ORDER[$i];
                 done
             fi
@@ -696,7 +694,7 @@ align_order() {
             IFS=: read -r sdev rest <<<${DESTS[$u]}
             if [[ -n $VG_SRC_NAME_CLONE && $sdev =~ $VG_SRC_NAME_CLONE ]]; then
                 dnames[$sdev]=$u
-                for i in ${!DESTS_ORDER[@]}; do 
+                for i in ${!DESTS_ORDER[@]}; do
                     [[ ${DESTS_ORDER[$i]} == $u ]] && unset DESTS_ORDER[$i];
                 done
             fi
@@ -798,7 +796,7 @@ pkg_install() { #{{{
     local mp="$1"
     local pkgs="$2"
     logmsg "pkg_install"
-    [[ -n ${pkgs// } ]] && { chroot "$mp" sh -c "apt-get install -y $pkgs" || return 1; } 
+    [[ -n ${pkgs// } ]] && { chroot "$mp" sh -c "apt-get install -y $pkgs" || return 1; }
     return 0
 } #}}}
 
@@ -1466,10 +1464,10 @@ Cleanup() { #{{{
             [[ $VG_SRC_NAME_CLONE && -b $DEST ]] && vgchange -an "$VG_SRC_NAME_CLONE"
             [[ $ENCRYPT_PWD ]] && cryptsetup close "/dev/mapper/$LUKS_LVM_NAME"
 
-            [[ -n $DEST_IMG ]] && nbd-client -d $DEST_NBD
+            [[ -n $DEST_IMG ]] && qemu-nbd -d $DEST_NBD
             if [[ -n $SRC_IMG ]]; then
                 vgchange -an ${VG_SRC_NAME}
-                nbd-client -d $SRC_NBD
+                qemu-nbd -d $SRC_NBD
                 rmmod nbd
             fi
 
@@ -2492,7 +2490,7 @@ Main() { #{{{
 
             ischroot || modprobe nbd max_part=16 || exit_ 1 "Cannot load nbd kernel module."
 
-            PKGS+=(qemu-img nbd-client)
+            PKGS+=(qemu-img)
             CREATE_LOOP_DEV=true
             shift 2; continue
             ;;
@@ -2509,7 +2507,7 @@ Main() { #{{{
 
             ischroot || modprobe nbd max_part=16 || exit_ 1 "Cannot load nbd kernel module."
 
-            PKGS+=(qemu-img nbd-client)
+            PKGS+=(qemu-img)
             CREATE_LOOP_DEV=true
             shift 2; continue
             ;;
@@ -2702,8 +2700,7 @@ Main() { #{{{
     fi
 
     if [[ -n $SRC_IMG ]]; then
-        { qemu-nbd -f "$IMG_TYPE" --socket=$SRC_SOCKET "$SRC_IMG" --fork; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
-        nbd-client -b 512 -u $SRC_SOCKET -s 300 $SRC_NBD
+        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $SRC_NBD "$SRC_IMG"; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
         SRC=$SRC_NBD
         sleep 3
     fi
@@ -2714,8 +2711,7 @@ Main() { #{{{
     if [[ -n $DEST_IMG ]]; then
         [[ ! -e $DEST_IMG ]] && { create_image "$DEST_IMG" "$IMG_TYPE" "$IMG_SIZE" || exit_ 1 "Image creation failed."; }
         chmod +rwx "$DEST_IMG"
-        { qemu-nbd -f "$IMG_TYPE" --socket=$DEST_SOCKET "$DEST_IMG" --fork; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
-        nbd-client -b 512 -u $DEST_SOCKET -s 300 $DEST_NBD
+        { qemu-nbd --cache=writeback -f "$IMG_TYPE" -c $DEST_NBD "$DEST_IMG"; } || exit_ 1 "QEMU Could not load image. Check $F_LOG for details."
         DEST=$DEST_NBD
         sleep 3
     fi
