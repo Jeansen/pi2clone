@@ -89,6 +89,7 @@ declare PVS=() VG_DISKS=() CHROOT_MOUNTS=()
 declare PKGS=() #Will be filled with a list of packages that will be needed, depending on given arguments
 declare SRCS_ORDER=() DESTS_ORDER=()
 
+declare SRC_IMG="" 
 declare DEST_IMG=""
 declare IMG_TYPE=""
 declare IMG_SIZE=""
@@ -1627,7 +1628,7 @@ To_file() { #{{{
             local lv_src_name=$(grep $sdev <<<"$lvs_data" | awk '{print $1}')
         fi
 
-        if [[ $type == lvm && "${src_vg_free%%.*}" -ge "500" ]]; then
+        if [[ $type == lvm && "${src_vg_free%%.*}" -ge "500" && -z $SRC_IMG ]]; then
             tdev="/dev/${VG_SRC_NAME}/$SNAP4CLONE"
             lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
             lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
@@ -2491,7 +2492,7 @@ Main() { #{{{
 
             ischroot || modprobe nbd max_part=16 || exit_ 1 "Cannot load nbd kernel module."
 
-            PKGS+=(qemu-img)
+            PKGS+=(qemu-img nbd-client)
             CREATE_LOOP_DEV=true
             shift 2; continue
             ;;
@@ -2508,7 +2509,7 @@ Main() { #{{{
 
             ischroot || modprobe nbd max_part=16 || exit_ 1 "Cannot load nbd kernel module."
 
-            PKGS+=(qemu-img)
+            PKGS+=(qemu-img nbd-client)
             CREATE_LOOP_DEV=true
             shift 2; continue
             ;;
