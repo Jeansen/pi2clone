@@ -591,7 +591,7 @@ mounts() { #{{{
                     local name kname uuid partuuid
                     while read -r dev mnt fs; do
                         if [[ ! ${fs// } =~ nfs|swap|udf ]]; then
-                            read -r name kname uuid partuuid <<<$(grep -iE "${dev//*=/}\s+" <<<"$ldata") #Ignore -real, -cow
+                            read -r name kname uuid partuuid <<<$(grep -iE "${dev//*=/}" <<<"$ldata") #Ignore -real, -cow
 
                             if [[ -n ${name// } ]]; then
                                 MOUNTS[$mnt]="${uuid}"
@@ -897,7 +897,9 @@ expand_disk() { #{{{
     local new_size
     local swap_size=0
     local pdata="$3"
-    local src_boot_size=$(echo "$pdata" | grep "$BOOT_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
+    local src_boot_size=0
+
+    [[ -n $BOOT_PART ]] && src_boot_size=$(echo "$pdata" | grep "$BOOT_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
     declare -n pdata_new=$4
 
     declare -A val_parts #Partitions with fixed sizes
@@ -2931,9 +2933,6 @@ Main() { #{{{
     fi)
 
     #Context already initialized, only when source is a disk is of interest here
-    if [[ -b $SRC && -z $BOOT_PART ]]; then
-        _find_boot 'BOOT_PART' || exit_ 1 "No boot partition found."
-    fi
 
     [[ $BOOT_SIZE -gt 0 && -z $BOOT_PART ]] && exit_ 1 "Boot is equal to root partition."
 
