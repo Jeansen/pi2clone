@@ -2934,6 +2934,10 @@ Main() { #{{{
 
     #Context already initialized, only when source is a disk is of interest here
 
+    if [[ -b $SRC && -z $BOOT_PART ]]; then
+        _find_boot 'BOOT_PART' #|| exit_ 1 "No bootartition found."
+    fi
+            
     [[ $BOOT_SIZE -gt 0 && -z $BOOT_PART ]] && exit_ 1 "Boot is equal to root partition."
 
     {
