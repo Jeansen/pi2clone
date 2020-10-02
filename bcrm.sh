@@ -897,9 +897,7 @@ expand_disk() { #{{{
     local new_size
     local swap_size=0
     local pdata="$3"
-    local src_boot_size=0
 
-    [[ -n $BOOT_PART ]] && src_boot_size=$(echo "$pdata" | grep "$BOOT_PART" | sed -E 's/.*size=\s*([0-9]*).*/\1/')
     declare -n pdata_new=$4
 
     declare -A val_parts #Partitions with fixed sizes
@@ -933,10 +931,15 @@ expand_disk() { #{{{
                 (-n $EFI_PART && $name == "$EFI_PART") ]]
             then
                 val_parts[$name]=${size%,*}
+                [[ -n $BOOT_PART && $name == "$BOOT_PART" && "$BOOT_SIZE" -gt 0  ]] &&
+                    val_parts[$name]=$(to_sector ${BOOT_SIZE}K)
+                [[ -n $SWAP_PART && $name == "$SWAP_PART" && "$SWAP_SIZE" -gt 0  ]] &&
+                    val_parts[$name]=$(to_sector ${SWAP_SIZE}K)
             else
                 var_parts[$name]=${size%,*}
                 ((n++))
             fi
+
         done < <(echo "$pdata" | grep '^/' | awk '{print $1,$6}')
     }
 
