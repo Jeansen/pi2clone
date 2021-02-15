@@ -805,6 +805,7 @@ create_rclocal() { #{{{
     logmsg "create_rclocal"
     mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
     printf '%s' '#! /usr/bin/env bash
+    systemctl stop ssh.service
     update-grub
     rm /etc/rc.local
     mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
@@ -1341,6 +1342,7 @@ create_image() { #{{{
         options="$options -o static=on"
         ;;
     esac
+    logmsg "qemu-img create -f $type $options $img $size" || return 1
     qemu-img create -f $type $options $img $size || return 1
 } #}}}
 #}}}
