@@ -137,6 +137,8 @@ declare SECTORS_SRC=0
 declare SECTORS_DEST=0
 declare SECTORS_SRC_USED=0
 declare VG_FREE_SIZE=0
+
+declare SYS_CHANGED=false #If source system has been changed, e.g. deactivated hibernation
 #}}}
 
 #}}}
@@ -1485,7 +1487,7 @@ Cleanup() { #{{{
             find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
             rmdir "$MNTPNT"
         fi
-        systemctl --runtime unmask sleep.target hibernate.target suspend.target hybrid-sleep.target
+        [[ $SYS_CHANGED == true ]] && systemctl --runtime unmask sleep.target hibernate.target suspend.target hybrid-sleep.target
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
         flock -u 200
     } &>/dev/null
@@ -2467,7 +2469,7 @@ Main() { #{{{
 
     eval set -- "$option"
 
-    [[ $1 == -h || $1 == --help || $args_count -eq 0 ]] && usage #Don't have to be root to get the usage info
+    [[ $args_count -eq 0 || "$*" =~ -h|--help ]] && usage #Don't have to be root to get the usage info
 
     #Force root
     [[ $(id -u) -ne 0 ]] && exec sudo "$0" "$@"
@@ -2492,7 +2494,7 @@ Main() { #{{{
     #Do not use /tmp! It will be excluded on backups!
     MNTPNT=$(mktemp -d -p /mnt) || exit_ 1 "Could not set temporary mountpoint."
 
-    systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target &>/dev/null
+    systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target &>/dev/null && SYS_CHANGED=true
 
     PKGS=()
     while true; do
