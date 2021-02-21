@@ -1527,7 +1527,7 @@ To_file() { #{{{
 
         [[ -z $snp ]] && snp="NOSNAPSHOT"
 
-        {
+        if [[ $IS_LVM == true ]]; then
             pvs --noheadings -o pv_name,vg_name,lv_active \
                 | grep 'active$' \
                 | sed -e 's/active$//;s/^\s*//' \
@@ -1545,11 +1545,11 @@ To_file() { #{{{
                 | grep 'active public.*' \
                 | sed -e 's/^\s*//; s/\s*$//' \
                 | grep -E "\b$VG_SRC_NAME\b"  >$F_LVS_LIST
+        fi
 
-            SECTORS_SRC="$(blockdev --getsz $SRC)"
-            ctx_set SECTORS_SRC
-            sfdisk -d "$SRC" >"$F_PART_TABLE"
-        }
+        SECTORS_SRC="$(blockdev --getsz $SRC)"
+        ctx_set SECTORS_SRC
+        sfdisk -d "$SRC" >"$F_PART_TABLE"
 
         sleep 3 #IMPORTANT !!! So changes by sfdisk can settle.
         #Otherwise resultes from lsblk might still show old values!
