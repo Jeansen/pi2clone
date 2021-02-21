@@ -832,7 +832,7 @@ create_m5dsums() { #{{{
     local file="$2"
     # find "$1" -type f \! -name '*.md5' -print0 | xargs -0 md5sum -b > "$1/$2"
     pushd "$dest" || return 1
-    find . -type f \! -name '*.md5' -print0 | parallel --no-notice -0 md5sum -b >"$file"
+    find . -type f \! -name '*.md5' \! -name '\.*' -print0 | parallel --no-notice -0 md5sum -b >"$file"
     popd || return 1
     validate_m5dsums "$dest" "$file" || return 1
 } #}}}
