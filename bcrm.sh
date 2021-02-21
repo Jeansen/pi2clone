@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 # shellcheck disable=SC2155,SC2153,SC2015,SC2094,SC2016,SC2034
 
-# Copyright (C) 2017-2019 Marcel Lautenbach {{{
+# Copyright (C) 2017-2021 Marcel Lautenbach {{{
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License asublished by
@@ -76,7 +76,7 @@ declare -A CONTEXT          #Values needed for backup/restore
 declare -A CHG_SYS_FILES    #Container for system files that needed to be changed during execution
                             #Key = original file path, Value = MD5sum
 
-declare -A MNTJRNL MOUNTS EXT_PARTS EXCLUDES CHOWN
+declare -A MNTJRNL MOUNTS
 declare -A SRC2DEST PSRC2PDEST NSRC2NDEST
 declare -A DEVICE_MAP
 
@@ -84,8 +84,10 @@ declare PVS=() VG_DISKS=() CHROOT_MOUNTS=()
 #}}}
 
 # FILLED BY OR BECAUSE OF PROGRAM ARGUMENTS ---------------------------------------------------------------------------{{{
+declare -A EXT_PARTS EXCLUDES CHOWN
+
 declare PKGS=() #Will be filled with a list of packages that will be needed, depending on given arguments
-declare SRCS_ORDER=() DESTS_ORDER=()
+declare SRCS_ORDER=() DESTS_ORDER=() SRC_EXCLUDES=()
 
 declare SRC_IMG=""
 declare DEST_IMG=""
@@ -208,6 +210,8 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "   " ""                        "would copy all content from /dev/sdX to /some/path."
     printf "  %-3s %-30s %s\n"   "   " ""                        "If /some/path does not exist, it will be created with the given user"
     printf "  %-3s %-30s %s\n"   "   " ""                        "and group ID, or root otherwise. With exclude you can filter folders and files."
+    printf "  %-3s %-30s %s\n"   "   " ""                        "This option can be specified multiple times."
+    printf "  %-3s %-30s %s\n"   "   " "--exclude-folder"        "Exclude a folder from source partition or backup."
     printf "  %-3s %-30s %s\n"   "   " ""                        "This option can be specified multiple times."
     printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
     printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
@@ -1579,16 +1583,22 @@ To_file() { #{{{
         )
     fi
 
-    local s g=0 mpnt  sdev fs spid ptype type used size
+    local s g=0 mpnt sdev fs spid ptype type used size
 
     _copy() { #{{{
         local sdev="$1" mpnt="$2" file="$3" excludes=()
         local cmd="tar --warning=none --atime-preserve=system --numeric-owner --xattrs --directory=$mpnt"
+        local ss=${MOUNTS[$sdev]}
+
+        local x
+        for x in ${SRC_EXCLUDES[@]}; do
+            [[ $x =~ ^$ss ]] && cmd="$cmd --exclude=.$x"
+        done
 
         [[ -n $4 ]] && excludes=(${EXCLUDES[$4]//:/ })
 
         if [[ -z $excludes ]]; then
-            cmd="$cmd --exclude=run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*"
+            cmd="$cmd --exclude=./run/* --exclude=./tmp/* --exclude=./proc/* --exclude=./dev/* --exclude=./sys/*"
         else
             for ex in ${excludes[@]}; do
                 cmd="$cmd --exclude=$ex"
@@ -2005,13 +2015,19 @@ Clone() { #{{{
         _copy() { #{{{
             local sdev=$1 ddev=$2 smpnt=$3 dmpnt=$4 excludes=() cmd
             [[ -n $5 ]] && excludes=(${EXCLUDES[$5]//:/ })
+            local ss=${MOUNTS[$sdev]}
+
+            local x
+            for x in ${SRC_EXCLUDES[@]}; do
+                [[ $ss =~ $x ]] && cmd="$cmd --exclude=./$x"
+            done
 
             if [[ -n $excludes ]]; then
                 for ex in ${excludes[@]}; do
-                    cmd="$cmd --exclude=/$ex"
+                    cmd="$cmd --exclude=./$ex"
                 done
             else
-                cmd="--exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/*"
+                cmd="--exclude=./run/* --exclude=./tmp/* --exclude=./proc/* --exclude=./dev/* --exclude=./sys/*"
             fi
 
             if [[ $INTERACTIVE == true ]]; then
@@ -2442,6 +2458,7 @@ Main() { #{{{
             all-to-lvm,
             disable-mount:,
             include-partition:,
+            exclude-folder:,
             check' \
         -n "$(basename "$0" \
         )" -- "$@")
@@ -2611,31 +2628,39 @@ Main() { #{{{
             PKGS+=(lvm)
             shift 1; continue
             ;;
+        '--exclude-folder')
+            [[ "$2" =~ ^/ ]] && SRC_EXCLUDES+=("$2") || exit_ 1 "Exclude folders must be absolute paths."
+            shift 2; continue
+            ;;
         '--include-partition')
-            local part mp fstype type user group excludes
-            for x in ${2//,/ }; do
-                read -r k v <<<"${x/=/ }"
-                if [[ -n $k && -n $v ]]; then
-                    [[ $k == user ]] && user=$v
-                    [[ $k == group ]] && group=$v
-                    [[ $k == part ]] && part=$v
-                    [[ $k == dir ]] && mp=$v
-                    excludes=$v
-                elif [[ -n $k ]]; then
-                    excludes=${excludes}:$k
-                fi
-            done
+            local excludes
+            {
+                local part mp fstype type user group
+                local x k v
+                for x in ${2//,/ }; do
+                    read -r k v <<<"${x/=/ }"
+                    if [[ -n $k && -n $v ]]; then
+                        [[ $k == user ]] && user=$v
+                        [[ $k == group ]] && group=$v
+                        [[ $k == part ]] && part=$v
+                        [[ $k == dir ]] && mp=$v
+                        excludes=$v
+                    elif [[ -n $k ]]; then
+                        excludes=${excludes}:$k
+                    fi
+                done
 
-            [[ -b $part ]] && read -r type fstype <<<$(lsblk -lpno type,fstype $part) || exit_ 2 "$part not a block device."
-            if [[ $type == part || -z $fstype ]]; then
-                [[ -n $user && $user =~ ^[0-9]+$ || -z $user ]] || exit_ 1 "Invalid user ID."
-                [[ -n $group && $group =~ ^[0-9]+$ || -z $group ]] || exit_ 1 "Invalid group ID."
-                EXT_PARTS[$mp]=$part
-                EXCLUDES[$mp]=$excludes
-                CHOWN[$mp]=$user:$group
-            else
-                exit_ 2 "$part is not a partition"
-            fi
+                [[ -b $part ]] && read -r type fstype <<<$(lsblk -lpno type,fstype $part) || exit_ 2 "$part not a block device."
+                if [[ $type == part || -z $fstype ]]; then
+                    [[ -n $user && $user =~ ^[0-9]+$ || -z $user ]] || exit_ 1 "Invalid user ID."
+                    [[ -n $group && $group =~ ^[0-9]+$ || -z $group ]] || exit_ 1 "Invalid group ID."
+                    EXT_PARTS[$mp]=$part
+                    EXCLUDES[$mp]=$excludes
+                    CHOWN[$mp]=$user:$group
+                else
+                    exit_ 2 "$part is not a partition"
+                fi
+            }
             shift 2; continue
             ;;
         '--to-lvm')
@@ -2775,7 +2800,7 @@ Main() { #{{{
                 grep "^$part/*\$" -q < <(lsblk -lnpo name "$SRC") && exit_ 2 "Cannot include partition ${part}. It is part of the source device ${SRC}."
             fi
             if [[ -b $DEST ]]; then
-                grep "^$part/*\$" -q < <(lsblk -lnpo name "$DEST") && exit_ 2 "Cannot include partition ${part}. It is part of the source device ${DEST}."
+                grep "^$part/*\$" -q < <(lsblk -lnpo name "$DEST") && exit_ 2 "Cannot include partition ${part}. It is part of the destination device ${DEST}."
             fi
         done
     }
