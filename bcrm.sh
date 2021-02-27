@@ -44,6 +44,7 @@ declare BACKUP_FOLDER=/tmp/bcrm/backup
 declare SCRIPTNAME=$(basename "$0")
 declare SCRIPTPATH=$(dirname "$0")
 declare PIDFILE="/var/run/$SCRIPTNAME"
+declare ROOT_DISK=$(lsblk -lpo pkname,mountpoint | grep '\s/$' | awk '{print $1}')
 declare SRC_NBD=/dev/nbd0
 declare DEST_NBD=/dev/nbd1
 declare CLONE_DATE=$(date '+%d%m%y')
@@ -139,6 +140,7 @@ declare SECTORS_SRC_USED=0
 declare VG_FREE_SIZE=0
 
 declare SYS_CHANGED=false #If source system has been changed, e.g. deactivated hibernation
+declare LIVE_CHECKSUMS=true
 #}}}
 
 #}}}
@@ -239,6 +241,11 @@ usage() { #{{{
     printf "  %-7s %s\n"       "vmdk"   "VMware"
     printf "  %-7s %s\n\n\n"   "vhdx"   "Hyper-V"
 
+    printf "\nThe following log files are available:\n\n"
+    printf "  %-40s %s\n"       "/tmp/bcrm.log"    	  			 			"General procelain log fiile."
+    printf "  %-40s %s\n"       "/tmp/bcrm.<partition>.md5.log"		    	"Full log created from md5sum (requires -c)"
+    printf "  %-40s %s\n"       "/tmp/bcrm.<partition>.md5.failed.log"    	"Only files with failed checksum (requires -c)."
+
     exit_ 1
 } #}}}
 
@@ -258,11 +265,12 @@ message() { #{{{
     clr_yes=$(tput setaf 2)
     clor_no=$(tput setaf 1)
     clor_info=$(tput setaf 6)
+    clor_warn=$(tput setaf 3)
     clr_rmso=$(tput sgr0)
 
     exec 1>&3 #restore stdout
     #prepare
-    while getopts ':inucyt:' option; do
+    while getopts ':iwnucyt:' option; do
         case "$option" in
         t)
             text=" $OPTARG"
@@ -275,15 +283,17 @@ message() { #{{{
             status="${clor_no}✘${clr_rmso}"
             tput rc
             ;;
+        w)
+            status="${clor_warn}${clr_rmso}"
+            ;;
         i)
             status="${clor_info}i${clr_rmso}"
-            tput rc
             ;;
         u)
             update=true
             ;;
         c)
-            status="${clor_current}➤${clr_rmso}"
+            status="${clor_current}${clr_rmso}"
             tput sc
             ;;
         :)
@@ -1592,15 +1602,17 @@ To_file() { #{{{
         local cmd="tar --warning=none --atime-preserve=system --numeric-owner --xattrs --directory=$mpnt"
         local ss=${MOUNTS[$sdev]}
 
-        local x
+        local du_excl tar_excl x
         for x in ${SRC_EXCLUDES[@]}; do
-            [[ $x =~ ^$ss ]] && cmd="$cmd --exclude=.$x"
+            [[ $x =~ ^$ss ]] && 
+                tar_excl="$tar_excl --exclude=.$x"
+                du_excl="$du_excl --exclude=.$x"
         done
 
         [[ -n $4 ]] && excludes=(${EXCLUDES[$4]//:/ })
 
         if [[ -z $excludes ]]; then
-            cmd="$cmd --exclude=./run/* --exclude=./tmp/* --exclude=./proc/* --exclude=./dev/* --exclude=./sys/*"
+            cmd="$cmd $tar_excl --exclude=./run/* --exclude=./tmp/* --exclude=./proc/* --exclude=./dev/* --exclude=./sys/*"
         else
             for ex in ${excludes[@]}; do
                 cmd="$cmd --exclude=$ex"
@@ -1609,7 +1621,7 @@ To_file() { #{{{
 
         if [[ $INTERACTIVE == true ]]; then
             message -u -c -t "Creating backup for $sdev [ scan ]"
-            local size=$(du --bytes --exclude=/run/* --exclude=/tmp/* --exclude=/proc/* --exclude=/dev/* --exclude=/sys/* -s $mpnt | awk '{print $1}')
+            local size=$(cd $mpnt; du --bytes $du_excl --exclude=./run --exclude=./tmp --exclude=./proc --exclude=./dev --exclude=./sys -s $mpnt | awk '{print $1}')
             if [[ $SPLIT == true ]]; then
                 cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
             else
@@ -1630,6 +1642,20 @@ To_file() { #{{{
                 cmd="$cmd -Scpf $file ."
             fi
             eval "$cmd"
+
+            if [[ LIVE_CHECKSUMS == true ]]; then
+            {
+                logmsg "Creating Checksums for backup of $sdev"
+                path="$(dirname $(readlink -f $file))"
+                tar -tf $file >> "$file.list"
+                ( 
+                    cd "$mpnt" 
+                    while read -r l; do 
+                        [[ -f $l ]] && md5sum "$l" >> "$path/${file}.md5" 
+                    done < "$path/${file}.list"
+                )
+            }
+            fi
         fi
         message -y
         g=$((g + 1))
@@ -1650,6 +1676,10 @@ To_file() { #{{{
             lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null #Just to be sure
             lvcreate -l100%FREE -s -n $SNAP4CLONE "${VG_SRC_NAME}/$lv_src_name"
         else
+            if [[ $type == lvm && "${src_vg_free%%.*}" -lt "500" && -z $SRC_IMG ]]; then
+                message -w -t "No snapshot for cloning created."
+                [[ $IS_CHECKSUM == true  ]] && message -w -t "Integrity checks disabled."
+            fi
             [[ -z ${mountpoint// } ]] && tdev="$sdev" || tdev="$mountpoint"
         fi
 
@@ -1949,8 +1979,7 @@ Clone() { #{{{
         logmsg "[ Clone ] _from_file"
         local files=()
         pushd "$SRC" >/dev/null || return 1
-
-        files=([0-9]*)
+        files=($(< <(printf "%s\n" [0-9]* | grep -vE '(md5|list)$')))
 
         #Now, we are ready to restore files from previous backup images
         local file mpnt i uuid puuid fs type sused dev mnt dir ddev dfs dpid dptype dtype davail user group o_user o_group
@@ -1959,6 +1988,7 @@ Clone() { #{{{
             IFS=: read -r ddev dfs dpid dptype dtype davail <<<"${DESTS[${SRC2DEST[$uuid]}]}"
             dir=${dir//_//}
             mnt=${mnt//_//}
+            dev=${dev//_//}
 
             if [[ -n $ddev ]]; then
                 mount_ "$ddev" && { mpnt=$(get_mount $ddev) || exit_ 1 "Could not find mount journal entry for $ddev. Aborting!"; }
@@ -1985,12 +2015,12 @@ Clone() { #{{{
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     while read -r e; do
                         [[ $e -ge 100 ]] && e=100
-                        message -u -c -t "Restoring ${dev//_//} ($mnt) to $ddev [ $(printf '%02d%%' $e) ]"
+                        message -u -c -t "Restoring $dev ($mnt) to $ddev [ $(printf '%02d%%' $e) ]"
                         #Note that with pv stderr holds the current percentage value!
                     done < <((eval "$cmd") 2>&1)
-                    message -u -c -t "Restoring ${dev//_//} ($mnt) to $ddev [ $(printf '%02d%%' 100) ]"
+                    message -u -c -t "Restoring $dev ($mnt) to $ddev [ $(printf '%02d%%' 100) ]"
                 else
-                    message -c -t "Restoring ${dev//_//} ($mnt) to $ddev"
+                    message -c -t "Restoring $dev ($mnt) to $ddev"
                     cmd="$cmd < ${SRC}/${file}"
                     [[ $fs == vfat ]] && cmd="fakeroot $cmd"
                     eval "$cmd"
@@ -2001,6 +2031,16 @@ Clone() { #{{{
                 if [[ -n $dir ]]; then
                     chown ${user:-$o_user} $mpnt
                     chgrp ${group:-$o_group} $mpnt
+                fi
+
+                if [[ $IS_CHECKSUM == true ]]; then
+                    logmsg "Validating Checksums for restored target $dev"
+                    { 
+                        local flog=/tmp/bcrm.${dev//\//_}.md5.failed.log
+                        local log=/tmp/bcrm.${dev//\//_}.md5.log
+                        sync && md5sum -c "$SRC/${file}.md5" > $log || { grep 'FAILED$' $log >> $flog &&
+                        exit_ 9 "Validation of target files for $dev <-> $ddev failed."; }
+                    }
                 fi
 
                 popd >/dev/null || return 1
@@ -2198,7 +2238,7 @@ Clone() { #{{{
                 _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" || exit_ 1 "LVM setup failed!"
             else
                 disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
-                _lvm_setup "$DEST" || exit_ 1 "LVM setup failed!"
+                [[ $IS_LVM == true ]] && { _lvm_setup "$DEST" || exit_ 1 "LVM setup failed!"; }
                 sleep 3
             fi
         }
@@ -2475,7 +2515,7 @@ Main() { #{{{
     [[ $(id -u) -ne 0 ]] && exec sudo "$0" "$@"
 
     echo >"$F_LOG"
-    { hash pv && INTERACTIVE=true; } || message -i -t "No progress will be shown. Consider installing package: pv"
+    { hash pv &>/dev/null && INTERACTIVE=true; } || message -i -t "No progress will be shown. Consider installing package: pv"
 
     SYS_HAS_EFI=$([[ -d /sys/firmware/efi ]] && echo true || echo false)
 
@@ -2900,7 +2940,7 @@ Main() { #{{{
         done
     }
 
-    VG_SRC_NAME=($(awk '{print $2}' < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sort -u))
+    VG_SRC_NAME=($(awk '{print $2}' < <(if [[ -d $SRC && $IS_LVM == true ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name | grep "$SRC"; fi) | sort -u))
 
     if [[ -z $VG_SRC_NAME && $HAS_LUKS == true ]]; then
         luks=$(grep -q "$SRC" < <(dmsetup deps -o devname) | awk '{print $1}' | tr -d ':')
@@ -2912,13 +2952,15 @@ Main() { #{{{
     if [[ -z $VG_SRC_NAME ]]; then
         while read -r e g; do
             grep -q ${SRC##*/} < <(dmsetup deps -o devname | sort -u | sed 's/.*(\(\w*\).*/\1/g') && VG_SRC_NAME=$g
-        done < <(if [[ -d $SRC ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name; fi)
+        done < <(if [[ -d $SRC && $IS_LVM == true ]]; then cat "$SRC/$F_PVS_LIST"; else pvs --noheadings -o pv_name,vg_name; fi)
     else
         vg_disks "$VG_SRC_NAME" "VG_DISKS" && IS_LVM=true
         if [[ -b $SRC ]] && grep -q 'LVM2_member' < <(lsblk -lpo fstype $SRC); then
             grep -q lvm < <(lsblk -lpo type $SRC) || exit_ 1 "Found LVM, but LVs have not been activated. Did you forget to run 'vgchange -ay $VG_SRC_NAME' ?"
         fi
     fi
+
+    [[ $SRC == $ROOT_DISK && $IS_LVM == false && $IS_CHECKSUM == true ]] && LIVE_CHECKSUMS=false && message -w -t "No LVM system detected. File integrity checks disabled."
 
     [[ $ALL_TO_LVM == true && -z $VG_SRC_NAME && -z $VG_SRC_NAME_CLONE ]] && exit_ 1 "You need to provide a VG name when convertig a standard disk to LVM."
 
@@ -2983,7 +3025,7 @@ Main() { #{{{
 
     #TODO avoid return values and use exit_ instead?
     #main
-    echo_ "Backup started at $(date)"
+    message -i -t "Backup started at $(date)"
     if [[ -b $SRC && -b $DEST ]]; then
         Clone || exit_ 1
     elif [[ -d "$SRC" && -b $DEST ]]; then
@@ -2991,7 +3033,7 @@ Main() { #{{{
     elif [[ -b "$SRC" && -d $DEST ]]; then
         To_file || exit_ 1
     fi
-    echo_ "Backup finished at $(date)"
+    message -i -t "Backup finished at $(date)"
 } #}}}
 
 bash -n $(readlink -f $0) && Main "$@" #self check and run
