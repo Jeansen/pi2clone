@@ -117,6 +117,7 @@ declare LVM_EXPAND_BY=0 #How much % of free space to use from a VG, e.g. when a 
 #}}}
 
 # CHECKS FILLED BY MAIN -----------------------------------------------------------------------------------------------{{{
+declare -A PARAMS=() #All arguments and their (default) values passed via CLI.
 declare DISABLED_MOUNTS=()
 declare -A TO_LVM=()
 declare VG_SRC_NAME=""
@@ -2537,149 +2538,139 @@ Main() { #{{{
     systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target &>/dev/null && SYS_CHANGED=true
 
     PKGS=()
-    while true; do
-        case "$1" in
+
+
+    while (( $# )); do
+        ! [[ $1 =~ ^- ]] && exit_ 1 "Invalid argument $1"
+        [[ $1 == -- ]] && break
+        if [[ $1 =~ ^- && $2 =~ ^- ]]; then
+            PARAMS["$1"]=true
+            shift
+        else
+            PARAMS["$1"]="$2"
+            shift 2
+        fi
+    done
+
+    local k=
+    for k in ${!PARAMS[@]}; do
+        case "$k" in
         '-h' | '--help')
             usage
-            shift 1; continue
             ;;
         '-s' | '--source')
-            SRC=$(readlink -e "$2") || exit_ 1 "Specified source $2 does not exist!"
-            shift 2; continue
+            SRC=$(readlink -e "${PARAMS[$k]}") || exit_ 1 "Specified source ${PARAMS[$k]} does not exist!"
+            ;;
+        '-d' | '--destination')
+            DEST=$(readlink -e "${PARAMS[$k]}") || exit_ 1 "Specified destination ${PARAMS[$k]} does not exist!"
             ;;
         '--source-image')
-            read -r SRC_IMG IMG_TYPE <<<"${2//:/ }"
+            read -r SRC_IMG IMG_TYPE <<<"${PARAMS[$k]//:/ }"
 
             [[ -n $SRC_IMG && -z $IMG_TYPE ]] && exit_ 1 "Missing type attribute"
-            [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $1 $2"
+            [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $k ${PARAMS[$k]}"
             [[ ! -e "$SRC_IMG" ]] && exit_ 1 "Specified image file does not exists."
 
             ischroot || modprobe nbd max_part=16 || exit_ 1 "Cannot load nbd kernel module."
 
             PKGS+=(qemu-img)
             CREATE_LOOP_DEV=true
-            shift 2; continue
             ;;
         '--destination-image')
-            read -r DEST_IMG IMG_TYPE IMG_SIZE <<<"${2//:/ }"
+            read -r DEST_IMG IMG_TYPE IMG_SIZE <<<"${{PARAMS[$k]//:/ }"
 
             [[ -n $DEST_IMG && -z $IMG_TYPE ]] && exit_ 1 "Missing type attribute"
-            [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $1 $2"
+            [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $k ${PARAMS[$k]}"
             [[ ! -e "$DEST_IMG" && -z $IMG_SIZE ]] && exit_ 1 "Specified image file does not exists."
 
             if [[ -n $DEST_IMG && -n $IMG_SIZE ]]; then
-                validate_size "$IMG_SIZE" || exit_ 2 "Invalid size attribute in $1 $2"
+                validate_size "$IMG_SIZE" || exit_ 2 "Invalid size attribute in $k ${PARAMS[$k]}"
             fi
 
             ischroot || modprobe nbd max_part=16 || exit_ 1 "Cannot load nbd kernel module."
 
             PKGS+=(qemu-img)
             CREATE_LOOP_DEV=true
-            shift 2; continue
-            ;;
-        '-d' | '--destination')
-            DEST=$(readlink -e "$2") || exit_ 1 "Specified destination $2 does not exist!"
-            shift 2; continue
             ;;
         '-n' | '--new-vg-name')
-            VG_SRC_NAME_CLONE="$2"
+            VG_SRC_NAME_CLONE="${PARAMS[$k]}"
             _is_valid_lv_name $VG_SRC_NAME_CLONE || exit_ 1 "Valid characters for VG names are: 'a-z A-Z 0-9 + _ . -'. VG names cannot begin with a hyphen."
-            shift 2; continue
             ;;
         '-e' | '--encrypt-with-password')
-            ENCRYPT_PWD="$2"
+            ENCRYPT_PWD="${PARAMS[$k]}"
             [[ -z "${ENCRYPT_PWD// }" ]] && exit_ 2 "Invalid password."
             PKGS+=(cryptsetup)
-            shift 2; continue
             ;;
         '-H' | '--hostname')
-            HOST_NAME="$2"
-            shift 2; continue
+            HOST_NAME="${PARAMS[$k]}"
             ;;
         '-u' | '--make-uefi')
             UEFI=true;
-            shift 1; continue
             ;;
         '-p' | '--use-all-pvs')
             PVALL=true
-            shift 1; continue
             ;;
         '-q' | '--quiet')
             exec 3>&-
             exec 4>&-
-            shift 1; continue
             ;;
         '--split')
             SPLIT=true;
-            shift 1; continue
             ;;
         '-c' | '--check')
             IS_CHECKSUM=true
             PKGS+=(parallel)
-            shift 1; continue
             ;;
         '-z' | '--compress')
             export XZ_OPT=-4T0
             PKGS+=(xz)
-            shift 1; continue
             ;;
         '-m' | '--resize-threshold')
-            { validate_size "$2" && MIN_RESIZE=$(to_mbyte "$2"); } || exit_ 2 "Invalid size specified.
+            { validate_size "${PARAMS[$k]}" && MIN_RESIZE=$(to_mbyte "${PARAMS[$k]}"); } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
-            shift 2; continue
             ;;
         '-w' | '--swap-size')
-            { validate_size "$2" && SWAP_SIZE=$(to_kbyte "$2"); } || exit_ 2 "Invalid size specified.
+            { validate_size "${PARAMS[$k]}" && SWAP_SIZE=$(to_kbyte "${PARAMS[$k]}"); } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
-            shift 2; continue
             ;;
         '-b' | '--boot-size')
-            { validate_size "$2" && BOOT_SIZE=$(to_kbyte "$2"); } || exit_ 2 "Invalid size specified.
+            { validate_size "${PARAMS[$k]}" && BOOT_SIZE=$(to_kbyte "${PARAMS[$k]}"); } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
-            shift 2; continue
             ;;
         '--lvm-expand')
-            read -r LVM_EXPAND LVM_EXPAND_BY <<<"${2/:/ }"
-            [[ "${LVM_EXPAND_BY:-100}" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $1 $2"
-            shift 2; continue
+            read -r LVM_EXPAND LVM_EXPAND_BY <<<"${{PARAMS[$k]/:/ }"
+            [[ "${LVM_EXPAND_BY:-100}" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $k ${PARAMS[$k]}"
             ;;
         '--vg-free-size')
-            { validate_size "$2" && VG_FREE_SIZE=$(to_mbyte "$2"); } || exit_ 2 "Invalid size specified.
+            { validate_size "$2" && VG_FREE_SIZE=$(to_mbyte "${PARAMS[$k]}"); } || exit_ 2 "Invalid size specified.
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
-            shift 2; continue
             ;;
         '--remove-pkgs')
-            REMOVE_PKGS=$2
-            shift 2; continue
+            REMOVE_PKGS=${PARAMS[$k]}
             ;;
         '--schroot')
             PKGS+=(schroot debootstrap)
             SCHROOT=true;
-            shift 1; continue
             ;;
         '--disable-mount')
-            DISABLED_MOUNTS+=("$2")
-            shift 2; continue
+            DISABLED_MOUNTS+=("${PARAMS[$k]}")
             ;;
         '--no-cleanup')
             IS_CLEANUP=false
-            shift 1; continue
             ;;
         '--all-to-lvm')
             ALL_TO_LVM=true
             PKGS+=(lvm)
-            shift 1; continue
             ;;
         '--exclude-folder')
-            [[ "$2" =~ ^/ ]] && SRC_EXCLUDES+=("$2") || exit_ 1 "Exclude folders must be absolute paths."
-            shift 2; continue
+            [[ "${PARAMS[$k]}" =~ ^/ ]] && SRC_EXCLUDES+=("${PARAMS[$k]}") || exit_ 1 "Exclude folders must be absolute paths."
             ;;
         '--include-partition')
             local excludes
             {
                 local part mp fstype type user group
                 local x k v
-                for x in ${2//,/ }; do
+                for x in ${{PARAMS[$k]//,/ }; do
                     read -r k v <<<"${x/=/ }"
                     if [[ -n $k && -n $v ]]; then
                         [[ $k == user ]] && user=$v
@@ -2703,12 +2694,11 @@ Main() { #{{{
                     exit_ 2 "$part is not a partition"
                 fi
             }
-            shift 2; continue
             ;;
         '--to-lvm')
             {
                 local k v
-                read -r k v <<<"${2/:/ }"
+                read -r k v <<<"${{PARAMS[$k]/:/ }"
                 [[ -z $v ]] && exit_ 1 "Missing LV name"
                 if _is_valid_lv_name $v; then
                     [[ -n ${TO_LVM[$k]} ]] && exit_ 1 "$k already specified. Duplicate parameters?"
@@ -2718,10 +2708,9 @@ Main() { #{{{
                 fi
                 PKGS+=(lvm)
             }
-            shift 2; continue
             ;;
         '--')
-            shift; break
+            break
             ;;
         *)
             usage
