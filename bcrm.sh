@@ -1500,7 +1500,10 @@ Cleanup() { #{{{
             find "$MNTPNT" -xdev -depth -type d -empty ! -exec mountpoint -q {} \; -exec rmdir {} \;
             rmdir "$MNTPNT"
         fi
-        [[ $SYS_CHANGED == true ]] && systemctl --runtime unmask sleep.target hibernate.target suspend.target hybrid-sleep.target
+        if [[ $SYS_CHANGED == true ]]; then
+            systemctl --runtime unmask sleep.target hibernate.target suspend.target hybrid-sleep.target
+            message -i -t "Re-enabling previously deactived power management settings."
+        fi
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
         flock -u 200
     } &>/dev/null
@@ -2725,6 +2728,7 @@ Main() { #{{{
     #Do not use /tmp! It will be excluded on backups!
     MNTPNT=$(mktemp -d -p /mnt) || exit_ 1 "Could not set temporary mountpoint."
 
+    message -i -t "Temporarily disabling power management settings."
     systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target &>/dev/null && SYS_CHANGED=true
 
     grep -q 'LVM2_member' < <([[ -d $SRC ]] && cat "$SRC/$F_PART_LIST" || lsblk -o FSTYPE "$SRC") && PKGS+=(lvm)
