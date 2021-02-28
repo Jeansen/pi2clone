@@ -27,6 +27,7 @@ set -o pipefail
 #}}}
 
 # CONSTANTS -----------------------------------------------------------------------------------------------------------{{{
+declare VERSION="$(git describe)"
 declare F_SCHROOT_CONFIG='/etc/schroot/chroot.d/bcrm'
 declare F_SCHROOT='bcrm.stretch.tar.xz'
 declare F_PART_LIST='part_list'
@@ -218,8 +219,9 @@ usage() { #{{{
     printf "  %-3s %-30s %s\n"   "   " ""                        "This option can be specified multiple times."
     printf "  %-3s %-30s %s\n"   "   " "--exclude-folder"        "Exclude a folder from source partition or backup."
     printf "  %-3s %-30s %s\n"   "   " ""                        "This option can be specified multiple times."
-    printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output"
-    printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Show this help text"
+    printf "  %-3s %-30s %s\n"   "-q," "--quiet"                 "Quiet, do not show any output."
+    printf "  %-3s %-30s %s\n"   "-h," "--help"                  "Display this help and exit."
+    printf "  %-3s %-30s %s\n"   "-v," "--version"               "Show version information for this instance of bcrm and exit."
 
     printf "\n\nADVANCED OPTIONS"
     printf "\n----------------\n\n"
@@ -409,7 +411,7 @@ ctx_save() { #{{{
     done
     sed -i '/^\s*$/d' "$DEST/$F_CONTEXT"
     echo "# Backup date: $(date)" >>"$DEST/$F_CONTEXT"
-    echo "# Version used: $(git log -1 --format="%H")" >>"$DEST/$F_CONTEXT"
+    echo "# Version used: $VERSION" >>"$DEST/$F_CONTEXT"
 } #}}}
 #}}}
 
@@ -2474,9 +2476,10 @@ Main() { #{{{
     { >&4; } 2<> /dev/null || exit_ 9
 
     option=$(getopt \
-        -o 'huqczps:d:e:n:m:w:b:H:' \
+        -o 'hvuqczps:d:e:n:m:w:b:H:' \
         --long '
             help,
+            version,
             hostname:,
             remove-pkgs:,
             encrypt-with-password:,
@@ -2516,7 +2519,6 @@ Main() { #{{{
     [[ $(id -u) -ne 0 ]] && exec sudo "$0" "$@"
 
     echo >"$F_LOG"
-    { hash pv &>/dev/null && INTERACTIVE=true; } || message -i -t "No progress will be shown. Consider installing package: pv"
 
     SYS_HAS_EFI=$([[ -d /sys/firmware/efi ]] && echo true || echo false)
 
@@ -2532,10 +2534,6 @@ Main() { #{{{
     pid=$$
     echo $pid 1>&200
 
-    #Do not use /tmp! It will be excluded on backups!
-    MNTPNT=$(mktemp -d -p /mnt) || exit_ 1 "Could not set temporary mountpoint."
-
-    systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target &>/dev/null && SYS_CHANGED=true
 
     PKGS=()
 
@@ -2557,6 +2555,10 @@ Main() { #{{{
         case "$k" in
         '-h' | '--help')
             usage
+            ;;
+        '-v' | '--version')
+            echo_ "$VERSION"
+            exit_ 0
             ;;
         '-s' | '--source')
             SRC=$(readlink -e "${PARAMS[$k]}") || exit_ 1 "Specified source ${PARAMS[$k]} does not exist!"
@@ -2717,6 +2719,13 @@ Main() { #{{{
             ;;
         esac
     done
+
+    { hash pv &>/dev/null && INTERACTIVE=true; } || message -i -t "No progress will be shown. Consider installing package: pv"
+
+    #Do not use /tmp! It will be excluded on backups!
+    MNTPNT=$(mktemp -d -p /mnt) || exit_ 1 "Could not set temporary mountpoint."
+
+    systemctl --runtime mask sleep.target hibernate.target suspend.target hybrid-sleep.target &>/dev/null && SYS_CHANGED=true
 
     grep -q 'LVM2_member' < <([[ -d $SRC ]] && cat "$SRC/$F_PART_LIST" || lsblk -o FSTYPE "$SRC") && PKGS+=(lvm)
 
