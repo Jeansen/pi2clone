@@ -38,7 +38,8 @@ declare F_PART_TABLE='part_table'
 declare F_CHESUM='check.md5'
 declare F_CONTEXT='context'
 declare F_DEVICE_MAP='device_map'
-declare F_LOG='/tmp/bcrm.log'
+declare LOG_PATH='/tmp'
+declare F_LOG="$LOG_PATH/bcrm.log"
 
 declare SCHROOT_HOME=/tmp/dbs
 declare BACKUP_FOLDER=/tmp/bcrm/backup
@@ -52,6 +53,7 @@ declare CLONE_DATE=$(date '+%d%m%y')
 declare SNAP4CLONE='snap4clone'
 declare SALT=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 10)
 declare LUKS_LVM_NAME="${SALT}_${CLONE_DATE}"
+declare FIFO='/tmp/bcrm.fifo'
 
 declare ID_GPT_LVM=e6d6d379-f507-44c2-a23c-238f2a3df928
 declare ID_GPT_EFI=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
@@ -246,8 +248,10 @@ usage() { #{{{
 
     printf "\nThe following log files are available:\n\n"
     printf "  %-40s %s\n"       "/tmp/bcrm.log"    	  			 			"General procelain log fiile."
-    printf "  %-40s %s\n"       "/tmp/bcrm.<partition>.md5.log"		    	"Full log created from md5sum (requires -c)"
+    printf "  %-40s %s\n"       "/tmp/bcrm.<partition>.md5.log"		    	"Full log created from md5sum (requires -c)."
     printf "  %-40s %s\n"       "/tmp/bcrm.<partition>.md5.failed.log"    	"Only files with failed checksum (requires -c)."
+    printf "  %-40s %s\n"       "/tmp/bcrm.<partition>.log"    	            "Log file filled by tar when creating or restoring a backup."
+    printf "  %-40s %s\n"       "/tmp/bcrm.<src-part>__<dest-part>.log"     "Log file filled by rsync during clone."
 
     exit_ 1
 } #}}}
@@ -1505,6 +1509,7 @@ Cleanup() { #{{{
             message -i -t "Re-enabling previously deactived power management settings."
         fi
         lvremove -f "${VG_SRC_NAME}/$SNAP4CLONE" &>/dev/null
+        rm "$FIFO"
         flock -u 200
     } &>/dev/null
 
@@ -1608,60 +1613,63 @@ To_file() { #{{{
         local cmd="tar --warning=none --atime-preserve=system --numeric-owner --xattrs --directory=$mpnt"
         local ss=${MOUNTS[$sdev]}
 
-        local du_excl tar_excl x
+        local x excl="--exclude='./run/*' --exclude='./tmp/*' --exclude='./proc/*' --exclude='./dev/*' --exclude='./sys/*'"
         for x in ${SRC_EXCLUDES[@]}; do
-            [[ $x =~ ^$ss ]] && 
-                tar_excl="$tar_excl --exclude=.$x"
-                du_excl="$du_excl --exclude=.$x"
+            [[ $x =~ ^$ss ]] && excl="$excl --exclude=.$x"
         done
 
         [[ -n $4 ]] && excludes=(${EXCLUDES[$4]//:/ })
 
         if [[ -z $excludes ]]; then
-            cmd="$cmd $tar_excl --exclude=./run/* --exclude=./tmp/* --exclude=./proc/* --exclude=./dev/* --exclude=./sys/*"
+            cmd="$cmd $excl "
         else
             for ex in ${excludes[@]}; do
-                cmd="$cmd --exclude=$ex"
+                cmd="$cmd --exclude='$ex'"
             done
         fi
 
         if [[ $INTERACTIVE == true ]]; then
             message -u -c -t "Creating backup for $sdev [ scan ]"
-            local size=$(cd $mpnt; du --bytes $du_excl --exclude=./run --exclude=./tmp --exclude=./proc --exclude=./dev --exclude=./sys -s $mpnt | awk '{print $1}')
+            local size=$(cd $mpnt; du --bytes $excl -s -x $mpnt | awk '{print $1}')
             if [[ $SPLIT == true ]]; then
-                cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
+                cmd="$cmd -Scpvf - . 2>$LOG_PATH/bcrm.${file}.log | pv --interval 0.5 --numeric -s $size | split -b 1G - $file"
             else
-                cmd="$cmd -Scpf - . | pv --interval 0.5 --numeric -s $size > $file"
+                cmd="$cmd -Scpvf - . 2>$LOG_PATH/bcrm.${file}.log | pv --interval 0.5 --numeric -s $size > $file"
             fi
 
-            local e
+            local e= 
+            mkfifo "$FIFO"
+            {
+                eval "$cmd" 2>"$FIFO"
+            } &
+
             while read -r e; do
                 [[ $e -ge 100 ]] && e=100 #Just a precaution
                 message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' $e) ]"
-            done < <(eval "$cmd" 2>&1)                                              #Note that with pv stderr holds the current percentage value!
+            done < "$FIFO"
             message -u -c -t "Creating backup for $sdev [ $(printf '%02d%%' 100) ]" #In case we very faster than the update interval of pv, especially when at 98-99%.
         else
             message -c -t "Creating backup for $sdev"
             if [[ $SPLIT == true ]]; then
-                cmd="$cmd -Scpf - . | split -b 1G - $file"
+                cmd="$cmd -Scpf - . 2>$LOG_PATH/bcrm.${file}.log | split -b 1G - $file"
             else
-                cmd="$cmd -Scpf $file ."
+                cmd="$cmd -Scpf $file . 2>$LOG_PATH/bcrm.${file}.log"
             fi
             eval "$cmd"
 
-            if [[ LIVE_CHECKSUMS == true ]]; then
-            {
-                logmsg "Creating Checksums for backup of $sdev"
-                path="$(dirname $(readlink -f $file))"
-                tar -tf $file >> "$file.list"
-                ( 
-                    cd "$mpnt" 
-                    while read -r l; do 
-                        [[ -f $l ]] && md5sum "$l" >> "$path/${file}.md5" 
-                    done < "$path/${file}.list"
-                )
-            }
-            fi
+        fi
+        if [[ LIVE_CHECKSUMS == true ]]; then
+        {
+            logmsg "Creating Checksums for backup of $sdev"
+            path="$(dirname $(readlink -f $file))"
+            tar -tf $file >> "$file.list"
+            ( 
+                cd "$mpnt" 
+                while read -r l; do 
+                    [[ -f $l ]] && md5sum "$l" >> "$path/${file}.md5" 
+                done < "$path/${file}.list"
+            )
+        }
         fi
         message -y
         g=$((g + 1))
@@ -2042,8 +2050,8 @@ Clone() { #{{{
                 if [[ $IS_CHECKSUM == true ]]; then
                     logmsg "Validating Checksums for restored target $dev"
                     { 
-                        local flog=/tmp/bcrm.${dev//\//_}.md5.failed.log
-                        local log=/tmp/bcrm.${dev//\//_}.md5.log
+                        local flog=$LOG_PATH/bcrm.${dev//\//_}.md5.failed.log
+                        local log=$LOG_PATH/bcrm.${dev//\//_}.md5.log
                         sync && md5sum -c "$SRC/${file}.md5" > $log || { grep 'FAILED$' $log >> $flog &&
                         exit_ 9 "Validation of target files for $dev <-> $ddev failed."; }
                     }
@@ -2067,32 +2075,27 @@ Clone() { #{{{
 
             local x
             for x in ${SRC_EXCLUDES[@]}; do
-                [[ $ss =~ $x ]] && cmd="$cmd --exclude=./$x"
+                [[ $ss =~ $x ]] && cmd="$cmd --exclude='./$x'"
             done
 
             if [[ -n $excludes ]]; then
                 for ex in ${excludes[@]}; do
-                    cmd="$cmd --exclude=./$ex"
+                    cmd="$cmd --exclude='./$ex'"
                 done
             else
-                cmd="--exclude=./run/* --exclude=./tmp/* --exclude=./proc/* --exclude=./dev/* --exclude=./sys/*"
+                cmd='--exclude=./run/* --exclude="./tmp/*" --exclude="./proc/*" --exclude="./dev/*" --exclude="./sys/*"'
             fi
 
             if [[ $INTERACTIVE == true ]]; then
                 message -u -c -t "Cloning $sdev to $ddev [ scan ]"
-                local size=$(rsync -aSXxH --stats --dry-run $cmd "$smpnt/" "$dmpnt" \
-                    | grep -oP 'Number of files: \d*(,\d*)*' \
-                    | cut -d ':' -f2 \
-                    | tr -d ' ' \
-                    | sed -e 's/,//g'
-                )
+                local size=$(find "$smpnt" -xdev -type f,d,l -not \( ${cmd//--exclude=/-path } \) | wc -l)
 
                 {
-                    local e
+                    local e=
                     while read -r e; do
                         [[ $e -ge 100 ]] && e=100
                         message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' $e) ]"
-                    done < <(rsync -vaSXxH $cmd "$smpnt/" "$dmpnt" | pv --interval 0.5 --numeric -le -s "$size" 2>&1 >/dev/null)
+                    done < <(rsync -vaSXxH --log-file $LOG_PATH/bcrm.${sdev//\//_}_${ddev//\//_}.log $cmd "$smpnt/" "$dmpnt" | pv --interval 0.5 --numeric -le -s "$size" 2>&1 >/dev/null)
                 }
                 message -u -c -t "Cloning $sdev to $ddev [ $(printf '%02d%%' 100) ]"
             else
