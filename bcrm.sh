@@ -2585,7 +2585,7 @@ Main() { #{{{
             CREATE_LOOP_DEV=true
             ;;
         '--destination-image')
-            read -r DEST_IMG IMG_TYPE IMG_SIZE <<<"${{PARAMS[$k]//:/ }"
+            read -r DEST_IMG IMG_TYPE IMG_SIZE <<<"${PARAMS[$k]//:/ }"
 
             [[ -n $DEST_IMG && -z $IMG_TYPE ]] && exit_ 1 "Missing type attribute"
             [[ $IMG_TYPE =~ ^raw$|^vdi$|^vmdk$|^qcow2$ ]] || exit_ 2 "Invalid image type in $k ${PARAMS[$k]}"
@@ -2646,7 +2646,7 @@ Main() { #{{{
                 Use K, M, G or T suffixes to specify kilobytes, megabytes, gigabytes and terabytes."
             ;;
         '--lvm-expand')
-            read -r LVM_EXPAND LVM_EXPAND_BY <<<"${{PARAMS[$k]/:/ }"
+            read -r LVM_EXPAND LVM_EXPAND_BY <<<"${PARAMS[$k]/:/ }"
             [[ "${LVM_EXPAND_BY:-100}" =~ ^0*[1-9]$|^0*[1-9][0-9]$|^100$ ]] || exit_ 2 "Invalid size attribute in $k ${PARAMS[$k]}"
             ;;
         '--vg-free-size')
@@ -2678,7 +2678,7 @@ Main() { #{{{
             {
                 local part mp fstype type user group
                 local x k v
-                for x in ${{PARAMS[$k]//,/ }; do
+                for x in ${PARAMS[$k]//,/ }; do
                     read -r k v <<<"${x/=/ }"
                     if [[ -n $k && -n $v ]]; then
                         [[ $k == user ]] && user=$v
@@ -2706,7 +2706,7 @@ Main() { #{{{
         '--to-lvm')
             {
                 local k v
-                read -r k v <<<"${{PARAMS[$k]/:/ }"
+                read -r k v <<<"${PARAMS[$k]/:/ }"
                 [[ -z $v ]] && exit_ 1 "Missing LV name"
                 if _is_valid_lv_name $v; then
                     [[ -n ${TO_LVM[$k]} ]] && exit_ 1 "$k already specified. Duplicate parameters?"
