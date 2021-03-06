@@ -6,7 +6,7 @@ before_deploy: tar --exclude="./.*" -zcf ${TRAVIS_BUILD_DIR}/../bcrm_${TRAVIS_TA
 
 deploy:
   provider: releases
-  github_token: $GITHUB_TOKEN
+  api_key: $GITHUB_TOKEN
   file_glob: true
   file:
     - ../bcrm_${TRAVIS_TAG}.tar.gz
