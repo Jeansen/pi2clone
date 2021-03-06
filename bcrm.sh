@@ -27,7 +27,7 @@ set -o pipefail
 #}}}
 
 # CONSTANTS -----------------------------------------------------------------------------------------------------------{{{
-declare VERSION=v0.1.1-135-gff6f7f1
+declare VERSION=v0.1.1-138-gdf4df90
 declare F_SCHROOT_CONFIG='/etc/schroot/chroot.d/bcrm'
 declare F_SCHROOT='bcrm.stretch.tar.xz'
 declare F_PART_LIST='part_list'
