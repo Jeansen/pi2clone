@@ -1637,7 +1637,7 @@ To_file() { #{{{
                 cmd="$cmd -Scpvf - . 2>$LOG_PATH/bcrm.${file}.log | pv --interval 0.5 --numeric -s $size > $file"
             fi
 
-            local e= 
+            local e=
             mkfifo "$FIFO"
             {
                 eval "$cmd" 2>"$FIFO"
@@ -1663,10 +1663,10 @@ To_file() { #{{{
             logmsg "Creating Checksums for backup of $sdev"
             path="$(dirname $(readlink -f $file))"
             tar -tf $file >> "$file.list"
-            ( 
-                cd "$mpnt" 
-                while read -r l; do 
-                    [[ -f $l ]] && md5sum "$l" >> "$path/${file}.md5" 
+            (
+                cd "$mpnt"
+                while read -r l; do
+                    [[ -f $l ]] && md5sum "$l" >> "$path/${file}.md5"
                 done < "$path/${file}.list"
             )
         }
@@ -2049,7 +2049,7 @@ Clone() { #{{{
 
                 if [[ $IS_CHECKSUM == true ]]; then
                     logmsg "Validating Checksums for restored target $dev"
-                    { 
+                    {
                         local flog=$LOG_PATH/bcrm.${dev//\//_}.md5.failed.log
                         local log=$LOG_PATH/bcrm.${dev//\//_}.md5.log
                         sync && md5sum -c "$SRC/${file}.md5" > $log || { grep 'FAILED$' $log >> $flog &&
@@ -2247,7 +2247,7 @@ Clone() { #{{{
                 _lvm_setup "/dev/mapper/$LUKS_LVM_NAME" || exit_ 1 "LVM setup failed!"
             else
                 disk_setup "$f" "$SRC" "$DEST" || exit_ 2 "Disk setup failed!"
-                [[ $IS_LVM == true ]] && { _lvm_setup "$DEST" || exit_ 1 "LVM setup failed!"; }
+                _lvm_setup "$DEST" || exit_ 1 "LVM setup failed!"
                 sleep 3
             fi
         }
@@ -2967,7 +2967,7 @@ Main() { #{{{
 
     [[ $SRC == $ROOT_DISK && $IS_LVM == false && $IS_CHECKSUM == true ]] && LIVE_CHECKSUMS=false && message -w -t "No LVM system detected. File integrity checks disabled."
 
-    [[ $ALL_TO_LVM == true && -z $VG_SRC_NAME && -z $VG_SRC_NAME_CLONE ]] && exit_ 1 "You need to provide a VG name when convertig a standard disk to LVM."
+    [[ $ALL_TO_LVM == true && -z $VG_SRC_NAME && -z $VG_SRC_NAME_CLONE && ! -d $DEST ]] && exit_ 1 "You need to provide a VG name when convertig a standard disk to LVM."
 
     {
         if [[ $IS_LVM == true ]]; then
@@ -3016,7 +3016,7 @@ Main() { #{{{
     if [[ -b $SRC && -z $BOOT_PART ]]; then
         _find_boot 'BOOT_PART' #|| exit_ 1 "No bootartition found."
     fi
-            
+
     [[ $BOOT_SIZE -gt 0 && -z $BOOT_PART ]] && exit_ 1 "Boot is equal to root partition."
 
     {
