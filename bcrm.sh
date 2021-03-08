@@ -826,15 +826,25 @@ pkg_install() { #{{{
 # $1: <mount point>
 create_rclocal() { #{{{
     logmsg "create_rclocal"
-    mv "$1/etc/rc.local" "$1/etc/rc.local.bak" 2>/dev/null
     printf '%s' '#! /usr/bin/env bash
     systemctl stop ssh.service
     update-grub
-    rm /etc/rc.local
-    mv /etc/rc.local.bak /etc/rc.local 2>/dev/null
     sleep 10
-    reboot' >"$1/etc/rc.local"
-    chmod +x "$1/etc/rc.local"
+    systemctl disable bcrm-update.service
+    rm /etc/systemd/system/bcrm-update.service
+    rm /usr/local/bcrm-local.sh
+    reboot' >"$1/usr/local/bcrm-local.sh"
+    chmod +x "$1/usr/local/bcrm-local.sh"
+
+    printf '%s' '[Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/usr/local/bcrm-local.sh
+
+    [Install]
+    WantedBy=multi-user.target' >"$1/etc/systemd/system/bcrm-update.service"
+
+    chroot "$1" bash -c "systemctl enable bcrm-update.service" || return 1
 } #}}}
 
 #}}}
