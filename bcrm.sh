@@ -268,6 +268,7 @@ message() { #{{{
     local status
     local text
     local update=false
+    local is_input=false
     clor_current=$(tput bold; tput setaf 3)
     clr_yes=$(tput setaf 2)
     clor_no=$(tput setaf 1)
@@ -277,8 +278,11 @@ message() { #{{{
 
     exec 1>&3 #restore stdout
     #prepare
-    while getopts ':iwnucyt:' option; do
+    while getopts ':Iiwnucyt:' option; do
         case "$option" in
+        I)
+            is_input=true
+            ;;
         t)
             text=" $OPTARG"
             ;;
@@ -320,7 +324,7 @@ message() { #{{{
         && text=$(echo "$text" | sed -e 's/^\s*//; 2,$ s/^/      /') \
         && echo -e -n "$text" \
         && tput el
-    echo
+    [[ $is_input == false ]] && echo
 
     [[ $update == true ]] && tput rc
     tput civis
@@ -2835,7 +2839,15 @@ Main() { #{{{
         if [[ -b $DEST ]]; then
             local pv_name vg_name
             read pv_name vg_name < <(pvs -o pv_name,vg_name --no-headings | grep "$DEST")
-            [[ -n $vg_name ]] && exit_ 1 "Destination has physical volumes still assigned to VG $vg_name".
+            if [[ -n $vg_name ]]; then
+				message -I -i -t "Destination has physical volumes still assigned. Delete ${vg_name}? [y/N]: "
+				read choice
+				if [[ $choice =~ Y|y|Yes|yes ]]; then
+					vgremove -y $vg_name
+				else
+					exit_ 1
+				fi
+			fi
             unset pv_name vg_name
         fi
 
